@@ -45,9 +45,10 @@ class STM32Controller(Node):
         try:
             future = self.navi_client.call_async(request)
             rclpy.spin_until_future_complete(self, future, timeout_sec=timeout)
-            
             if future.done():
                 response = future.result()
+                self.get_logger().info(f"move_forward response: {response.result}")
+                return True, response
             else:
                 self.get_logger().error('Move_forward service call timeout')
                 return False, 'Service call timeout'
@@ -80,6 +81,8 @@ class STM32Controller(Node):
             
             if future.done():
                 response = future.result()
+                self.get_logger().info(f"move_backward response: {response.result}")
+                return True, response
             else:
                 self.get_logger().error('Move_backward service call timeout')
                 return False, 'Service call timeout'
@@ -111,6 +114,8 @@ class STM32Controller(Node):
             rclpy.spin_until_future_complete(self, future, timeout_sec=timeout)
             if future.done():
                 response = future.result()
+                self.get_logger().info(f"Rotate response: {response.result}")
+                return True, response
             else:
                 self.get_logger().error('Rotate service call timeout')
                 return False, 'Service call timeout'
@@ -144,6 +149,8 @@ class STM32Controller(Node):
             
             if future.done():
                 response = future.result()
+                self.get_logger().info(f"Orientate response: {response.result}")
+                return True, response
             else:
                 self.get_logger().error('Orientate service call timeout')
                 return False, 'Service call timeout'
@@ -176,6 +183,8 @@ class STM32Controller(Node):
             
             if future.done():
                 response = future.result()
+                self.get_logger().info(f"go_to response: {response.result}")
+                return True, response
             else:
                 self.get_logger().error('Go_to service call timeout')
                 return False, 'Service call timeout'
@@ -207,6 +216,8 @@ class STM32Controller(Node):
             
             if future.done():
                 response = future.result()
+                self.get_logger().info(f"move_forward_with_left_deviation response: {response.result}")
+                return True, response
             else:
                 self.get_logger().error('Move_forward_with_left_deviation service call timeout')
                 return False, 'Service call timeout'
@@ -238,6 +249,8 @@ class STM32Controller(Node):
             
             if future.done():
                 response = future.result()
+                self.get_logger().info(f"circle curve response: {response.result}")
+                return True, response
             else:
                 self.get_logger().error('circle curve  service call timeout')
                 return False, 'Service call timeout'

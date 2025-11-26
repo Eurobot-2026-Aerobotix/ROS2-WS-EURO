@@ -21,6 +21,7 @@ setup(
     entry_points={
         'console_scripts': [
             'strategy = euro.strategy:main',
+            'start_stm32_agent = euro.start_stm32_agent:main',
         ],
     },
 )

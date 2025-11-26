@@ -18,13 +18,12 @@ class Lidar(Node):
         # Subscribe to /emergency topic
         self.emergency_subscription = self.create_subscription(
             Int32,
-            '/emergency',
+            '/emergency_break',
             self.emergency_callback,
             10
         )
-        
-        #self.get_logger().info("Lidar node initialized - subscribed to /emergency topic")
-    
+        self.get_logger().info('Lidar node initialized - subscribed to /emergency_break topic')
+
     def emergency_callback(self, msg):
         """Callback function for emergency topic"""
         self.emergency_status = msg.data
