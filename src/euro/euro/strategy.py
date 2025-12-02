@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import rclpy
+from rclpy.executors import MultiThreadedExecutor
 from euro.stm32_controller import STM32Controller
 from euro.lidar import Lidar
 import time
@@ -16,6 +17,7 @@ def robot_status(stm32,lidar):
     while rclpy.ok():
         # Call STM32Controller.IDLE() to check motion status
         EMERGENCY_STOP = lidar.getstatus()
+        print(EMERGENCY_STOP)
         if not IDLE:
             success, is_completed, _ = stm32.IDLE()
             #print(f"✅ STM32 IDLE check success: {success}, is_completed: {is_completed}")
@@ -36,16 +38,24 @@ def main(args=None):
     stm32 = STM32Controller('rpi_stm32')
     lidar = Lidar()
     global IDLE
+    
+    # Create a MultiThreadedExecutor to spin both nodes
+    executor = MultiThreadedExecutor()
+    executor.add_node(stm32)
+    executor.add_node(lidar)
+    
     status_thread = threading.Thread(target=robot_status, args=(stm32,lidar), daemon=True)
     status_thread.start()
-    stm32.move_forward(200.0,200.0)
+    stm32.move_forward(1500.0,200.0)
     try:
-        rclpy.spin(stm32)
+        executor.spin()
     except KeyboardInterrupt:
         stm32.get_logger().info('Robot Strategy shutting down...')
     finally:
         # Cleanup all controllers
         stm32.destroy_node()
+        lidar.destroy_node()
+        executor.shutdown()
         rclpy.shutdown()
 
 if __name__ == '__main__':
