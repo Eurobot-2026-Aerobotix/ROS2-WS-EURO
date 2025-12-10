@@ -1,0 +1,165 @@
+tasks:
+  task1:
+    description: "Move to plant zone and collect plants"
+    dependencies: []
+    sequence:
+      - device: stm32
+        command: move_forward
+        params:
+          distance: 500
+          speed: 200
+        wait: true
+
+      - device: stm32
+        command: rotate
+        params:
+          angle: 90
+          is_radian: false
+        wait: true
+
+      - device: esp32_1
+        command: activate_gripper
+        params:
+          state: open
+        wait: false
+
+      - device: stm32
+        command: move_forward
+        params:
+          distance: 100
+          speed: 100
+        wait: true
+
+      - device: esp32_1
+        command: activate_gripper
+        params:
+          state: close
+        wait: true
+        delay: 1.0
+
+      - device: stm32
+        command: move_backward
+        params:
+          distance: 100
+          speed: 150
+          teta: 0
+        wait: true
+
+  task2:
+    description: "Go to solar panel zone"
+    dependencies: ["task1"]
+    sequence:
+      - device: stm32
+        command: go_to
+        params:
+          x: 1500
+          y: 1000
+          speed: 250
+        wait: true
+
+      - device: esp32_2
+        command: deploy_mechanism
+        params:
+          height: 200
+        wait: true
+
+      - device: stm32
+        command: orientate
+        params:
+          orientation: 180
+          is_radian: false
+        wait: true
+
+      - device: esp32_2
+        command: activate_suction
+        params:
+          power: 100
+        wait: false
+
+  task3:
+    description: "Emergency avoidance sequence"
+    dependencies: []
+    sequence:
+      - device: stm32
+        command: stop
+        params: {}
+        wait: true
+
+      - device: stm32
+        command: move_backward
+        params:
+          distance: 200
+          speed: 300
+        wait: true
+
+      - device: stm32
+        command: rotate
+        params:
+          angle: 45
+          is_radian: false
+        wait: true
+
+      - device: stm32
+        command: move_forward
+        params:
+          distance: 300
+          speed: 250
+        wait: true
+
+  task4:
+    description: "Complex multi-device coordination"
+    dependencies: []
+    sequence:
+      - device: stm32
+        command: move_forward
+        params:
+          distance: 300
+          speed: 200
+        wait: true
+
+      - device: esp32_1
+        command: prepare_arm
+        params:
+          position: ready
+        wait: false
+
+      - device: esp32_2
+        command: prepare_sensor
+        params:
+          mode: detect
+        wait: false
+
+      - device: esp32_3
+        command: led_pattern
+        params:
+          pattern: blink
+          color: blue
+        wait: false
+
+      - device: stm32
+        command: rotate
+        params:
+          angle: 30
+          is_radian: false
+        wait: true
+        delay: 0.5
+
+      - device: esp32_1
+        command: grab_object
+        params: {}
+        wait: true
+        delay: 2.0
+
+      - device: esp32_3
+        command: led_pattern
+        params:
+          pattern: solid
+          color: green
+        wait: false
+
+      - device: stm32
+        command: move_backward
+        params:
+          distance: 300
+          speed: 200
+        wait: true
