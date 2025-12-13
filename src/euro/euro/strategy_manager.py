@@ -42,8 +42,9 @@ class StrategyManager(Node):
         
         while rclpy.ok():
             # Check emergency stop from lidar
-            EMERGENCY_STOP = lidar.getstatus()
-            
+            #EMERGENCY_STOP = lidar.getstatus()
+            success, is_completed, _ = stm32.IDLE()
+            print(is_completed)
             # Check if robot is idle
             if not IDLE:
                 success, is_completed, _ = stm32.IDLE()
@@ -57,13 +58,14 @@ class StrategyManager(Node):
                 self.get_logger().warning("🚨 Emergency stop activated!")
                 success, response = stm32.stop()
             
-            time.sleep(0.1)  # 100ms
+            time.sleep(0.05)  # 100ms
     
     def stm32_task(self, stm32):
         """Runs every 100ms to process STM32 queue"""
         global IDLE
         
         while rclpy.ok():
+            
             # Check if there are commands in the queue and robot is idle
             if len(self.queues['stm32']) > 0 and IDLE:
                 cmd = self.queues['stm32'][0]  # Peek at first command
@@ -76,14 +78,15 @@ class StrategyManager(Node):
                 
                 # TODO: Add execution logic here
                 # Example:
-                # if command == 'move_forward':
-                #     stm32.move_forward(params['distance'], params['speed'])
+                if command == 'move_forward':
+                    stm32.move_forward(params['distance'], params['speed'])
+                    IDLE=False
+                if command == 'rotate':
+                    stm32.rotate(params['angle'],params['is_radian'])
+                    IDLE=False
                 
                 # Remove command from queue after execution
                 self.queues['stm32'].popleft()
-                
-                if wait:
-                    IDLE = False  # Set to not idle, robot_status will check
             
             time.sleep(0.1)  # 100ms
     
@@ -159,6 +162,7 @@ class StrategyManager(Node):
     def load_task_to_queues(self, task_name: str):
         """Load a task's commands into device queues"""
         # Find the task
+        global IDLE
         task = None
         for t in self.tasks:
             if t['name'] == task_name:
@@ -251,32 +255,7 @@ def main(args=None):
     executor.add_node(stm32)
     executor.add_node(lidar)
     executor.add_node(strategy)
-    
-    # Get tasks file path
-    try:
-        from ament_index_python.packages import get_package_share_directory
-        package_share_dir = get_package_share_directory('euro')
-        tasks_file = os.path.join(package_share_dir, 'config', 'tasks.yaml')
-    except:
-        package_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        tasks_file = os.path.join(package_dir, 'config', 'tasks.yaml')
-    
-    # Load tasks
-    try:
-        strategy.get_logger().info(f"Loading tasks from: {tasks_file}")
-        strategy.tasks = load_tasks_from_yaml(tasks_file)
-        strategy.get_logger().info(f"✓ Loaded {len(strategy.tasks)} tasks\n")
-        
-        # Load first task into queues
-        if strategy.tasks:
-            strategy.load_task_to_queues(strategy.tasks[0]['name'])
-            strategy.display_queue_contents()
-        
-    except Exception as e:
-        strategy.get_logger().error(f"Failed: {str(e)}")
-        return
-    
-    # Start background threads for each device
+     # Start background threads for each device
     strategy.get_logger().info("Starting background threads...")
     
     status_thread = threading.Thread(
@@ -315,6 +294,31 @@ def main(args=None):
     esp3_thread.start()
     
     strategy.get_logger().info("✓ All threads started\n")
+    # Get tasks file path
+    try:
+        from ament_index_python.packages import get_package_share_directory
+        package_share_dir = get_package_share_directory('euro')
+        tasks_file = os.path.join(package_share_dir, 'config', 'tasks.yaml')
+    except:
+        package_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        tasks_file = os.path.join(package_dir, 'config', 'tasks.yaml')
+    
+    # Load tasks
+    try:
+        strategy.get_logger().info(f"Loading tasks from: {tasks_file}")
+        strategy.tasks = load_tasks_from_yaml(tasks_file)
+        strategy.get_logger().info(f"✓ Loaded {len(strategy.tasks)} tasks\n")
+        
+        # Load first task into queues
+        if strategy.tasks:
+            strategy.load_task_to_queues(strategy.tasks[0]['name'])
+            strategy.display_queue_contents()
+        
+    except Exception as e:
+        strategy.get_logger().error(f"Failed: {str(e)}")
+        return
+    
+   
     
     # Keep node alive
     try:
