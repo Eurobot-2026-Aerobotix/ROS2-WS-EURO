@@ -43,11 +43,11 @@ class StrategyManager(Node):
         while rclpy.ok():
             # Check emergency stop from lidar
             #EMERGENCY_STOP = lidar.getstatus()
-            success, is_completed, _ = stm32.IDLE()
-            print(is_completed)
+            
             # Check if robot is idle
             if not IDLE:
                 success, is_completed, _ = stm32.IDLE()
+                print(f"✅ STM32 IDLE check success: {success}, is_completed: {is_completed}")
                 if not success:
                     self.get_logger().warning("⚠️ Failed to check robot status")
                 else:
@@ -58,7 +58,7 @@ class StrategyManager(Node):
                 self.get_logger().warning("🚨 Emergency stop activated!")
                 success, response = stm32.stop()
             
-            time.sleep(0.05)  # 100ms
+            time.sleep(0.1)  # 100ms
     
     def stm32_task(self, stm32):
         """Runs every 100ms to process STM32 queue"""
