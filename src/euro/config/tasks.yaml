@@ -10,16 +10,16 @@ tasks:
           speed: 500.0
         wait: true
       - device: stm32
-        command: rotate
-        params:
-          angle: 90
-          is_radian: false
-        wait: true
-      - device: stm32
         command: move_forward
         params:
           distance: 200.0
           speed: 500.0
+        wait: true
+      - device: stm32
+        command: rotate
+        params:
+          angle: 90.0
+          is_radian: 0.0
         wait: true
 
       
