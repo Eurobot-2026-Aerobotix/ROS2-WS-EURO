@@ -162,6 +162,7 @@ class HybridAStarNode(Node):
         
         # Try multiple possible paths
         possible_paths = [
+            '/home/ubuntu/ROS2-WS-EURO/static_walls.json',
             '/home/ubuntu/hybrid/static_walls.json',
             os.path.join(os.path.dirname(__file__), '../../../static_walls.json'),
             os.path.join(os.path.dirname(__file__), 'static_walls.json'),
