@@ -8,10 +8,10 @@ import time
 import threading
 from typing import List, Dict, Any
 from collections import deque
-from geometry_msgs.msg import PoseStamped, Pose2D, Quaternion
+from geometry_msgs.msg import PoseStamped, Pose2D, Quaternion,Vector3
 from euro.yaml_loader import load_tasks_from_yaml
 import math
-
+from euro.pathfinder_controller import PathfinderClient
 # Global state variables
 IDLE = True
 EMERGENCY_STOP = False
@@ -34,9 +34,41 @@ class StrategyManager(Node):
             'esp32_2': deque(),
             'esp32_3': deque()
         }
-        
+        self.create_subscription(
+            Vector3,
+            '/robot_pose_raw',
+            self.robot_pose_callback,
+            10
+        )
+        self.pathfinder = PathfinderClient()
+
+        self.get_logger().info("Subscribed to /robot_pose_raw")
         self.get_logger().info('Strategy Manager initialized')
-    
+    def robot_pose_callback(self, msg):
+        self.latest_robot_pose = msg
+        # self.get_logger().info(f"Robot pose updated: {msg}")
+    def path(self, x_goal, y_goal, theta_goal):
+        """Create start and goal PoseStamped from current pose and goal"""
+        # Start pose from latest robot pose
+        start_pose = PoseStamped()
+        start_pose.header.stamp = self.get_clock().now().to_msg()
+        start_pose.header.frame_id = "map"
+        start_pose.pose.position.x = self.latest_robot_pose.x
+        start_pose.pose.position.y = self.latest_robot_pose.y
+        start_pose.pose.position.z = 0.0
+        start_pose.pose.orientation = self.yaw_to_quaternion(self.latest_robot_pose.z)
+
+        # Goal pose from arguments
+        goal_pose = PoseStamped()
+        goal_pose.header.stamp = self.get_clock().now().to_msg()
+        goal_pose.header.frame_id = "map"
+        goal_pose.pose.position.x = x_goal
+        goal_pose.pose.position.y = y_goal
+        goal_pose.pose.position.z = 0.0
+        goal_pose.pose.orientation = self.yaw_to_quaternion(theta_goal)
+        stm32_commands, success = self.pathfinder.get_path(start_pose, goal_pose)
+        for cmd in stm32_commands:
+            self.get_logger().info(f"Path command: {cmd}")
     def robot_status(self, stm32, lidar):
         """Runs every 100ms to check STM32 movement status and lidar obstacles"""
         global IDLE
@@ -262,7 +294,6 @@ def main(args=None):
     # Initialize controllers
     stm32 = STM32Controller('rpi_stm32')
     lidar = Lidar()
-    pathfinder = PathfinderClient()
     # Create strategy manager
     strategy = StrategyManager()
     
@@ -270,7 +301,6 @@ def main(args=None):
     executor = MultiThreadedExecutor()
     executor.add_node(stm32)
     executor.add_node(lidar)
-    executor.add_node(pathfinder)
     executor.add_node(strategy)
      # Start background threads for each device
     strategy.get_logger().info("Starting background threads...")
@@ -328,8 +358,12 @@ def main(args=None):
         
         # Load first task into queues
         if strategy.tasks:
-            strategy.load_task_to_queues(strategy.tasks[0]['name'])
-            strategy.display_queue_contents()
+            x_goal = 1760.0
+            y_goal = 2343.3333333333335
+            theta_goal = 90  # Keep as degrees
+            strategy.path(x_goal, y_goal, theta_goal)
+            #strategy.load_task_to_queues(strategy.tasks[0]['name'])
+            #strategy.display_queue_contents()
         
     except Exception as e:
         strategy.get_logger().error(f"Failed: {str(e)}")

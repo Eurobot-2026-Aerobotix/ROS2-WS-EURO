@@ -6,8 +6,7 @@ from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped, Point
 from nav_msgs.msg import Path
 
-from euro.srv import ComputePath, GetBatchColorPattern
-
+from euro_interfaces.srv import ComputePath, GetBatchColorPattern
 
 class PathfinderClient(Node):
     """
@@ -26,7 +25,7 @@ class PathfinderClient(Node):
 
         self.batch_color_client = self.create_client(
             GetBatchColorPattern,
-            '/get_batch_color'
+            '/get_batch_color_pattern'
         )
 
         self.get_logger().info('Waiting for services...')
