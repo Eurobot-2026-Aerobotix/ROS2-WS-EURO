@@ -1,0 +1,52 @@
+hybrid_astar_node:
+  ros__parameters:
+    # Robot configuration (from complete_map.json "robot" section)
+    robot:
+      width_mm: 350.0
+      length_mm: 300.0
+      safety_margin_mm: 0.0
+      radius_mm: 200.0           # For reference/visualization
+    
+    # Grid configuration (from complete_map.json "grid" section)
+    grid:
+      resolution_mm: 25.0
+    
+    # Pathfinding configuration (from complete_map.json "pathfinding" section)
+    pathfinding:
+      allow_diagonal: true
+      diagonal_cost: 1.414
+      straight_cost: 1.0
+      max_iterations: 50000
+    
+    # Path smoothing (from complete_map.json "path_smoothing" section)
+    path_smoothing:
+      enabled: true
+      iterations: 5
+    
+    # Map configuration (from complete_map.json "map" section)
+    map:
+      width_mm: 2000.0
+      height_mm: 3000.0
+    
+    # Obstacle dimensions (from complete_map.json "obstacles" section)
+    obstacles:
+      crate_horizontal:
+        width_mm: 150.0
+        height_mm: 50.0
+      crate_vertical:
+        width_mm: 50.0
+        height_mm: 150.0
+    
+    # Performance limits (from complete_map.json "performance" section)
+    performance:
+      max_path_length_mm: 10000.0
+      timeout_seconds: 10.0
+    
+    # Safety margins (from complete_map.json "safety" section)
+    safety:
+      min_clearance_mm: 50.0
+      wall_margin_mm: 25.0
+    
+    # Publishing rates
+    rates:
+      obstacle_list_hz: 1.0

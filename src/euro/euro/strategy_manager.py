@@ -41,15 +41,26 @@ class StrategyManager(Node):
             10
         )
         self.pathfinder = PathfinderClient()
-
+        self.create_timer(1.0, self.try_path)
+        self.goal = (1.7600, 2.3433, 1.57079632679)
+        self.path_called = False
         self.get_logger().info("Subscribed to /robot_pose_raw")
         self.get_logger().info('Strategy Manager initialized')
     def robot_pose_callback(self, msg):
         self.latest_robot_pose = msg
         # self.get_logger().info(f"Robot pose updated: {msg}")
+    def try_path(self):
+        if not self.path_called and self.latest_robot_pose is not None:
+            x_goal, y_goal, theta_goal = self.goal
+            self.path(x_goal, y_goal, theta_goal)
+            self.path_called = True
     def path(self, x_goal, y_goal, theta_goal):
+        print("Path function called")
         """Create start and goal PoseStamped from current pose and goal"""
         # Start pose from latest robot pose
+        if self.latest_robot_pose is None:
+            self.get_logger().error("No robot pose received yet!")
+            return
         start_pose = PoseStamped()
         start_pose.header.stamp = self.get_clock().now().to_msg()
         start_pose.header.frame_id = "map"
@@ -69,6 +80,24 @@ class StrategyManager(Node):
         stm32_commands, success = self.pathfinder.get_path(start_pose, goal_pose)
         for cmd in stm32_commands:
             self.get_logger().info(f"Path command: {cmd}")
+            values = cmd.replace('go_to(', '').replace(')', '').split(',')
+            x = int(values[0].strip())
+            y = int(values[1].strip())
+            speed = int(values[2].strip())
+            self.get_logger().info(
+                f"Parsed → x={x}, y={y}, speed={speed}"
+            )
+            self.queues['stm32'].append({
+                'command': 'go_to',
+                'params': {
+                    'x': x,
+                    'y': y,
+                    'speed': 300.0
+                },
+                'wait': True
+            })
+        self.get_logger().info(f"STM32 Queue: {self.queues['stm32']}")
+
     def robot_status(self, stm32, lidar):
         """Runs every 100ms to check STM32 movement status and lidar obstacles"""
         global IDLE
@@ -117,6 +146,9 @@ class StrategyManager(Node):
                     IDLE=False
                 if command == 'rotate':
                     stm32.rotate(params['angle'],params['is_radian'])
+                    IDLE=False
+                if command == 'go_to':
+                    stm32.go_to(params['x'], params['y'], params['speed'])
                     IDLE=False
                 
                 # Remove command from queue after execution
@@ -359,9 +391,6 @@ def main(args=None):
         # Load first task into queues
         if strategy.tasks:
             x_goal = 1760.0
-            y_goal = 2343.3333333333335
-            theta_goal = 90  # Keep as degrees
-            strategy.path(x_goal, y_goal, theta_goal)
             #strategy.load_task_to_queues(strategy.tasks[0]['name'])
             #strategy.display_queue_contents()
         
@@ -373,6 +402,7 @@ def main(args=None):
     
     # Keep node alive
     try:
+        
         executor.spin()
     except KeyboardInterrupt:
         strategy.get_logger().info("Shutting down...")

@@ -6,7 +6,7 @@ from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped, Point
 from nav_msgs.msg import Path
 
-from euro_interfaces.srv import ComputePath, GetBatchColorPattern
+from hybrid_astar.srv import ComputePath, GetBatchColorPattern
 
 class PathfinderClient(Node):
     """

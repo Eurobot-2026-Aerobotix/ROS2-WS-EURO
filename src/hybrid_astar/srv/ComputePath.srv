@@ -1,0 +1,13 @@
+# Request
+geometry_msgs/PoseStamped start_pose
+geometry_msgs/PoseStamped goal_pose
+---
+# Response
+nav_msgs/Path path
+bool success
+string message
+float32 planning_time_ms
+int32 num_waypoints
+float32 path_length_m
+int32 num_obstacles_used
+string[] stm32_commands
