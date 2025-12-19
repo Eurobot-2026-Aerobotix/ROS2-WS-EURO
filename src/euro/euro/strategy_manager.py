@@ -8,7 +8,9 @@ import time
 import threading
 from typing import List, Dict, Any
 from collections import deque
+from geometry_msgs.msg import PoseStamped, Pose2D, Quaternion
 from euro.yaml_loader import load_tasks_from_yaml
+import math
 
 # Global state variables
 IDLE = True
@@ -112,6 +114,20 @@ class StrategyManager(Node):
                 self.queues['esp32_1'].popleft()
             
             time.sleep(0.1)  # 100ms
+    def quaternion_to_yaw(self, quat: Quaternion) -> float:
+        """Convert quaternion to yaw angle"""
+        siny_cosp = 2 * (quat.w * quat.z + quat.x * quat.y)
+        cosy_cosp = 1 - 2 * (quat.y * quat.y + quat.z * quat.z)
+        return math.atan2(siny_cosp, cosy_cosp)
+    
+    def yaw_to_quaternion(self, yaw: float) -> Quaternion:
+        """Convert yaw angle to quaternion"""
+        quat = Quaternion()
+        quat.x = 0.0
+        quat.y = 0.0
+        quat.z = math.sin(yaw / 2.0)
+        quat.w = math.cos(yaw / 2.0)
+        return quat
     
     def esp2_task(self, esp2_controller=None):
         """Runs every 100ms to process ESP32_2 queue"""
@@ -242,11 +258,11 @@ def main(args=None):
     # Import controllers
     from euro.stm32_controller import STM32Controller
     from euro.lidar import Lidar
-    
+    from euro.pathfinder_controller import PathfinderClient
     # Initialize controllers
     stm32 = STM32Controller('rpi_stm32')
     lidar = Lidar()
-    
+    pathfinder = PathfinderClient()
     # Create strategy manager
     strategy = StrategyManager()
     
@@ -254,6 +270,7 @@ def main(args=None):
     executor = MultiThreadedExecutor()
     executor.add_node(stm32)
     executor.add_node(lidar)
+    executor.add_node(pathfinder)
     executor.add_node(strategy)
      # Start background threads for each device
     strategy.get_logger().info("Starting background threads...")

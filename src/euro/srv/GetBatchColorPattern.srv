@@ -1,0 +1,7 @@
+string known_id
+geometry_msgs/Point pos
+---
+bool success
+string color_pattern
+string direction
+string message
