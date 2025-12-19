@@ -4,7 +4,7 @@ hybrid_astar_node:
     robot:
       width_mm: 350.0
       length_mm: 300.0
-      safety_margin_mm: 0.0
+      safety_margin_mm: 10.0
       radius_mm: 200.0           # For reference/visualization
     
     # Grid configuration (from complete_map.json "grid" section)
@@ -16,7 +16,7 @@ hybrid_astar_node:
       allow_diagonal: true
       diagonal_cost: 1.414
       straight_cost: 1.0
-      max_iterations: 50000
+      max_iterations: 500000
     
     # Path smoothing (from complete_map.json "path_smoothing" section)
     path_smoothing:

@@ -42,7 +42,7 @@ class StrategyManager(Node):
         )
         self.pathfinder = PathfinderClient()
         self.create_timer(1.0, self.try_path)
-        self.goal = (1.7600, 2.3433, 1.57079632679)
+        self.goal = (0.2, 2.7, 1.57079632679)
         self.path_called = False
         self.get_logger().info("Subscribed to /robot_pose_raw")
         self.get_logger().info('Strategy Manager initialized')
@@ -78,23 +78,34 @@ class StrategyManager(Node):
         goal_pose.pose.position.z = 0.0
         goal_pose.pose.orientation = self.yaw_to_quaternion(theta_goal)
         stm32_commands, success = self.pathfinder.get_path(start_pose, goal_pose)
+        last_cmd=None
         for cmd in stm32_commands:
             self.get_logger().info(f"Path command: {cmd}")
             values = cmd.replace('go_to(', '').replace(')', '').split(',')
-            x = int(values[0].strip())
-            y = int(values[1].strip())
+            x = float(values[0].strip())
+            y = float(values[1].strip())
             speed = int(values[2].strip())
             self.get_logger().info(
                 f"Parsed → x={x}, y={y}, speed={speed}"
             )
+            if(cmd != last_cmd):
+                self.queues['stm32'].append({
+                    'command': 'go_to',
+                    'params': {
+                        'x': x,
+                        'y': y,
+                        'speed': 700.0
+                    },
+                    'wait': True
+                })
+            last_cmd=cmd
+        if success :
             self.queues['stm32'].append({
-                'command': 'go_to',
+                'command': 'orientate',
                 'params': {
-                    'x': x,
-                    'y': y,
-                    'speed': 300.0
+                    'angle': 180.0,
+                    'is_radian': 0.0
                 },
-                'wait': True
             })
         self.get_logger().info(f"STM32 Queue: {self.queues['stm32']}")
 
@@ -150,7 +161,9 @@ class StrategyManager(Node):
                 if command == 'go_to':
                     stm32.go_to(params['x'], params['y'], params['speed'])
                     IDLE=False
-                
+                if command =='orientate':
+                    stm32.orientate(params['angle'],params['is_radian'])
+                    IDLE=False
                 # Remove command from queue after execution
                 self.queues['stm32'].popleft()
             

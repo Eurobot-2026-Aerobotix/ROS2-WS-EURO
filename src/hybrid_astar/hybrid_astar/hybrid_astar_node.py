@@ -128,7 +128,7 @@ class HybridAStarNode(Node):
             'robot': {
                 'width_mm': self.declare_parameter('robot.width_mm', 350.0).value,
                 'length_mm': self.declare_parameter('robot.length_mm', 300.0).value,
-                'safety_margin_mm': self.declare_parameter('robot.safety_margin_mm', 0.0).value,
+                'safety_margin_mm': self.declare_parameter('robot.safety_margin_mm', 10.0).value,
             },
             'grid': {
                 'resolution_mm': self.declare_parameter('grid.resolution_mm', 25.0).value,
