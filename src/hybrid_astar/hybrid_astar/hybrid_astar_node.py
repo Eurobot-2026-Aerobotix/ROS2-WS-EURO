@@ -204,62 +204,7 @@ class HybridAStarNode(Node):
         
         self.get_logger().warn('⚠️  No static walls file found - continuing without static obstacles')
     
-    def handle_aruco_mapper_state(self, msg: ArucoMapperState):
-        """
-        Handle ArUco mapper state updates
-        Extract obstacles from batches and update obstacle database
-        Also store batches for color pattern queries
-        """
-        with self.obstacles_lock:
-            # Clear existing dynamic obstacles
-            self.obstacles.clear()
-            
-            # Process each batch
-            for batch in msg.batches:
-                # Store batch by ID
-                with self.batches_lock:
-                    self.batches[batch.batch_id] = batch
-                
-                # Process each member in the batch
-                for member in batch.members:
-                    # Only process if color is valid
-                    if member.color not in ["yellow", "blue"]:
-                        continue
-                    
-                    # Create obstacle from batch member
-                    obs = Obstacle()
-                    obs.id = f"aruco_{member.aruco_id}"
-                    obs.type = 'crate'
-                    obs.color = member.color
-                    
-                    # Determine obstacle dimensions based on batch direction
-                    if batch.direction == "horizontal":
-                        obs.width_mm = self.params['obstacles']['crate_horizontal']['width_mm']
-                        obs.height_mm = self.params['obstacles']['crate_horizontal']['height_mm']
-                    elif batch.direction == "vertical":
-                        obs.width_mm = self.params['obstacles']['crate_vertical']['width_mm']
-                        obs.height_mm = self.params['obstacles']['crate_vertical']['height_mm']
-                    else:
-                        # Default to horizontal if direction is unknown
-                        obs.width_mm = self.params['obstacles']['crate_horizontal']['width_mm']
-                        obs.height_mm = self.params['obstacles']['crate_horizontal']['height_mm']
-                    
-                    # IMPORTANT: map_pos is the CENTER of the obstacle
-                    # Convert to TOP-LEFT corner (what the planner expects)
-                    # Convert from meters to millimeters
-                    center_x_mm = member.map_pos.x * 1000.0
-                    center_y_mm = member.map_pos.y * 1000.0
-                    obs.pose.x = center_x_mm - (obs.width_mm / 2.0)   # Center to top-left
-                    obs.pose.y = center_y_mm - (obs.height_mm / 2.0)  # Center to top-left
-                    obs.pose.theta = 0.0  # Orientation will be determined by batch direction
-                    
-                    obs.detected_at = msg.stamp
-                    
-                    # Add to obstacles dictionary
-                    self.obstacles[obs.id] = obs
-            
-            if len(self.obstacles) > 0:
-                self.get_logger().info(f"📦 Updated {len(self.obstacles)} obstacles from {len(msg.batches)} batches")
+
 
     def handle_clear_all(self, msg: Empty):
         """Clear all obstacles"""
@@ -267,7 +212,9 @@ class HybridAStarNode(Node):
             count = len(self.obstacles)
             self.obstacles.clear()
             self.get_logger().info(f"🗑️  Cleared all {count} obstacles")
-    
+        # Publish obstacle visualization after clearing
+        self.publish_obstacles(self.get_active_obstacles())
+
     def publish_current_obstacles(self):
         """Periodically publish current obstacle list"""
         with self.obstacles_lock:
@@ -276,7 +223,9 @@ class HybridAStarNode(Node):
             msg.header.frame_id = "map"
             msg.obstacles = list(self.obstacles.values())
             self.current_obs_pub.publish(msg)
-    
+        # Also publish obstacle visualization for RViz
+        self.publish_obstacles(self.get_active_obstacles())
+
     def quaternion_to_yaw(self, quat: Quaternion) -> float:
         """Convert quaternion to yaw angle"""
         siny_cosp = 2 * (quat.w * quat.z + quat.x * quat.y)
@@ -340,7 +289,112 @@ class HybridAStarNode(Node):
             path_msg.poses.append(pose_stamped)
         
         return path_msg
-    
+
+    def publish_obstacles(self, obstacles: List[dict]):
+        # Separate walls from crates
+        #self.get_logger().info("Publishing obstacle visualization...")
+        marker_array = MarkerArray()
+        crates = [obs for obs in obstacles if obs['color'] != 'wall']
+        
+        marker_id = 1
+        # Visualize CRATES (small, colored, on ground)
+        for obs in crates:
+            crate_marker = Marker()
+            crate_marker.header.frame_id = "map"
+            crate_marker.header.stamp = self.get_clock().now().to_msg()
+            crate_marker.ns = "crates"
+            crate_marker.id = marker_id
+            marker_id += 1
+            crate_marker.type = Marker.CUBE
+            crate_marker.action = Marker.ADD
+            
+            # Position (on ground level)
+            crate_marker.pose.position.x = (obs['x'] + (obs['width'] / 2.0))/ 1000.0
+            crate_marker.pose.position.y = (obs['y'] +(obs['height'] / 2.0))/ 1000.0
+            crate_marker.pose.position.z = 0.03  # 30mm high (half of 150mm)
+            crate_marker.pose.orientation = self.yaw_to_quaternion(obs.get('theta', 0.0))
+            
+            # Size: small crates
+            crate_marker.scale.x = obs['width'] / 1000.0
+            crate_marker.scale.y = obs['height'] / 1000.0
+            crate_marker.scale.z = 0.15  # 150mm tall crates
+            
+            # Color based on crate color
+            if obs['color'] == 'yellow':
+                crate_marker.color.r = 1.0
+                crate_marker.color.g = 1.0
+                crate_marker.color.b = 0.0
+                crate_marker.color.a = 0.8
+            elif obs['color'] == 'blue':
+                crate_marker.color.r = 0.0
+                crate_marker.color.g = 0.5
+                crate_marker.color.b = 1.0
+                crate_marker.color.a = 0.8
+            else:  # red or other
+                crate_marker.color.r = 1.0
+                crate_marker.color.g = 0.0
+                crate_marker.color.b = 0.0
+                crate_marker.color.a = 0.8
+            
+            marker_array.markers.append(crate_marker)
+        
+        self.path_viz_pub.publish(marker_array)
+    def handle_aruco_mapper_state(self, msg: ArucoMapperState):
+        """
+        Handle ArUco mapper state updates
+        Extract obstacles from batches and update obstacle database
+        Also store batches for color pattern queries
+        """
+        with self.obstacles_lock:
+            # Clear existing dynamic obstacles
+            self.obstacles.clear()
+            
+            # Process each batch
+            for batch in msg.batches:
+                # Store batch by ID
+                with self.batches_lock:
+                    self.batches[batch.batch_id] = batch
+                
+                # Process each member in the batch
+                for member in batch.members:
+                    # Only process if color is valid
+                    if member.color not in ["yellow", "blue"]:
+                        continue
+                    
+                    # Create obstacle from batch member
+                    obs = Obstacle()
+                    obs.id = f"aruco_{member.aruco_id}"
+                    obs.type = 'crate'
+                    obs.color = member.color
+                    
+                    # Determine obstacle dimensions based on batch direction
+                    if batch.direction == "horizontal":
+                        obs.width_mm = self.params['obstacles']['crate_horizontal']['width_mm']
+                        obs.height_mm = self.params['obstacles']['crate_horizontal']['height_mm']
+                    elif batch.direction == "vertical":
+                        obs.width_mm = self.params['obstacles']['crate_vertical']['width_mm']
+                        obs.height_mm = self.params['obstacles']['crate_vertical']['height_mm']
+                    else:
+                        # Default to horizontal if direction is unknown
+                        obs.width_mm = self.params['obstacles']['crate_horizontal']['width_mm']
+                        obs.height_mm = self.params['obstacles']['crate_horizontal']['height_mm']
+                    
+                    # IMPORTANT: map_pos is the CENTER of the obstacle
+                    # Convert to TOP-LEFT corner (what the planner expects)
+                    # Convert from meters to millimeters
+                    center_x_mm = member.map_pos.x * 1000.0
+                    center_y_mm = member.map_pos.y * 1000.0
+                    obs.pose.x = center_x_mm - (obs.width_mm / 2.0)   # Center to top-left
+                    obs.pose.y = center_y_mm - (obs.height_mm / 2.0)  # Center to top-left
+                    obs.pose.theta = 0.0  # Orientation will be determined by batch direction
+                    
+                    obs.detected_at = msg.stamp
+                    
+                    # Add to obstacles dictionary
+                    self.obstacles[obs.id] = obs
+            
+            if len(self.obstacles) > 0:
+                self.get_logger().info(f"📦 Updated {len(self.obstacles)} obstacles from {len(msg.batches)} batches")
     def publish_path_visualization(self, waypoints: List[Tuple[float, float, float]], 
                                    obstacles: List[dict]):
         """Publish path and obstacles visualization for RViz"""
@@ -419,6 +473,88 @@ class HybridAStarNode(Node):
         
         self.path_viz_pub.publish(marker_array)
     
+    def optimize_path_with_intersections(
+    self,
+    path: list,
+    grid_resolution: float,
+    sample_step_mm: float = 50.0
+) -> list:
+        """
+        Simplify a path by replacing 4-point zig-zag segments with their line
+        intersection when it is collision-free.
+
+        Input path format:
+            [(x, y, theta), ...]
+
+        Returns:
+            Optimized path [(x, y, theta), ...]
+        """
+
+        if len(path) < 4:
+            return path
+
+        def collision_check_segment(p1, p2, theta):
+            """
+            Check collision along a straight segment by sampling points
+            """
+            dist = math.hypot(p2[0] - p1[0], p2[1] - p1[1])
+            steps = max(5, int(dist / sample_step_mm))
+
+            for i in range(steps + 1):
+                t = i / steps
+                x = p1[0] + t * (p2[0] - p1[0])
+                y = p1[1] + t * (p2[1] - p1[1])
+
+                if self.pathfinder.is_collision(x, y, theta, grid_resolution):
+                    return True
+
+            return False
+
+        optimized = path.copy()
+        index = 0
+        removed = 0
+
+        while index <= len(optimized) - 4:
+            x1, y1, t1 = optimized[index]
+            x2, y2, _  = optimized[index + 1]
+            x3, y3, _  = optimized[index + 2]
+            x4, y4, t4 = optimized[index + 3]
+
+            # Compute intersection of (p1,p2) with (p3,p4)
+            den = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+            if abs(den) < 1e-6:
+                index += 1
+                continue
+
+            px = ((x1 * y2 - y1 * x2) * (x3 - x4) -
+                (x1 - x2) * (x3 * y4 - y3 * x4)) / den
+            py = ((x1 * y2 - y1 * x2) * (y3 - y4) -
+                (y1 - y2) * (x3 * y4 - y3 * x4)) / den
+
+            # Orientation toward intersection
+            new_theta = math.atan2(py - y1, px - x1)
+
+            # Safety checks
+            collision = (
+                collision_check_segment((x1, y1), (px, py), new_theta) or
+                collision_check_segment((px, py), (x4, y4), t4)
+            )
+
+            if not collision:
+                # Replace p2 with intersection, remove p3
+                optimized[index + 1] = (px, py, new_theta)
+                del optimized[index + 2]
+                removed += 1
+                continue  # re-check same index
+
+            index += 1
+
+        if removed > 0:
+            self.get_logger().info(
+                f"✨ Intersection optimization removed {removed} waypoints"
+            )
+
+        return optimized
     def handle_compute_path(self, request: ComputePath.Request, 
                            response: ComputePath.Response) -> ComputePath.Response:
         """
@@ -709,7 +845,8 @@ class HybridAStarNode(Node):
                         final_path.append((x, y, theta))
                 
                 smoothed = final_path
-                
+                self.get_logger().info("🧠 Applying intersection optimization...")
+                smoothed = self.optimize_path_with_intersections(smoothed, grid_resolution=grid_resolution)
                 # Calculate path length
                 total_dist = 0
                 for i in range(len(smoothed) - 1):

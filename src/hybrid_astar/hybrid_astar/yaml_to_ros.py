@@ -179,7 +179,7 @@ def main():
 
     node.load_yaml()
     node.publish_batches()
-    #node.request_path()
+    node.request_path()
 
     rclpy.spin(node)
     node.destroy_node()
