@@ -477,11 +477,12 @@ class HybridAStarNode(Node):
     self,
     path: list,
     grid_resolution: float,
+    max_added_distance_mm: float = 110.0,  # your threshold
     sample_step_mm: float = 50.0
 ) -> list:
         """
         Simplify a path by replacing 4-point zig-zag segments with their line
-        intersection when it is collision-free.
+        intersection when it is collision-free and does not add too much distance.
 
         Input path format:
             [(x, y, theta), ...]
@@ -499,16 +500,16 @@ class HybridAStarNode(Node):
             """
             dist = math.hypot(p2[0] - p1[0], p2[1] - p1[1])
             steps = max(5, int(dist / sample_step_mm))
-
             for i in range(steps + 1):
                 t = i / steps
                 x = p1[0] + t * (p2[0] - p1[0])
                 y = p1[1] + t * (p2[1] - p1[1])
-
                 if self.pathfinder.is_collision(x, y, theta, grid_resolution):
                     return True
-
             return False
+
+        def segment_distance(p1, p2):
+            return math.hypot(p2[0] - p1[0], p2[1] - p1[1])
 
         optimized = path.copy()
         index = 0
@@ -531,28 +532,34 @@ class HybridAStarNode(Node):
             py = ((x1 * y2 - y1 * x2) * (y3 - y4) -
                 (y1 - y2) * (x3 * y4 - y3 * x4)) / den
 
-            # Orientation toward intersection
+            intersection = (px, py)
+
+            # Orientation from previous to intersection
             new_theta = math.atan2(py - y1, px - x1)
 
-            # Safety checks
+            # Collision checks
             collision = (
-                collision_check_segment((x1, y1), (px, py), new_theta) or
-                collision_check_segment((px, py), (x4, y4), t4)
+                collision_check_segment((x1, y1), intersection, new_theta) or
+                collision_check_segment(intersection, (x4, y4), t4)
             )
 
-            if not collision:
-                # Replace p2 with intersection, remove p3
+            # Calculate distance difference if we replace p2 + p3 with intersection
+            old_dist = segment_distance((x1, y1), (x2, y2)) + segment_distance((x2, y2), (x3, y3)) + segment_distance((x3, y3), (x4, y4))
+            new_dist = segment_distance((x1, y1), intersection) + segment_distance(intersection, (x4, y4))
+            added_distance = new_dist - old_dist
+
+            if not collision and added_distance <= max_added_distance_mm:
+                # Accept simplification
                 optimized[index + 1] = (px, py, new_theta)
                 del optimized[index + 2]
                 removed += 1
                 continue  # re-check same index
-
-            index += 1
+            else:
+                # Skip this simplification due to collision or too much added distance
+                index += 1
 
         if removed > 0:
-            self.get_logger().info(
-                f"✨ Intersection optimization removed {removed} waypoints"
-            )
+            self.get_logger().info(f"✨ Intersection optimization removed {removed} waypoints")
 
         return optimized
     def handle_compute_path(self, request: ComputePath.Request, 
