@@ -1,0 +1,267 @@
+{
+  "map_info": {
+    "width": 2000.0,
+    "height": 3000.0,
+    "grid_resolution": 25.0,
+    "window_width": 1200,
+    "window_height": 800
+  },
+  "obstacles": [
+    {
+      "x": 725.0,
+      "y": 175.0,
+      "width": 50.0,
+      "height": 150.0,
+      "color": "yellow"
+    },
+    {
+      "x": 775.0,
+      "y": 175.0,
+      "width": 50.0,
+      "height": 150.0,
+      "color": "blue"
+    },
+    {
+      "x": 825.0,
+      "y": 175.0,
+      "width": 50.0,
+      "height": 150.0,
+      "color": "yellow"
+    },
+    {
+      "x": 875.0,
+      "y": 175.0,
+      "width": 50.0,
+      "height": 150.0,
+      "color": "blue"
+    },
+    {
+      "x": 1525.0,
+      "y": 175.0,
+      "width": 50.0,
+      "height": 150.0,
+      "color": "blue"
+    },
+    {
+      "x": 1625.0,
+      "y": 175.0,
+      "width": 50.0,
+      "height": 150.0,
+      "color": "blue"
+    },
+    {
+      "x": 1575.0,
+      "y": 175.0,
+      "width": 50.0,
+      "height": 150.0,
+      "color": "yellow"
+    },
+    {
+      "x": 1675.0,
+      "y": 175.0,
+      "width": 50.0,
+      "height": 150.0,
+      "color": "yellow"
+    },
+    {
+      "x": 1200.0,
+      "y": 1075.0,
+      "width": 150.0,
+      "height": 50.0,
+      "color": "yellow"
+    },
+    {
+      "x": 1200.0,
+      "y": 1125.0,
+      "width": 150.0,
+      "height": 50.0,
+      "color": "blue"
+    },
+    {
+      "x": 1200.0,
+      "y": 1225.0,
+      "width": 150.0,
+      "height": 50.0,
+      "color": "blue"
+    },
+    {
+      "x": 1200.0,
+      "y": 1175.0,
+      "width": 150.0,
+      "height": 50.0,
+      "color": "yellow"
+    },
+    {
+      "x": 1200.0,
+      "y": 1775.0,
+      "width": 150.0,
+      "height": 50.0,
+      "color": "yellow"
+    },
+    {
+      "x": 1200.0,
+      "y": 1825.0,
+      "width": 150.0,
+      "height": 50.0,
+      "color": "blue"
+    },
+    {
+      "x": 1200.0,
+      "y": 1875.0,
+      "width": 150.0,
+      "height": 50.0,
+      "color": "yellow"
+    },
+    {
+      "x": 1200.0,
+      "y": 1925.0,
+      "width": 150.0,
+      "height": 50.0,
+      "color": "blue"
+    },
+    {
+      "x": 1825.0,
+      "y": 1025.0,
+      "width": 150.0,
+      "height": 50.0,
+      "color": "yellow"
+    },
+    {
+      "x": 1825.0,
+      "y": 1075.0,
+      "width": 150.0,
+      "height": 50.0,
+      "color": "blue"
+    },
+    {
+      "x": 1825.0,
+      "y": 1125.0,
+      "width": 150.0,
+      "height": 50.0,
+      "color": "yellow"
+    },
+    {
+      "x": 1825.0,
+      "y": 1175.0,
+      "width": 150.0,
+      "height": 50.0,
+      "color": "blue"
+    },
+    {
+      "x": 1825.0,
+      "y": 1975.0,
+      "width": 150.0,
+      "height": 50.0,
+      "color": "blue"
+    },
+    {
+      "x": 1825.0,
+      "y": 1925.0,
+      "width": 150.0,
+      "height": 50.0,
+      "color": "yellow"
+    },
+    {
+      "x": 1825.0,
+      "y": 1875.0,
+      "width": 150.0,
+      "height": 50.0,
+      "color": "yellow"
+    },
+    {
+      "x": 1825.0,
+      "y": 1825.0,
+      "width": 150.0,
+      "height": 50.0,
+      "color": "blue"
+    },
+    {
+      "x": 1675.0,
+      "y": 2825.0,
+      "width": 50.0,
+      "height": 150.0,
+      "color": "yellow"
+    },
+    {
+      "x": 1625.0,
+      "y": 2825.0,
+      "width": 50.0,
+      "height": 150.0,
+      "color": "yellow"
+    },
+    {
+      "x": 1575.0,
+      "y": 2825.0,
+      "width": 50.0,
+      "height": 150.0,
+      "color": "blue"
+    },
+    {
+      "x": 1525.0,
+      "y": 2825.0,
+      "width": 50.0,
+      "height": 150.0,
+      "color": "blue"
+    },
+    {
+      "x": 875.0,
+      "y": 2825.0,
+      "width": 50.0,
+      "height": 150.0,
+      "color": "blue"
+    },
+    {
+      "x": 825.0,
+      "y": 2825.0,
+      "width": 50.0,
+      "height": 150.0,
+      "color": "blue"
+    },
+    {
+      "x": 775.0,
+      "y": 2825.0,
+      "width": 50.0,
+      "height": 150.0,
+      "color": "yellow"
+    },
+    {
+      "x": 725.0,
+      "y": 2825.0,
+      "width": 50.0,
+      "height": 150.0,
+      "color": "yellow"
+    }
+  ],
+  "start_point": {
+    "x": 1083.3333333333335,
+    "y": 710.0,
+    "theta": -90.0
+  },
+  "goal_point": {
+    "x": 1560.0,
+    "y": 2343.3333333333335,
+    "theta": 90.0
+  },
+  "path": [
+    {
+      "x": 1083.33,
+      "y": 710.0,
+      "theta": -90.0
+    },
+    {
+      "x": 1443.14,
+      "y": 946.6,
+      "theta": 60.0
+    },
+    {
+      "x": 1518.14,
+      "y": 1226.51,
+      "theta": 90.0
+    },
+    {
+      "x": 1518.14,
+      "y": 2326.51,
+      "theta": 90.0
+    }
+  ]
+}
