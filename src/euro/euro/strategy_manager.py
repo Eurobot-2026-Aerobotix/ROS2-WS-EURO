@@ -113,7 +113,7 @@ class StrategyManager(Node):
             self.queues['stm32'].append({
                 'command': 'orientate',
                 'params': {
-                    'angle': 180.0,
+                    'angle': theta_goal,
                     'is_radian': 0.0
                 },
             })
