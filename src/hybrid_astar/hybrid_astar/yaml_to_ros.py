@@ -5,6 +5,7 @@ Fully equivalent to JSON pipeline
 """
 
 import yaml
+import json
 import math
 import time
 import rclpy
@@ -17,11 +18,25 @@ from geometry_msgs.msg import Point, PoseStamped
 
 class YAMLToPathPlanner(Node):
 
-    def __init__(self, yaml_path: str):
+    def __init__(self, yaml_path: str, output_json: str = "result.json"):
         super().__init__('yaml_to_path_planner')
 
         self.yaml_path = yaml_path
+        self.output_json = output_json
         self.data = None
+        self.result_data = {
+            "map_info": {
+                "width": 2000.0,
+                "height": 3000.0,
+                "grid_resolution": 25.0,
+                "window_width": 1200,
+                "window_height": 800
+            },
+            "obstacles": [],
+            "start_point": {},
+            "goal_point": {},
+            "path": []
+        }
 
         self.pub = self.create_publisher(
             ArucoMapperState,
@@ -56,6 +71,60 @@ class YAMLToPathPlanner(Node):
 
         self.get_logger().info(
             f"✅ Loaded YAML ({len(self.data['batches'])} batches)"
+        )
+
+        # Store start and goal points
+        s = self.data['start_point']
+        self.result_data['start_point'] = {
+            'x': float(s['x']),
+            'y': float(s['y']),
+            'theta': float(s['theta'])
+        }
+
+        g = self.data['goal_point']
+        self.result_data['goal_point'] = {
+            'x': float(g['x']),
+            'y': float(g['y']),
+            'theta': float(g['theta'])
+        }
+
+        # Convert batches to obstacles
+        self._convert_batches_to_obstacles()
+
+    # ---------------------------------------------------------
+    def _convert_batches_to_obstacles(self):
+        """Convert YAML batches to obstacle format"""
+        for batch in self.data['batches']:
+            direction = batch['direction']
+            
+            for member in batch['members']:
+                pos = member['map_pos']
+                
+                # Determine obstacle dimensions based on direction
+                if direction == 'vertical':
+                    # Vertical orientation: narrow width, tall height
+                    width = 50.0
+                    height = 150.0
+                elif direction == 'horizontal':
+                    # Horizontal orientation: wide width, narrow height
+                    width = 150.0
+                    height = 50.0
+                else:
+                    # Default dimensions
+                    width = 50.0
+                    height = 150.0
+                
+                obstacle = {
+                    'x': float(pos['x']),
+                    'y': float(pos['y']),
+                    'width': width,
+                    'height': height,
+                    'color': member['color']
+                }
+                self.result_data['obstacles'].append(obstacle)
+        
+        self.get_logger().info(
+            f"✅ Converted {len(self.result_data['obstacles'])} obstacles"
         )
 
     # ---------------------------------------------------------
@@ -159,6 +228,48 @@ class YAMLToPathPlanner(Node):
         for cmd in res.stm32_commands:
             self.get_logger().info(f"   CMD → {cmd}")
 
+        # Extract path from response
+        self._extract_path_from_response(res)
+
+    # ---------------------------------------------------------
+    def _extract_path_from_response(self, response):
+        """Extract path waypoints from the ComputePath response"""
+        if hasattr(response, 'path') and response.path:
+            # If response has a path attribute with poses
+            for pose_stamped in response.path.poses:
+                pose = pose_stamped.pose
+                
+                # Convert quaternion to theta
+                z = pose.orientation.z
+                w = pose.orientation.w
+                theta_rad = 2.0 * math.atan2(z, w)
+                theta_deg = math.degrees(theta_rad)
+                
+                waypoint = {
+                    'x': pose.position.x * 1000.0,  # Convert m to mm
+                    'y': pose.position.y * 1000.0,
+                    'theta': theta_deg
+                }
+                self.result_data['path'].append(waypoint)
+        
+        self.get_logger().info(
+            f"✅ Extracted {len(self.result_data['path'])} waypoints from path"
+        )
+        
+        # Save result to JSON
+        self._save_result_json()
+
+    # ---------------------------------------------------------
+    def _save_result_json(self):
+        """Save result data to JSON file"""
+        try:
+            with open(self.output_json, 'w') as f:
+                json.dump(self.result_data, f, indent=2)
+            
+            self.get_logger().info(f"✅ Saved result to {self.output_json}")
+        except Exception as e:
+            self.get_logger().error(f"❌ Failed to save JSON: {e}")
+
 
 # =============================================================
 def main():
@@ -166,7 +277,8 @@ def main():
 
     if len(sys.argv) < 2:
         print("Usage:")
-        print("  ros2 run hybrid_astar yaml_to_path_planner.py map.yaml")
+        print("  ros2 run hybrid_astar yaml_to_path_planner.py map.yaml [output.json]")
+        print("  Default output: result.json")
         sys.exit(1)
 
     yaml_file = os.path.abspath(sys.argv[1])
@@ -174,8 +286,11 @@ def main():
         print(f"❌ File not found: {yaml_file}")
         sys.exit(1)
 
+    # Optional output JSON file
+    output_json = sys.argv[2] if len(sys.argv) > 2 else "result.json"
+
     rclpy.init()
-    node = YAMLToPathPlanner(yaml_file)
+    node = YAMLToPathPlanner(yaml_file, output_json)
 
     node.load_yaml()
     node.publish_batches()

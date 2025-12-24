@@ -49,7 +49,7 @@ class HybridAStarPathfinder:
         self.forward_cost = 1.0
         self.backward_cost = 5.0  # Heavily discourage backward motion
         self.turn_cost = 1.5
-        self.direction_change_cost = 2.0
+        self.direction_change_cost = 1.0
     
     def set_obstacles(self, obstacles: List[dict], grid_resolution: float):
         """
@@ -299,7 +299,7 @@ class HybridAStarPathfinder:
         closed_set = set()
         
         # Goal tolerance (relaxed for speed)
-        goal_tolerance = 75.0  # mm
+        goal_tolerance = 20.0  # mm
         angle_tolerance = math.radians(20)  # degrees
         
         iterations = 0
