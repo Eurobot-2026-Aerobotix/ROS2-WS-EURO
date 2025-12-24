@@ -12,9 +12,7 @@ from geometry_msgs.msg import PoseStamped, Pose2D, Quaternion,Vector3
 from euro.yaml_loader import load_tasks_from_yaml
 import math
 from euro.pathfinder_controller import PathfinderClient
-# Global state variables
-IDLE = True
-EMERGENCY_STOP = False
+from euro.strategy_executor import robot_status, stm32_task, esp1_task, esp2_task, esp3_task, IDLE, EMERGENCY_STOP
 
 class StrategyManager(Node):
     """
@@ -109,88 +107,6 @@ class StrategyManager(Node):
             })
         self.get_logger().info(f"STM32 Queue: {self.queues['stm32']}")
 
-    def robot_status(self, stm32, lidar):
-        """Runs every 100ms to check STM32 movement status and lidar obstacles"""
-        global IDLE
-        global EMERGENCY_STOP
-        
-        while rclpy.ok():
-            # Check emergency stop from lidar
-            #EMERGENCY_STOP = lidar.getstatus()
-            
-            # Check if robot is idle
-            if not IDLE:
-                success, is_completed, _ = stm32.IDLE()
-                print(f"✅ STM32 IDLE check success: {success}, is_completed: {is_completed}")
-                if not success:
-                    self.get_logger().warning("⚠️ Failed to check robot status")
-                else:
-                    IDLE = is_completed
-            
-            # Handle emergency stop
-            if EMERGENCY_STOP:
-                self.get_logger().warning("🚨 Emergency stop activated!")
-                success, response = stm32.stop()
-            
-            time.sleep(0.1)  # 100ms
-    
-    def stm32_task(self, stm32):
-        """Runs every 100ms to process STM32 queue"""
-        global IDLE
-        
-        while rclpy.ok():
-            
-            # Check if there are commands in the queue and robot is idle
-            if len(self.queues['stm32']) > 0 and IDLE:
-                cmd = self.queues['stm32'][0]  # Peek at first command
-                
-                command = cmd.get('command')
-                params = cmd.get('params', {})
-                wait = cmd.get('wait', False)
-                
-                self.get_logger().info(f"📤 STM32: Executing {command} with {params}")
-                
-                # TODO: Add execution logic here
-                # Example:
-                if command == 'move_forward':
-                    stm32.move_forward(params['distance'], params['speed'])
-                    IDLE=False
-                if command == 'rotate':
-                    stm32.rotate(params['angle'],params['is_radian'])
-                    IDLE=False
-                if command == 'go_to':
-                    stm32.go_to(params['x'], params['y'], params['speed'])
-                    IDLE=False
-                if command =='orientate':
-                    stm32.orientate(params['angle'],params['is_radian'])
-                    IDLE=False
-                # Remove command from queue after execution
-                self.queues['stm32'].popleft()
-            
-            time.sleep(0.1)  # 100ms
-    
-    def esp1_task(self, esp1_controller=None):
-        """Runs every 100ms to process ESP32_1 queue"""
-        while rclpy.ok():
-            # Check if there are commands in the queue
-            if len(self.queues['esp32_1']) > 0:
-                cmd = self.queues['esp32_1'][0]  # Peek at first command
-                
-                command = cmd.get('command')
-                params = cmd.get('params', {})
-                wait = cmd.get('wait', False)
-                
-                self.get_logger().info(f"📤 ESP32_1: Executing {command} with {params}")
-                
-                # TODO: Add execution logic here
-                # Example:
-                # if command == 'activate_gripper':
-                #     esp1_controller.activate_gripper(params['state'])
-                
-                # Remove command from queue after execution
-                self.queues['esp32_1'].popleft()
-            
-            time.sleep(0.1)  # 100ms
     def quaternion_to_yaw(self, quat: Quaternion) -> float:
         """Convert quaternion to yaw angle"""
         siny_cosp = 2 * (quat.w * quat.z + quat.x * quat.y)
@@ -205,52 +121,6 @@ class StrategyManager(Node):
         quat.z = math.sin(yaw / 2.0)
         quat.w = math.cos(yaw / 2.0)
         return quat
-    
-    def esp2_task(self, esp2_controller=None):
-        """Runs every 100ms to process ESP32_2 queue"""
-        while rclpy.ok():
-            # Check if there are commands in the queue
-            if len(self.queues['esp32_2']) > 0:
-                cmd = self.queues['esp32_2'][0]  # Peek at first command
-                
-                command = cmd.get('command')
-                params = cmd.get('params', {})
-                wait = cmd.get('wait', False)
-                
-                self.get_logger().info(f"📤 ESP32_2: Executing {command} with {params}")
-                
-                # TODO: Add execution logic here
-                # Example:
-                # if command == 'deploy_mechanism':
-                #     esp2_controller.deploy_mechanism(params['height'])
-                
-                # Remove command from queue after execution
-                self.queues['esp32_2'].popleft()
-            
-            time.sleep(0.1)  # 100ms
-    
-    def esp3_task(self, esp3_controller=None):
-        """Runs every 100ms to process ESP32_3 queue"""
-        while rclpy.ok():
-            # Check if there are commands in the queue
-            if len(self.queues['esp32_3']) > 0:
-                cmd = self.queues['esp32_3'][0]  # Peek at first command
-                
-                command = cmd.get('command')
-                params = cmd.get('params', {})
-                wait = cmd.get('wait', False)
-                
-                self.get_logger().info(f"📤 ESP32_3: Executing {command} with {params}")
-                
-                # TODO: Add execution logic here
-                # Example:
-                # if command == 'led_pattern':
-                #     esp3_controller.led_pattern(params['pattern'], params['color'])
-                
-                # Remove command from queue after execution
-                self.queues['esp32_3'].popleft()
-            
-            time.sleep(0.1)  # 100ms
     
     def load_task_to_queues(self, task_name: str):
         """Load a task's commands into device queues"""
@@ -351,36 +221,36 @@ def main(args=None):
     strategy.get_logger().info("Starting background threads...")
     
     status_thread = threading.Thread(
-        target=strategy.robot_status,
-        args=(stm32, lidar),
+        target=robot_status,
+        args=(strategy, stm32, lidar),
         daemon=True
     )
     status_thread.start()
     
     stm32_thread = threading.Thread(
-        target=strategy.stm32_task,
-        args=(stm32,),
+        target=stm32_task,
+        args=(strategy, stm32),
         daemon=True
     )
     stm32_thread.start()
     
     esp1_thread = threading.Thread(
-        target=strategy.esp1_task,
-        args=(None,),  # TODO: Pass ESP32_1 controller when available
+        target=esp1_task,
+        args=(strategy, None),  # TODO: Pass ESP32_1 controller when available
         daemon=True
     )
     esp1_thread.start()
     
     esp2_thread = threading.Thread(
-        target=strategy.esp2_task,
-        args=(None,),  # TODO: Pass ESP32_2 controller when available
+        target=esp2_task,
+        args=(strategy, None),  # TODO: Pass ESP32_2 controller when available
         daemon=True
     )
     esp2_thread.start()
     
     esp3_thread = threading.Thread(
-        target=strategy.esp3_task,
-        args=(None,),  # TODO: Pass ESP32_3 controller when available
+        target=esp3_task,
+        args=(strategy, None),  # TODO: Pass ESP32_3 controller when available
         daemon=True
     )
     esp3_thread.start()
