@@ -32,6 +32,15 @@ class StrategyManager(Node):
             'esp32_2': deque(),
             'esp32_3': deque()
         }
+        
+        # Flag to pause task loading during pathfinding
+        self.is_replanning = False
+        
+        # Global goal position storage
+        self.global_pos_x = None
+        self.global_pos_y = None
+        self.global_pos_angle = None
+        
         self.create_subscription(
             Vector3,
             '/robot_pose_raw',
@@ -39,7 +48,6 @@ class StrategyManager(Node):
             10
         )
         self.pathfinder = PathfinderClient()
-        self.create_timer(1.0, self.try_path)
         self.goal = (0.2, 2.7, 1.57079632679)
         self.path_called = False
         self.get_logger().info("Subscribed to /robot_pose_raw")
@@ -47,11 +55,6 @@ class StrategyManager(Node):
     def robot_pose_callback(self, msg):
         self.latest_robot_pose = msg
         # self.get_logger().info(f"Robot pose updated: {msg}")
-    def try_path(self):
-        if not self.path_called and self.latest_robot_pose is not None:
-            x_goal, y_goal, theta_goal = self.goal
-            self.path(x_goal, y_goal, theta_goal)
-            self.path_called = True
     def path(self, x_goal, y_goal, theta_goal):
         print("Path function called")
         """Create start and goal PoseStamped from current pose and goal"""
@@ -59,6 +62,15 @@ class StrategyManager(Node):
         if self.latest_robot_pose is None:
             self.get_logger().error("No robot pose received yet!")
             return
+        
+        # Set flag to prevent task loading during replanning
+        self.is_replanning = True
+        self.get_logger().info("🔄 Replanning path - pausing task execution...")
+        
+        # Clear the STM32 queue
+        self.queues['stm32'].clear()
+        self.get_logger().info("🗑️  Cleared STM32 queue")
+        
         start_pose = PoseStamped()
         start_pose.header.stamp = self.get_clock().now().to_msg()
         start_pose.header.frame_id = "map"
@@ -105,7 +117,12 @@ class StrategyManager(Node):
                     'is_radian': 0.0
                 },
             })
-        self.get_logger().info(f"STM32 Queue: {self.queues['stm32']}")
+        
+        self.get_logger().info(f"✅ New path loaded with {len(self.queues['stm32'])} commands")
+        
+        # Resume task execution
+        self.is_replanning = False
+        self.get_logger().info("▶️  Resuming task execution...")
 
     def quaternion_to_yaw(self, quat: Quaternion) -> float:
         """Convert quaternion to yaw angle"""
@@ -125,7 +142,6 @@ class StrategyManager(Node):
     def load_task_to_queues(self, task_name: str):
         """Load a task's commands into device queues"""
         # Find the task
-        global IDLE
         task = None
         for t in self.tasks:
             if t['name'] == task_name:
@@ -156,19 +172,6 @@ class StrategyManager(Node):
             else:
                 self.get_logger().warn(f"      ⚠ Unknown device: {device}")
             
-            if wait:
-                self.get_logger().info(f"      ⏳ Waiting for {device} to complete...")
-                # TODO: Replace with actual IDLE check
-                try:
-                    while not IDLE:
-                        self.get_logger().info("      Waiting for IDLE...")
-                        time.sleep(0.5)
-                except KeyboardInterrupt:
-                    self.get_logger().warn("      Interrupted by user!")
-                    raise
-                self.get_logger().info(f"      ✓ {device} completed!")
-                
-            
         self.get_logger().info(f"\n{'='*60}")
         self.get_logger().info(f"QUEUE STATUS:")
         for device_name, queue in self.queues.items():
@@ -176,6 +179,34 @@ class StrategyManager(Node):
         self.get_logger().info(f"{'='*60}\n")
         
         return True
+    
+    def are_all_queues_empty(self) -> bool:
+        """Check if all device queues are empty"""
+        for queue in self.queues.values():
+            if len(queue) > 0:
+                return False
+        return True
+    
+    def wait_for_all_queues_empty(self):
+        """Wait until all device queues are empty (unless replanning)"""
+        from euro.strategy_executor import IDLE
+        
+        self.get_logger().info("⏳ Waiting for all commands to complete...")
+        
+        while not self.are_all_queues_empty() or not IDLE:
+            # If replanning is happening, wait for it to finish
+            if self.is_replanning:
+                self.get_logger().info("   ⏸️  Paused - replanning in progress...")
+                time.sleep(0.5)
+                continue
+            
+            if not self.are_all_queues_empty():
+                time.sleep(0.5)
+            elif not IDLE:
+                self.get_logger().info("   Waiting for robot to become idle...")
+                time.sleep(0.5)
+        
+        self.get_logger().info("✅ All commands completed!")
     
     def display_queue_contents(self):
         """Display the full contents of all queues with parameters"""
@@ -271,11 +302,47 @@ def main(args=None):
         strategy.tasks = load_tasks_from_yaml(tasks_file)
         strategy.get_logger().info(f"✓ Loaded {len(strategy.tasks)} tasks\n")
         
-        # Load first task into queues
-        if strategy.tasks:
-            x_goal = 1760.0
-            #strategy.load_task_to_queues(strategy.tasks[0]['name'])
-            #strategy.display_queue_contents()
+        # Execute tasks sequentially
+        # Start a thread to execute tasks one by one
+        def execute_tasks_sequentially():
+            for task in strategy.tasks:
+                # Extract and store global goal
+                global_goal = task['global_goal']
+                if global_goal:
+                    strategy.global_pos_x = global_goal.get('x')
+                    strategy.global_pos_y = global_goal.get('y')
+                    strategy.global_pos_angle = global_goal.get('angle')
+                    strategy.get_logger().info(
+                        f"Global goal set: x={strategy.global_pos_x}, "
+                        f"y={strategy.global_pos_y}, angle={strategy.global_pos_angle}°"
+                    )
+                else:
+                    strategy.get_logger().warning(f"⚠️  No global goal found for task: {task['name']}")
+
+                strategy.get_logger().info(f"\n{'='*60}")
+                strategy.get_logger().info(f"▶️  STARTING TASK: {task['name']}")
+                strategy.get_logger().info(f"{'='*60}\n")
+                
+                # Load task into queues
+                strategy.load_task_to_queues(task['name'])
+                
+                # Wait for all commands to complete
+                strategy.wait_for_all_queues_empty()
+                
+                strategy.get_logger().info(f"\n{'='*60}")
+                strategy.get_logger().info(f"✅ COMPLETED TASK: {task['name']}")
+                strategy.get_logger().info(f"{'='*60}\n")
+            
+            strategy.get_logger().info(f"\n{'='*80}")
+            strategy.get_logger().info(f"🎉 ALL TASKS COMPLETED SUCCESSFULLY!")
+            strategy.get_logger().info(f"{'='*80}\n")
+        
+        # Start task execution in a background thread
+        task_executor_thread = threading.Thread(
+            target=execute_tasks_sequentially,
+            daemon=True
+        )
+        task_executor_thread.start()
         
     except Exception as e:
         strategy.get_logger().error(f"Failed: {str(e)}")

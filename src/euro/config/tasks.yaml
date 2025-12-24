@@ -1,25 +1,53 @@
 tasks:
   task1:
     description: "Move to plant zone and collect plants"
-    dependencies: []
+    global_goal:
+      x: 1.5
+      y: 1.0
+      angle: 90.0
     sequence:
       - device: stm32
         command: move_forward
         params:
           distance: 200.0
           speed: 500.0
-        wait: true
+        wait: False
       - device: stm32
         command: move_forward
         params:
           distance: 200.0
           speed: 500.0
-        wait: true
+        wait: False
       - device: stm32
         command: rotate
         params:
           angle: 90.0
           is_radian: 0.0
-        wait: true
+        wait: False
+  task2:
+    description: "return home from plant zone"
+    global_goal:
+      x: 0.2
+      y: 0.2
+      angle: 0.0
+    sequence:
+      - device: stm32
+        command: rotate
+        params:
+          angle: 180.0
+          is_radian: 0.0
+        wait: False
+      - device: stm32
+        command: move_forward
+        params:
+          distance: 10000.0
+          speed: 500.0
+        wait: False
+      - device: stm32
+        command: rotate
+        params:
+          angle: 90.0
+          is_radian: 0.0
+        wait: False
 
       

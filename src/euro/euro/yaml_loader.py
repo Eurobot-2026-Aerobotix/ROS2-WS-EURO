@@ -29,7 +29,7 @@ def load_tasks_from_yaml(yaml_file: str) -> List[Dict[str, Any]]:
         task = {
             'name': task_name,
             'description': task_data.get('description', ''),
-            'dependencies': task_data.get('dependencies', []),
+            'global_goal': task_data.get('global_goal', {}),
             'sequence': task_data.get('sequence', [])
         }
         tasks.append(task)
