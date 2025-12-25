@@ -2,8 +2,8 @@ hybrid_astar_node:
   ros__parameters:
     # Robot configuration (from complete_map.json "robot" section)
     robot:
-      width_mm: 350.0
-      length_mm: 300.0
+      width_mm: 300.0
+      length_mm: 350.0
       safety_margin_mm: 5.0
       radius_mm: 200.0           # For reference/visualization
     

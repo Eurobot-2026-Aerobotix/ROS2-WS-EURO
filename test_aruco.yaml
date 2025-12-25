@@ -1,6 +1,6 @@
 start_point:
   x: 200
-  y: 470
+  y: 420
   theta: -90.0
 
 goal_point:
