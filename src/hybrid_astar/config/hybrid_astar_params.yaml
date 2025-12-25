@@ -4,7 +4,7 @@ hybrid_astar_node:
     robot:
       width_mm: 350.0
       length_mm: 300.0
-      safety_margin_mm: 10.0
+      safety_margin_mm: 5.0
       radius_mm: 200.0           # For reference/visualization
     
     # Grid configuration (from complete_map.json "grid" section)

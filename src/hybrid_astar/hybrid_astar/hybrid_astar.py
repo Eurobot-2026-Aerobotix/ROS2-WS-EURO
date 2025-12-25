@@ -19,7 +19,8 @@ class HybridAStarPathfinder:
     """
     
     def __init__(self, grid_width: int, grid_height: int, 
-                 robot_width: float = 350.0, robot_length: float = 300.0):
+                 robot_width: float = 350.0, robot_length: float = 300.0,
+                 grid_resolution: float = 25.0):
         """
         Initialize Hybrid A* pathfinder.
         
@@ -28,14 +29,19 @@ class HybridAStarPathfinder:
             grid_height: Grid height in cells
             robot_width: Robot width in mm (perpendicular to forward direction)
             robot_length: Robot length in mm (along forward direction)
+            grid_resolution: Grid cell size in mm (needed for footprint precomputation)
         """
         self.grid_width = grid_width
         self.grid_height = grid_height
         self.robot_width = robot_width
         self.robot_length = robot_length
+        self.grid_resolution = grid_resolution
         
         # Binary occupancy grid
         self.grid = np.zeros((grid_height, grid_width), dtype=bool)
+        
+        # Permanent static obstacle areas (always blocked, never cleared)
+        self.permanent_obstacles = []
         
         # Orientation discretization (36 = 10° resolution for speed)
         self.num_orientations = 36
@@ -49,18 +55,147 @@ class HybridAStarPathfinder:
         self.forward_cost = 1.0
         self.backward_cost = 5.0  # Heavily discourage backward motion
         self.turn_cost = 1.5
-        self.direction_change_cost = 1.0
+        self.direction_change_cost = 2.0
+        
+        # Precomputed footprint masks for each orientation
+        self.footprints = {}
+        self._precompute_footprints()
     
-    def set_obstacles(self, obstacles: List[dict], grid_resolution: float):
+    def _precompute_footprints(self):
+        """
+        Precompute footprint masks for all discretized orientations.
+        Each footprint is a list of (dx, dy) offsets in grid cells from robot center.
+        This dramatically speeds up collision checking.
+        """
+        print(f"🔧 Precomputing footprints for {self.num_orientations} orientations...")
+        
+        for theta_idx in range(self.num_orientations):
+            theta = -math.pi + theta_idx * self.orientation_step
+            
+            # Get robot corners in world coordinates (relative to center at origin)
+            corners = self.get_robot_corners(0, 0, theta)
+            
+            # Get bounding box
+            x_coords = [c[0] for c in corners]
+            y_coords = [c[1] for c in corners]
+            min_x, max_x = min(x_coords), max(x_coords)
+            min_y, max_y = min(y_coords), max(y_coords)
+            
+            # Convert to grid cells (add padding)
+            grid_min_x = int(math.floor(min_x / self.grid_resolution)) - 1
+            grid_max_x = int(math.ceil(max_x / self.grid_resolution)) + 1
+            grid_min_y = int(math.floor(min_y / self.grid_resolution)) - 1
+            grid_max_y = int(math.ceil(max_y / self.grid_resolution)) + 1
+            
+            # Check all cells in bounding box
+            footprint = []
+            for dx_cell in range(grid_min_x, grid_max_x + 1):
+                for dy_cell in range(grid_min_y, grid_max_y + 1):
+                    # Cell center in world coordinates (relative to robot center)
+                    cell_x = (dx_cell + 0.5) * self.grid_resolution
+                    cell_y = (dy_cell + 0.5) * self.grid_resolution
+                    
+                    # Check if cell is inside robot footprint
+                    if self.point_in_rectangle(cell_x, cell_y, 0, 0, theta):
+                        footprint.append((dx_cell, dy_cell))
+            
+            # Store as Python list (MUCH faster iteration than NumPy array in Python loop!)
+            self.footprints[theta_idx] = footprint
+        
+        avg_cells = sum(len(fp) for fp in self.footprints.values()) / len(self.footprints)
+        print(f"✅ Footprints precomputed (avg {avg_cells:.1f} cells per orientation)")
+    
+    def add_permanent_obstacle_area(self, x_min: float, y_min: float, 
+                                     x_max: float, y_max: float):
+        """
+        Add a permanent rectangular obstacle area that is ALWAYS blocked.
+        This area is never cleared and persists across all pathfinding requests.
+        
+        Args:
+            x_min, y_min: Bottom-left corner (mm)
+            x_max, y_max: Top-right corner (mm)
+        
+        Example:
+            # Block area from (0,600) to (450,2400)
+            pathfinder.add_permanent_obstacle_area(0, 600, 450, 2400)
+        """
+        grid_resolution = self.grid_resolution
+        
+        # Convert world coordinates to grid cells
+        grid_x_start = int(x_min / grid_resolution)
+        grid_y_start = int(y_min / grid_resolution)
+        grid_x_end = int(x_max / grid_resolution) + 1
+        grid_y_end = int(y_max / grid_resolution) + 1
+        
+        # Clamp to grid boundaries
+        grid_x_start = max(0, min(grid_x_start, self.grid_width - 1))
+        grid_x_end = max(0, min(grid_x_end, self.grid_width))
+        grid_y_start = max(0, min(grid_y_start, self.grid_height - 1))
+        grid_y_end = max(0, min(grid_y_end, self.grid_height))
+        
+        # Store the area definition
+        area = {
+            'x_min': x_min,
+            'y_min': y_min,
+            'x_max': x_max,
+            'y_max': y_max,
+            'grid_x_start': grid_x_start,
+            'grid_y_start': grid_y_start,
+            'grid_x_end': grid_x_end,
+            'grid_y_end': grid_y_end
+        }
+        self.permanent_obstacles.append(area)
+        
+        # Immediately mark in grid
+        self.grid[grid_y_start:grid_y_end, grid_x_start:grid_x_end] = True
+        
+        width = x_max - x_min
+        height = y_max - y_min
+        print(f"🚫 Added permanent obstacle area: ({x_min:.0f},{y_min:.0f}) to ({x_max:.0f},{y_max:.0f})")
+        print(f"   Size: {width:.0f}mm × {height:.0f}mm")
+        print(f"   Grid cells: [{grid_x_start}:{grid_x_end}, {grid_y_start}:{grid_y_end}]")
+    
+    def set_obstacles(self, obstacles: List[dict], grid_resolution: float, static_walls: List[dict] = None):
         """
         Mark obstacle cells in grid (NO inflation - we check exact robot footprint).
+        Also adds static walls that are always present on the map.
         
         Args:
             obstacles: List of obstacle dicts with x, y, width, height
             grid_resolution: Grid cell size in mm
+            static_walls: Optional list of static wall obstacles (if None, uses permanent areas)
         """
+        # Clear grid
         self.grid.fill(False)
         
+        # Re-apply permanent obstacle areas FIRST (always present)
+        for area in self.permanent_obstacles:
+            self.grid[area['grid_y_start']:area['grid_y_end'], 
+                      area['grid_x_start']:area['grid_x_end']] = True
+        
+        # Add static walls if provided
+        # Note: In ROS2 node mode, static walls are loaded from JSON file
+        # For standalone use, can pass static_walls parameter or they default to empty
+        if static_walls is None:
+            static_walls = []
+        
+        # Mark static walls first
+        for wall in static_walls:
+            x_world = wall['x']
+            y_world = wall['y']
+            width = wall['width']
+            height = wall['height']
+            
+            grid_x_start = int(x_world / grid_resolution)
+            grid_y_start = int(y_world / grid_resolution)
+            grid_x_end = int((x_world + width) / grid_resolution) + 1
+            grid_y_end = int((y_world + height) / grid_resolution) + 1
+            
+            grid_x_start = max(0, min(grid_x_start, self.grid_width - 1))
+            grid_x_end = max(0, min(grid_x_end, self.grid_width))
+            self.grid[grid_y_start:grid_y_end, grid_x_start:grid_x_end] = True
+        
+        # Mark dynamic obstacles
         for obstacle in obstacles:
             x_world = obstacle['x']
             y_world = obstacle['y']
@@ -82,7 +217,9 @@ class HybridAStarPathfinder:
             # Mark as occupied
             self.grid[grid_y_start:grid_y_end, grid_x_start:grid_x_end] = True
         
-        print(f"✓ Set {len(obstacles)} obstacles (no inflation - using exact robot footprint)")
+        num_static = len(static_walls) if static_walls else 0
+        num_permanent = len(self.permanent_obstacles)
+        print(f"✓ Set {len(obstacles)} dynamic obstacles + {num_static} static walls + {num_permanent} permanent areas")
     
     def get_robot_corners(self, x: float, y: float, theta: float) -> List[Tuple[float, float]]:
         """
@@ -120,8 +257,8 @@ class HybridAStarPathfinder:
     
     def is_collision(self, x: float, y: float, theta: float, grid_resolution: float) -> bool:
         """
-        Check if robot at (x, y, theta) collides with obstacles or boundaries.
-        Uses oriented bounding box collision detection.
+        Optimized collision check using precomputed footprint masks.
+        Early-exit on first collision for maximum speed.
         
         Args:
             x, y: Robot center position (mm)
@@ -131,38 +268,31 @@ class HybridAStarPathfinder:
         Returns:
             True if collision, False otherwise
         """
-        # Get robot corners
-        corners = self.get_robot_corners(x, y, theta)
+        # Discretize orientation to get footprint mask
+        theta_idx = int((theta + math.pi) / self.orientation_step) % self.num_orientations
         
-        # Check boundary collision
-        for cx, cy in corners:
-            if cx < 0 or cx >= self.grid_width * grid_resolution:
+        # Get footprint offsets (numpy array)
+        footprint = self.footprints[theta_idx]
+        
+        if len(footprint) == 0:
+            return False
+        
+        # Get robot center in grid coordinates (use integer division for speed)
+        center_gx = int(x / grid_resolution)
+        center_gy = int(y / grid_resolution)
+        
+        # Check all cells in precomputed footprint with early exit
+        for dx_cell, dy_cell in footprint:
+            gx = center_gx + dx_cell
+            gy = center_gy + dy_cell
+            
+            # Check boundaries (early exit)
+            if gx < 0 or gx >= self.grid_width or gy < 0 or gy >= self.grid_height:
                 return True
-            if cy < 0 or cy >= self.grid_height * grid_resolution:
+            
+            # Check occupancy (early exit)
+            if self.grid[gy, gx]:
                 return True
-        
-        # Get bounding box of robot footprint
-        x_coords = [c[0] for c in corners]
-        y_coords = [c[1] for c in corners]
-        min_x, max_x = min(x_coords), max(x_coords)
-        min_y, max_y = min(y_coords), max(y_coords)
-        
-        # Convert to grid cells
-        grid_min_x = int(min_x / grid_resolution)
-        grid_min_y = int(min_y / grid_resolution)
-        grid_max_x = int(max_x / grid_resolution)
-        grid_max_y = int(max_y / grid_resolution)
-        
-        # Check all cells in bounding box
-        for gx in range(grid_min_x, grid_max_x + 1):
-            for gy in range(grid_min_y, grid_max_y + 1):
-                if 0 <= gx < self.grid_width and 0 <= gy < self.grid_height:
-                    if self.grid[gy, gx]:
-                        # Cell is occupied, check if it's inside robot footprint
-                        cell_x = (gx + 0.5) * grid_resolution
-                        cell_y = (gy + 0.5) * grid_resolution
-                        if self.point_in_rectangle(cell_x, cell_y, x, y, theta):
-                            return True
         
         return False
     

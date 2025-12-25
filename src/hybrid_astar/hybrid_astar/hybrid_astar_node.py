@@ -65,9 +65,9 @@ class HybridAStarNode(Node):
         self.batches: Dict[int, Batch] = {}
         self.batches_lock = Lock()
         
-        # Static obstacles (walls - always present, cannot be removed)
+        # Static obstacles - now using permanent area instead of JSON file
         self.static_obstacles: Dict[str, Obstacle] = {}
-        self.load_static_obstacles()
+        # self.load_static_obstacles()  # DISABLED - using permanent area instead
         
         # Create subscribers
         self.create_subscription(
@@ -110,6 +110,15 @@ class HybridAStarNode(Node):
             grid_height,
             effective_width,
             effective_length
+        )
+        
+        # Add permanent obstacle area (0, 600) to (450, 2400)
+        self.get_logger().info('🚫 Adding permanent obstacle area...')
+        self.pathfinder.add_permanent_obstacle_area(
+            x_min=0.0,
+            y_min=600.0,
+            x_max=450.0,
+            y_max=2400.0
         )
         
         self.get_logger().info('='*60)
@@ -242,20 +251,11 @@ class HybridAStarNode(Node):
         return quat
     
     def get_active_obstacles(self) -> List[dict]:
-        """Get obstacles filtered by color (static walls are ALWAYS included)"""
+        """Get obstacles filtered by color (permanent areas are ALWAYS included in pathfinder)"""
         active_obstacles = []
         
-        # ALWAYS include static walls (cannot be filtered)
-        for obs in self.static_obstacles.values():
-            active_obstacles.append({
-                'x': obs.pose.x,
-                'y': obs.pose.y,
-                'width': obs.width_mm,
-                'height': obs.height_mm,
-                'theta': obs.pose.theta,
-                'id': obs.id,
-                'color': 'wall'  # Special identifier
-            })
+        # NOTE: Permanent obstacle areas are automatically re-applied in pathfinder.set_obstacles()
+        # No need to add them here as they're handled internally by the pathfinder
         
         # Add dynamic obstacles (filtered by color)
         with self.obstacles_lock:
@@ -585,22 +585,17 @@ class HybridAStarNode(Node):
         self.get_logger().info(f"   Goal:  ({goal_x:.0f}, {goal_y:.0f}) θ={math.degrees(goal_theta):.1f}° (rad={goal_theta:.3f})")
         
         # Filter obstacles by color
-
         active_obstacles = self.get_active_obstacles()
         
-        # Count static vs dynamic
-        num_static = len(self.static_obstacles)
-        num_dynamic = len(active_obstacles) - num_static
-        
-
-        self.get_logger().info(f"   Static walls: {num_static}")
-        self.get_logger().info(f"   Dynamic obstacles: {num_dynamic}")
-        self.get_logger().info(f"   Total using: {len(active_obstacles)} obstacles")
+        self.get_logger().info(f"   Dynamic obstacles: {len(active_obstacles)}")
+        self.get_logger().info(f"   Permanent area: (0,600)→(450,2400) always blocked")
         
         try:
             # Set obstacles in pathfinder
             grid_resolution = self.params['grid']['resolution_mm']
-            self.pathfinder.set_obstacles(active_obstacles, grid_resolution)
+            
+            # All obstacles are dynamic (permanent area is handled automatically)
+            self.pathfinder.set_obstacles(active_obstacles, grid_resolution, static_walls=None)
             
             # Run Hybrid A* algorithm (same as local script)
             self.get_logger().info("🔍 Searching for path...")
