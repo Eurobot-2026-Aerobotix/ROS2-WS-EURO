@@ -24,6 +24,8 @@ def robot_status(strategy, stm32, lidar):
         # Check if robot is idle
         if not IDLE:
             success, is_completed, _ = stm32.IDLE()
+            if not EMERGENCY_STOP:
+                first_emergency=True
             print(f"✅ STM32 IDLE check success: {success}, is_completed: {is_completed}")
             if not success:
                 strategy.get_logger().warning("⚠️ Failed to check robot status")
@@ -31,9 +33,10 @@ def robot_status(strategy, stm32, lidar):
                 IDLE = is_completed
         
         # Handle emergency stop
-        if EMERGENCY_STOP:
+        if EMERGENCY_STOP and first_emergency:
             strategy.get_logger().warning("🚨 Emergency stop activated!")
             success, response = stm32.stop()
+            first_emergency=False
         
         time.sleep(0.1)  # 100ms
 
