@@ -58,16 +58,16 @@ def stm32_task(strategy, stm32):
             
             # Execute command based on type
             if command == 'move_forward':
-                stm32.move_forward(params['distance'], params['speed'])
+                stm32.move_forward(params['distance'], params['speed'],params['is_smooth'])
                 IDLE = False
             elif command == 'rotate':
-                stm32.rotate(params['angle'], params['is_radian'])
+                stm32.rotate(params['angle'], params['is_radian'],params['is_smooth'])
                 IDLE = False
             elif command == 'go_to':
-                stm32.go_to(params['x'], params['y'], params['speed'])
+                stm32.go_to(params['x'], params['y'], params['speed'],params['is_smooth'])
                 IDLE = False
             elif command == 'orientate':
-                stm32.orientate(params['angle'], params['is_radian'])
+                stm32.orientate(params['angle'], params['is_radian'],params['is_smooth'])
                 IDLE = False
             else:
                 strategy.get_logger().warn(f"Unknown STM32 command: {command}")
