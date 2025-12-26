@@ -14,6 +14,13 @@ The only difference: this node gets obstacles from ROS2 topics and start/goal fr
 service requests, while the local script reads from JSON files.
 """
 
+# Fix Python path to avoid namespace collision when script is symlinked
+import sys
+import os
+script_dir = os.path.dirname(os.path.realpath(__file__))
+if script_dir in sys.path:
+    sys.path.remove(script_dir)
+
 import rclpy
 from rclpy.node import Node
 from threading import Lock

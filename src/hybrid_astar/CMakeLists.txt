@@ -34,20 +34,27 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   DEPENDENCIES std_msgs geometry_msgs nav_msgs builtin_interfaces
 )
 
-# Install Python modules
+# This macro ensures that Python scripts can import the generated messages
+ament_export_dependencies(rosidl_default_runtime)
+
+# Install Python source modules into the package's site-packages
 install(DIRECTORY hybrid_astar/
   DESTINATION lib/python3.12/site-packages/${PROJECT_NAME}
-  PATTERN "*.pyc" EXCLUDE
+  FILES_MATCHING PATTERN "*.py"
   PATTERN "__pycache__" EXCLUDE
+  PATTERN "*.pyc" EXCLUDE
 )
 
-# Install Python executables
-install(PROGRAMS
+# Install Python executables to standard ROS2 location
+# Note: Using FILES instead of PROGRAMS to ensure they are copied, not symlinked
+install(FILES
   hybrid_astar/hybrid_astar_node.py
   hybrid_astar/json_to_ros.py
   hybrid_astar/yaml_to_ros.py
   hybrid_astar/generate_path.py
+  hybrid_astar/web_handler.py
   DESTINATION lib/${PROJECT_NAME}
+  PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
 )
 
 # Install config and launch files

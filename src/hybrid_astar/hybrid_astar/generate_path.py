@@ -5,12 +5,15 @@ Hybrid A* Path Generator
 Generates paths using Hybrid A* with orientation awareness.
 """
 
-import json
-import math
+# Fix Python path to avoid namespace collision when script is symlinked
 import sys
 import os
+script_dir = os.path.dirname(os.path.realpath(__file__))
+if script_dir in sys.path:
+    sys.path.remove(script_dir)
 
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+import json
+import math
 from hybrid_astar import HybridAStarPathfinder
 
 

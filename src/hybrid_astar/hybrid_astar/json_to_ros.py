@@ -5,6 +5,13 @@ Loads obstacles from JSON, converts to batches, publishes as ArucoMapperState,
 requests path via ROS2 service, saves result to JSON
 """
 
+# Fix Python path to avoid namespace collision when script is symlinked
+import sys
+import os
+script_dir = os.path.dirname(os.path.realpath(__file__))
+if script_dir in sys.path:
+    sys.path.remove(script_dir)
+
 import json
 import rclpy
 from rclpy.node import Node

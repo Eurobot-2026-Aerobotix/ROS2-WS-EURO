@@ -4,6 +4,13 @@ YAML → ArucoMapperState → ComputePath
 Fully equivalent to JSON pipeline
 """
 
+# Fix Python path to avoid namespace collision when script is symlinked
+import sys
+import os
+script_dir = os.path.dirname(os.path.realpath(__file__))
+if script_dir in sys.path:
+    sys.path.remove(script_dir)
+
 import yaml
 import json
 import math
