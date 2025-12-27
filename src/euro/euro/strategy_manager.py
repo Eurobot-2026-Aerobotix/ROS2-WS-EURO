@@ -27,9 +27,9 @@ class StrategyManager(Node):
         
         # Device queues
         self.queues = {
-            'stm32': deque(),
-            'esp32_1': deque(),
-            'esp32_2': deque(),
+            'STM': deque(),
+            'ESP_front': deque(),
+            'ESP_front': deque(),
             'esp32_3': deque()
         }
         
@@ -68,7 +68,7 @@ class StrategyManager(Node):
         self.get_logger().info("🔄 Replanning path - pausing task execution...")
         
         # Clear the STM32 queue
-        self.queues['stm32'].clear()
+        self.queues['STM'].clear()
         self.get_logger().info("🗑️  Cleared STM32 queue")
         
         start_pose = PoseStamped()
@@ -99,7 +99,7 @@ class StrategyManager(Node):
                 f"Parsed → x={x}, y={y}, speed={speed}"
             )
             if(cmd != last_cmd):
-                self.queues['stm32'].append({
+                self.queues['STM'].append({
                     'command': 'go_to',
                     'params': {
                         'x': x,
@@ -110,7 +110,7 @@ class StrategyManager(Node):
                 })
             last_cmd=cmd
         if success :
-            self.queues['stm32'].append({
+            self.queues['STM'].append({
                 'command': 'orientate',
                 'params': {
                     'angle': theta_goal,
@@ -118,7 +118,7 @@ class StrategyManager(Node):
                 },
             })
         
-        self.get_logger().info(f"✅ New path loaded with {len(self.queues['stm32'])} commands")
+        self.get_logger().info(f"✅ New path loaded with {len(self.queues['STM'])} commands")
         
         # Resume task execution
         self.is_replanning = False
@@ -231,6 +231,7 @@ class StrategyManager(Node):
 
 
 def main(args=None):
+    import sys
     rclpy.init(args=args)
     
     # Import controllers
@@ -288,13 +289,19 @@ def main(args=None):
     
     strategy.get_logger().info("✓ All threads started\n")
     # Get tasks file path
-    try:
-        from ament_index_python.packages import get_package_share_directory
-        package_share_dir = get_package_share_directory('euro')
-        tasks_file = os.path.join(package_share_dir, 'config', 'tasks.yaml')
-    except:
-        package_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        tasks_file = os.path.join(package_dir, 'config', 'tasks.yaml')
+    # Check if a YAML file path was provided as argument
+    if len(sys.argv) > 1:
+        tasks_file = sys.argv[1]
+        strategy.get_logger().info(f"Using provided YAML file: {tasks_file}")
+    else:
+        # Default to tasks.yaml in package config directory
+        try:
+            from ament_index_python.packages import get_package_share_directory
+            package_share_dir = get_package_share_directory('euro')
+            tasks_file = os.path.join(package_share_dir, 'config', 'tasks.yaml')
+        except:
+            package_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            tasks_file = os.path.join(package_dir, 'config', 'tasks.yaml')
     
     # Load tasks
     try:
@@ -311,7 +318,8 @@ def main(args=None):
                 if global_goal:
                     strategy.global_pos_x = global_goal.get('x')
                     strategy.global_pos_y = global_goal.get('y')
-                    strategy.global_pos_angle = global_goal.get('angle')
+                    # Support both 'angle' and 'theta' keys
+                    strategy.global_pos_angle = global_goal.get('theta') or global_goal.get('angle')
                     strategy.get_logger().info(
                         f"Global goal set: x={strategy.global_pos_x}, "
                         f"y={strategy.global_pos_y}, angle={strategy.global_pos_angle}°"

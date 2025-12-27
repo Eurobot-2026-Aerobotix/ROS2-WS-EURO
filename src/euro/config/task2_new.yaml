@@ -1,0 +1,81 @@
+name: test2
+selected: false
+color: blue
+tasks:
+- description: Task 1 - Set Initial Position
+  global_goal:
+    x: null
+    y: null
+    theta: null
+  sequence:
+  - device: STM
+    command: set_position
+    params:
+    - '197.17'
+    - '402.82'
+    - 0
+    wait: false
+- description: Task 2 - Navigate to Goal
+  global_goal:
+    x: '1487.50'
+    y: '736.27'
+    theta: 90
+  sequence:
+  - device: STM
+    command: go_to
+    params:
+    - '579.92'
+    - '304.24'
+    - 700
+    wait: true
+  - device: STM
+    command: go_to
+    params:
+    - 900
+    - 400
+    - 700
+    wait: true
+  - device: STM
+    command: bezier
+    params:
+    - '1139.79'
+    - '562.18'
+    - '1312.13'
+    - '213.58'
+    - '1487.50'
+    - '736.27'
+    - 700
+    wait: true
+  - device: STM
+    command: orientate
+    params:
+    - 90
+    wait: true
+- description: Task 3 - Pick and Place
+  global_goal:
+    x: '1695.98'
+    y: '1725.47'
+    theta: -6.137439863898849
+  sequence:
+  - device: STM
+    command: go_to
+    params:
+    - '1331.71'
+    - '1764.64'
+    - 700
+    wait: false
+  - device: ESP_front
+    command: pick_up
+    params: []
+    wait: false
+  - device: STM
+    command: go_to_backwards
+    params:
+    - '1695.98'
+    - '1725.47'
+    - 700
+    wait: false
+  - device: ESP_front
+    command: put_down
+    params: []
+    wait: false

@@ -1,31 +1,31 @@
+name: tasks
+selected: false
+color: blue
 tasks:
-  task1:
-    description: "Move to plant zone and collect plants"
-    global_goal:
-      x: 1.5
-      y: 1.0
-      angle: 90.0
-    sequence:
-      - device: stm32
-        command: move_forward
-        params:
-          distance: 200.0
-          speed: 500.0
-          is_smooth: 0.0
-        wait: False
-      - device: stm32
-        command: move_forward
-        params:
-          distance: 200.0
-          speed: 500.0
-          is_smooth: 0.0
-        wait: False
-      - device: stm32
-        command: rotate
-        params:
-          angle: 90.0
-          is_radian: 0.0
-          is_smooth: 0.0
-        wait: False
-
-      
+- description: "Move to plant zone and collect plants"
+  global_goal:
+    x: 1.5
+    y: 1.0
+    theta: 90.0
+  sequence:
+  - device: STM
+    command: move_forward
+    params:
+    - 200.0
+    - 500.0
+    - 0.0
+    wait: false
+  - device: STM
+    command: move_forward
+    params:
+    - 200.0
+    - 500.0
+    - 0.0
+    wait: false
+  - device: STM
+    command: rotate
+    params:
+    - 90.0
+    - 0.0
+    - 0.0
+    wait: false
