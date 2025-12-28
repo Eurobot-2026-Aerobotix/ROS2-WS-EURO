@@ -58,19 +58,31 @@ def stm32_task(strategy, stm32):
             
             # Execute command based on type
             if command == 'move_forward':
-                stm32.move_forward(params['distance'], params['speed'],params['is_smooth'])
+                stm32.move_forward(params[0], params[1], params[2] if len(params) > 2 else 0.0)
                 IDLE = False
             elif command == 'rotate':
-                stm32.rotate(params['angle'], params['is_radian'],params['is_smooth'])
+                stm32.rotate(params[0], params[1] if len(params) > 1 else 0.0)
                 IDLE = False
             elif command == 'go_to':
-                stm32.go_to(params['x'], params['y'], params['speed'],params['is_smooth'])
+                stm32.go_to(params[0], params[1], params[2])
                 IDLE = False
             elif command == 'orientate':
-                stm32.orientate(params['angle'], params['is_radian'],params['is_smooth'])
+                stm32.orientate(params[0], params[1] if len(params) > 1 else 0.0)
                 IDLE = False
+            elif command == 'bezier':
+                stm32.bezier(params[0], params[1], params[2], params[3], params[4], params[5], params[6])
+                IDLE = False
+            elif command == 'go_to_backwards':
+                stm32.go_to_backwards(params[0], params[1], params[2])
+                IDLE = False
+            elif command == 'bezier_backwards':
+                stm32.bezier_curve_backwards(params[0], params[1], params[2], params[3], params[4], params[5], params[6])
+                IDLE = False
+            elif command == 'set_position':
+                stm32.set_position(params[0], params[1], params[2])
             else:
                 strategy.get_logger().warn(f"Unknown STM32 command: {command}")
+            
             
             # Remove command from queue after execution
             strategy.queues['STM'].popleft()

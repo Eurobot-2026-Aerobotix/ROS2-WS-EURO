@@ -31,18 +31,11 @@ def load_tasks_from_yaml(yaml_file: str) -> List[Dict[str, Any]]:
     if isinstance(tasks_data, list):
         # New format: tasks is a list
         for idx, task_data in enumerate(tasks_data, 1):
-            # Convert params list to dict for each command in sequence
-            sequence = task_data.get('sequence', [])
-            for cmd in sequence:
-                if 'params' in cmd and isinstance(cmd['params'], list):
-                    # Convert list params to dict based on command type
-                    cmd['params'] = _convert_params_to_dict(cmd['device'], cmd['command'], cmd['params'])
-            
             task = {
                 'name': f"Task_{idx}",  # Generate name if not provided
                 'description': task_data.get('description', ''),
                 'global_goal': task_data.get('global_goal', {}),
-                'sequence': sequence
+                'sequence': task_data.get('sequence', [])
             }
             tasks.append(task)
     else:

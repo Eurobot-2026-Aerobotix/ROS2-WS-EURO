@@ -1,31 +1,99 @@
-name: tasks
-selected: false
-color: blue
+name: first_test
+selected: true
+color: yellow
 tasks:
-- description: "Move to plant zone and collect plants"
+- description: Task 1
   global_goal:
-    x: 1.5
-    y: 1.0
-    theta: 90.0
+    x: null
+    y: null
+    theta: null
   sequence:
   - device: STM
-    command: move_forward
+    command: set_position
     params:
-    - 200.0
-    - 500.0
-    - 0.0
-    wait: false
+    - 200
+    - 300
+    - 0
+    wait: true
+- description: Task 2
+  global_goal:
+    x: '1006.47'
+    y: '787.73'
+    theta: 0
+  sequence:
   - device: STM
-    command: move_forward
+    command: bezier
     params:
-    - 200.0
-    - 500.0
-    - 0.0
-    wait: false
+    - '845.86'
+    - '285.52'
+    - '996.27'
+    - '418.08'
+    - '1006.47'
+    - '787.73'
+    - 700
+    wait: true
   - device: STM
-    command: rotate
+    command: orientate
     params:
-    - 90.0
-    - 0.0
-    - 0.0
-    wait: false
+    - 0
+    wait: true
+- description: Task 4
+  global_goal:
+    x: '723.50'
+    y: '1251.70'
+    theta: 180
+  sequence:
+  - device: STM
+    command: go_to
+    params:
+    - '723.50'
+    - '1251.70'
+    - 700
+    wait: true
+  - device: STM
+    command: orientate
+    params:
+    - 180
+    wait: true
+- description: Task 4
+  global_goal:
+    x: '1057.46'
+    y: '1149.73'
+    theta: 0
+  sequence:
+  - device: STM
+    command: go_to
+    params:
+    - '1057.46'
+    - '1149.73'
+    - 700
+    wait: true
+  - device: STM
+    command: orientate
+    params:
+    - 0
+    wait: true
+- description: Task 5
+  global_goal:
+    x: '236.58'
+    y: '262.58'
+    theta: -179.7670284748604
+  sequence:
+  - device: STM
+    command: go_to_backwards
+    params:
+    - '922.34'
+    - '1149.73'
+    - 700
+    wait: true
+  - device: STM
+    command: bezier
+    params:
+    - '909.59'
+    - '285.52'
+    - '863.71'
+    - '265.13'
+    - '236.58'
+    - '262.58'
+    - 700
+    wait: true

@@ -191,6 +191,104 @@ class STM32Controller(Node):
         except Exception as e:
             self.get_logger().error(f'Go_to service error: {str(e)}')
             return False, f'Service error: {str(e)}'
+    def go_to_backwards(self, x, y, speed,is_smooth=0.0, timeout=10.0):
+        """Send a request to go to backwards a specific position (x, y) at given speed"""
+        if not self.navi_client.wait_for_service(timeout_sec=10.0):
+            self.get_logger().error('NaviStm service not available')
+            return False, 'NaviStm service not available'
+        
+        request = NaviStm.Request()
+        request.arg1 = 12.0  # Indicates go_to command
+        request.arg2 = x
+        request.arg3 = y
+        request.arg4 = speed
+        request.arg5 = is_smooth
+        request.arg6 = 0.0
+        request.arg7 = 0.0
+        request.arg8 = 0.0
+        request.arg9 = 0.0
+        request.arg10 = 0.0
+        self.get_logger().info(f"Sending go_to_backwards: X={x}, Y={y}, Speed={speed}")
+        
+        try:
+            future = self.navi_client.call_async(request)
+            rclpy.spin_until_future_complete(self, future, timeout_sec=timeout)
+            
+            if future.done():
+                response = future.result()
+                self.get_logger().info(f"go_to_backwards response: {response.result}")
+                return True, response
+            else:
+                self.get_logger().error('Go_to_backwards service call timeout')
+                return False, 'Service call timeout'
+        except Exception as e:
+            self.get_logger().error(f'Go_to_backwards service error: {str(e)}')
+            return False, f'Service error: {str(e)}'
+    def bezier_curve(self, x1, y1, x2, y2, x3, y3, speed,  is_smooth=0.0,timeout=10.0):
+        """Send a request to do a bezier curve at given speed"""
+        if not self.navi_client.wait_for_service(timeout_sec=10.0):
+            self.get_logger().error('NaviStm service not available')
+            return False, 'NaviStm service not available'
+        request = NaviStm.Request()
+        request.arg1 = 13.0
+        request.arg2 = x1
+        request.arg3 = y1
+        request.arg4 = x2
+        request.arg5 = y2
+        request.arg6 = x3
+        request.arg7 = y3
+        request.arg8 = speed
+        request.arg9 = is_smooth
+        request.arg10 = 0.0
+        self.get_logger().info(f"Sending bezier_curve: X1={x1}, Y1={y1}, X2={x2}, Y2={y2}, X3={x3}, Y3={y3}, Speed={speed}")
+        
+        try:
+            future = self.navi_client.call_async(request)
+            rclpy.spin_until_future_complete(self, future, timeout_sec=timeout)
+            
+            if future.done():
+                response = future.result()
+                self.get_logger().info(f"Bezier_curve response: {response.result}")
+                return True, response
+            else:
+                self.get_logger().error('Bezier_curve service call timeout')
+                return False, 'Service call timeout'
+        except Exception as e:
+            self.get_logger().error(f'Bezier_curve service error: {str(e)}')
+            return False, f'Service error: {str(e)}'
+    def bezier_curve_backwards(self, x1, y1, x2, y2, x3, y3, speed,is_smooth=0.0, timeout=10.0 ):
+        """Send a request to do a bezier curve backwards at given speed"""
+        if not self.navi_client.wait_for_service(timeout_sec=10.0):
+            self.get_logger().error('NaviStm service not available')
+            return False, 'NaviStm service not available'
+        
+        request = NaviStm.Request()
+        request.arg1 = 14.0
+        request.arg2 = x1
+        request.arg3 = y1
+        request.arg4 = x2
+        request.arg5 = y2
+        request.arg6 = x3
+        request.arg7 = y3
+        request.arg8 = speed
+        request.arg9 = is_smooth
+        request.arg10 = 0.0
+        self.get_logger().info(f"Sending bezier_curve_backwards: X1={x1}, Y1={y1}, X2={x2}, Y2={y2}, X3={x3}, Y3={y3}, Speed={speed}")
+        
+        try:
+            future = self.navi_client.call_async(request)
+            rclpy.spin_until_future_complete(self, future, timeout_sec=timeout)
+            
+            if future.done():
+                response = future.result()
+                self.get_logger().info(f"Bezier_curve_backwards response: {response.result}")
+                return True, response
+            else:
+                self.get_logger().error('Bezier_curve_backwards service call timeout')
+                return False, 'Service call timeout'
+        except Exception as e:
+            self.get_logger().error(f'Bezier_curve_backwards service error: {str(e)}')
+            return False, f'Service error: {str(e)}'
     def move_forward_with_left_deviation(self, distance, deviation, speed, is_smooth=0.0, timeout=10.0):
         """Send a request to move forward with left deviation"""
         if not self.navi_client.wait_for_service(timeout_sec=10.0):
@@ -256,6 +354,39 @@ class STM32Controller(Node):
                 return False, 'Service call timeout'
         except Exception as e:
             self.get_logger().error(f'circle curve  service error: {str(e)}')
+            return False, f'Service error: {str(e)}'
+    def set_position(self,x,y,angle, timeout=10.0):
+        """Send a request to set position (synchronous)"""
+        if not self.navi_client.wait_for_service(timeout_sec=10.0):
+            self.get_logger().error('NaviStm service not available')
+            return False, 'NaviStm service not available'
+            
+        request = NaviStm.Request()
+        request.arg1 = 15.0  # Indicates LED blink command
+        request.arg2 = x
+        request.arg3 = y
+        request.arg4 = angle
+        request.arg5 = 0.0
+        request.arg6 = 0.0
+        request.arg7 = 0.0
+        request.arg8 = 0.0
+        request.arg9 = 0.0
+        request.arg10 = 0.0
+        self.get_logger().info(f"Envoi de set position")
+        
+        try:
+            future = self.navi_client.call_async(request)
+            rclpy.spin_until_future_complete(self, future, timeout_sec=timeout)
+            
+            if future.done():
+                response = future.result()
+                self.get_logger().info(f"Set position response: {response.result}")
+                return True, response
+            else:
+                self.get_logger().error('Set position service call timeout')
+                return False, 'Service call timeout'
+        except Exception as e:
+            self.get_logger().error(f'Set position service error: {str(e)}')
             return False, f'Service error: {str(e)}'
     def led_blink(self, timeout=10.0):
         """Send a request to blink LED (synchronous)"""
