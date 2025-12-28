@@ -37,7 +37,7 @@ tasks:
     params:
     - 0
     wait: true
-- description: Task 4
+- description: Task 3
   global_goal:
     x: '723.50'
     y: '1251.70'

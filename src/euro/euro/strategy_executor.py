@@ -40,7 +40,12 @@ def robot_status(strategy, stm32, lidar):
         
         time.sleep(0.1)  # 100ms
 
-
+def to_float_list(params):
+    """Convert all params to float"""
+    try:
+        return [float(p) for p in params]
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"Invalid STM32 params: {params}") from e
 def stm32_task(strategy, stm32):
     """Runs every 100ms to process STM32 queue"""
     global IDLE
@@ -53,7 +58,7 @@ def stm32_task(strategy, stm32):
             command = cmd.get('command')
             params = cmd.get('params', {})
             wait = cmd.get('wait', False)
-            
+            params = to_float_list(params)
             strategy.get_logger().info(f"📤 STM32: Executing {command} with {params}")
             
             # Execute command based on type
@@ -70,7 +75,7 @@ def stm32_task(strategy, stm32):
                 stm32.orientate(params[0], params[1] if len(params) > 1 else 0.0)
                 IDLE = False
             elif command == 'bezier':
-                stm32.bezier(params[0], params[1], params[2], params[3], params[4], params[5], params[6])
+                stm32.bezier_curve(params[0], params[1], params[2], params[3], params[4], params[5], params[6])
                 IDLE = False
             elif command == 'go_to_backwards':
                 stm32.go_to_backwards(params[0], params[1], params[2])

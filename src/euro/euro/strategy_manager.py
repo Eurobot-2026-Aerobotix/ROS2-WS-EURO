@@ -189,11 +189,11 @@ class StrategyManager(Node):
     
     def wait_for_all_queues_empty(self):
         """Wait until all device queues are empty (unless replanning)"""
-        from euro.strategy_executor import IDLE
         
         self.get_logger().info("⏳ Waiting for all commands to complete...")
-        
+        from euro.strategy_executor import IDLE
         while not self.are_all_queues_empty() or not IDLE:
+            from euro.strategy_executor import IDLE
             # If replanning is happening, wait for it to finish
             if self.is_replanning:
                 self.get_logger().info("   ⏸️  Paused - replanning in progress...")
@@ -204,6 +204,9 @@ class StrategyManager(Node):
                 time.sleep(0.5)
             elif not IDLE:
                 self.get_logger().info("   Waiting for robot to become idle...")
+                self.get_logger().info(f"IDLE =  {IDLE} ")
+                x=self.are_all_queues_empty()
+                self.get_logger().info(f"queues empty: {x}")
                 time.sleep(0.5)
         
         self.get_logger().info("✅ All commands completed!")
