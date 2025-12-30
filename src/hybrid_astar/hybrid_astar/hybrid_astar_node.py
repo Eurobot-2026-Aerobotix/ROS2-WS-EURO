@@ -322,8 +322,8 @@ class HybridAStarNode(Node):
             crate_marker.pose.orientation = self.yaw_to_quaternion(obs.get('theta', 0.0))
             
             # Size: small crates
-            crate_marker.scale.x = obs['width'] / 1000.0
-            crate_marker.scale.y = obs['height'] / 1000.0
+            crate_marker.scale.x = obs['height'] / 1000.0
+            crate_marker.scale.y = obs['width'] / 1000.0
             crate_marker.scale.z = 0.15  # 150mm tall crates
             
             # Color based on crate color
