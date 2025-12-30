@@ -65,7 +65,7 @@ class HybridAStarNode(Node):
         self.load_parameters()
         
         # Obstacle database (in-memory only)
-        self.obstacles: Dict[str, Obstacle] = {}
+        self.obstacles: List[Obstacle] = []
         self.obstacles_lock = Lock()
         
         # Batch storage (for color pattern queries)
@@ -237,7 +237,7 @@ class HybridAStarNode(Node):
             msg = ObstacleArray()
             msg.header.stamp = self.get_clock().now().to_msg()
             msg.header.frame_id = "map"
-            msg.obstacles = list(self.obstacles.values())
+            msg.obstacles = list(self.obstacles)
             self.current_obs_pub.publish(msg)
         # Also publish obstacle visualization for RViz
         self.publish_obstacles(self.get_active_obstacles())
@@ -266,7 +266,7 @@ class HybridAStarNode(Node):
         
         # Add dynamic obstacles (filtered by color)
         with self.obstacles_lock:
-            for obs in self.obstacles.values():
+            for obs in self.obstacles:
                 active_obstacles.append({
                     'x': obs.pose.x,
                     'y': obs.pose.y,
@@ -355,25 +355,25 @@ class HybridAStarNode(Node):
         with self.obstacles_lock:
             # Clear existing dynamic obstacles
             self.obstacles.clear()
-            
+
             # Process each batch
             for batch in msg.batches:
                 # Store batch by ID
                 with self.batches_lock:
                     self.batches[batch.batch_id] = batch
-                
+
                 # Process each member in the batch
                 for member in batch.members:
                     # Only process if color is valid
                     if member.color not in ["yellow", "blue"]:
                         continue
-                    
+
                     # Create obstacle from batch member
                     obs = Obstacle()
                     obs.id = f"aruco_{member.aruco_id}"
                     obs.type = 'crate'
                     obs.color = member.color
-                    
+
                     # Determine obstacle dimensions based on batch direction
                     if batch.direction == "horizontal":
                         obs.width_mm = self.params['obstacles']['crate_horizontal']['width_mm']
@@ -385,7 +385,7 @@ class HybridAStarNode(Node):
                         # Default to horizontal if direction is unknown
                         obs.width_mm = self.params['obstacles']['crate_horizontal']['width_mm']
                         obs.height_mm = self.params['obstacles']['crate_horizontal']['height_mm']
-                    
+
                     # IMPORTANT: map_pos is the CENTER of the obstacle
                     # Convert to TOP-LEFT corner (what the planner expects)
                     # Convert from meters to millimeters
@@ -394,12 +394,12 @@ class HybridAStarNode(Node):
                     obs.pose.x = center_x_mm - (obs.width_mm / 2.0)   # Center to top-left
                     obs.pose.y = center_y_mm - (obs.height_mm / 2.0)  # Center to top-left
                     obs.pose.theta = 0.0  # Orientation will be determined by batch direction
-                    
+
                     obs.detected_at = msg.stamp
-                    
-                    # Add to obstacles dictionary
-                    self.obstacles[obs.id] = obs
-            
+
+                    # Add to obstacles list (allow duplicates)
+                    self.obstacles.append(obs)
+
             if len(self.obstacles) > 0:
                 self.get_logger().info(f"📦 Updated {len(self.obstacles)} obstacles from {len(msg.batches)} batches")
     def publish_path_visualization(self, waypoints: List[Tuple[float, float, float]], 
