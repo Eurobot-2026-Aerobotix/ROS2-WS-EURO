@@ -45,6 +45,7 @@ class WebHandlerNode(Node):
     
     Publishes:
         /aruco_mapper_state: Send batches to hybrid_astar_node
+        /obstacle_relative: Send enemy obstacles to hybrid_astar_node (PoseStamped)
         /web/path_result: Return path to web (JSON string)
         /web/batch_color_result: Return batch color to web (JSON string)
     """
@@ -68,6 +69,12 @@ class WebHandlerNode(Node):
         self.batch_color_result_pub = self.create_publisher(
             String,
             '/web/batch_color_result',
+            10
+        )
+        
+        self.obstacle_relative_pub = self.create_publisher(
+            PoseStamped,
+            '/obstacle_relative',
             10
         )
         
@@ -151,6 +158,7 @@ class WebHandlerNode(Node):
         self.get_logger().info("   - /web/send_batches")
         self.get_logger().info("   - /web/start_pose")
         self.get_logger().info("   - /web/goal_pose")
+        self.get_logger().info("   - /web/enemy_pose → /obstacle_relative")
         self.get_logger().info("   - /web/compute_path")
         self.get_logger().info("=" * 60)
     
@@ -314,7 +322,7 @@ class WebHandlerNode(Node):
     
     def handle_enemy_pose(self, msg: String):
         """
-        Handle enemy pose from web (for future use)
+        Handle enemy pose from web and publish as obstacle
         
         Expected JSON: {"x": 1500.0, "y": 1000.0, "theta": 0.0}
         """
@@ -330,6 +338,26 @@ class WebHandlerNode(Node):
                 f"{self.enemy_pose['y_mm']:.0f}) mm, "
                 f"θ={self.enemy_pose['theta_deg']:.1f}°"
             )
+            
+            # Publish to /obstacle_relative as PoseStamped
+            pose_msg = PoseStamped()
+            pose_msg.header.stamp = self.get_clock().now().to_msg()
+            pose_msg.header.frame_id = 'map'
+            
+            # Convert from mm to m
+            pose_msg.pose.position.x = self.mm_to_m(self.enemy_pose['x_mm'])
+            pose_msg.pose.position.y = self.mm_to_m(self.enemy_pose['y_mm'])
+            pose_msg.pose.position.z = 0.0
+            
+            # Convert from degrees to radians and create quaternion
+            theta_rad = self.deg_to_rad(self.enemy_pose['theta_deg'])
+            pose_msg.pose.orientation = self.euler_to_quaternion(theta_rad)
+            
+            self.obstacle_relative_pub.publish(pose_msg)
+            self.get_logger().info(
+                f"📤 Published enemy obstacle to /obstacle_relative"
+            )
+            
         except Exception as e:
             self.get_logger().error(f"❌ Error parsing enemy pose: {e}")
     

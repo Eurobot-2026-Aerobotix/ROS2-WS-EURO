@@ -49,6 +49,7 @@ class HybridAStarNode(Node):
     Subscribes to:
         - /aruco_mapper_state: Receive batches of obstacles from ArUco mapper
         - /obstacles/clear_all: Clear all obstacles
+        - /obstacle_relative: Receive enemy robot poses as obstacles (PoseStamped)
     
     Publishes:
         - /obstacles/current: Current obstacle list
@@ -82,6 +83,9 @@ class HybridAStarNode(Node):
 
         self.create_subscription(
             Empty, '/obstacles/clear_all', self.handle_clear_all, 10)
+        
+        self.create_subscription(
+            PoseStamped, '/obstacle_relative', self.handle_obstacle_relative, 10)
         
         # Create publishers
         self.current_obs_pub = self.create_publisher(
@@ -230,6 +234,50 @@ class HybridAStarNode(Node):
             self.get_logger().info(f"🗑️  Cleared all {count} obstacles")
         # Publish obstacle visualization after clearing
         self.publish_obstacles(self.get_active_obstacles())
+    
+    def handle_obstacle_relative(self, msg: PoseStamped):
+        """Handle incoming obstacle from /obstacle_relative topic"""
+        with self.obstacles_lock:
+            # Remove any existing enemy obstacles
+            old_count = len(self.obstacles)
+            self.obstacles = [obs for obs in self.obstacles if obs.color != 'enemy']
+            removed = old_count - len(self.obstacles)
+            
+            # Create obstacle from pose
+            obs = Obstacle()
+            obs.id = f"enemy_{int(time.time() * 1000)}"  # Unique ID based on timestamp
+            obs.type = 'enemy'
+            obs.color = 'enemy'
+            
+            # Use default enemy obstacle size (can be parameterized if needed)
+            # Assuming enemy robot is similar size to our robot
+            obs.width_mm = self.params['robot']['width_mm']
+            obs.height_mm = self.params['robot']['length_mm']
+            
+            # Convert position from meters to millimeters
+            # The pose is the center of the obstacle
+            center_x_mm = msg.pose.position.x * 1000.0
+            center_y_mm = msg.pose.position.y * 1000.0
+            
+            # Convert to top-left corner (what the planner expects)
+            obs.pose.x = center_x_mm - (obs.width_mm / 2.0)
+            obs.pose.y = center_y_mm - (obs.height_mm / 2.0)
+            obs.pose.theta = self.quaternion_to_yaw(msg.pose.orientation)
+            
+            obs.detected_at = msg.header.stamp
+            
+            # Add to obstacles list
+            self.obstacles.append(obs)
+            
+            if removed > 0:
+                self.get_logger().info(
+                    f"🎯 Updated enemy obstacle at ({center_x_mm:.0f}, {center_y_mm:.0f}) mm (replaced {removed} old enemy obstacle(s))")
+            else:
+                self.get_logger().info(
+                    f"🎯 Added enemy obstacle at ({center_x_mm:.0f}, {center_y_mm:.0f}) mm")
+        
+        # Publish obstacle visualization
+        self.publish_obstacles(self.get_active_obstacles())
 
     def publish_current_obstacles(self):
         """Periodically publish current obstacle list"""
@@ -301,6 +349,16 @@ class HybridAStarNode(Node):
         # Separate walls from crates
         #self.get_logger().info("Publishing obstacle visualization...")
         marker_array = MarkerArray()
+        
+        # First, send a DELETE ALL marker to clear old markers
+        delete_marker = Marker()
+        delete_marker.header.frame_id = "map"
+        delete_marker.header.stamp = self.get_clock().now().to_msg()
+        delete_marker.ns = "crates"
+        delete_marker.id = 0
+        delete_marker.action = Marker.DELETEALL
+        marker_array.markers.append(delete_marker)
+        
         crates = [obs for obs in obstacles if obs['color'] != 'wall']
         
         marker_id = 1
@@ -337,6 +395,12 @@ class HybridAStarNode(Node):
                 crate_marker.color.g = 0.5
                 crate_marker.color.b = 1.0
                 crate_marker.color.a = 0.8
+            elif obs['color'] == 'enemy':
+                # Dark red/magenta for enemy obstacles
+                crate_marker.color.r = 0.8
+                crate_marker.color.g = 0.0
+                crate_marker.color.b = 0.4
+                crate_marker.color.a = 0.9
             else:  # red or other
                 crate_marker.color.r = 1.0
                 crate_marker.color.g = 0.0
@@ -484,7 +548,7 @@ class HybridAStarNode(Node):
     self,
     path: list,
     grid_resolution: float,
-    max_added_distance_mm: float = 110.0,  # your threshold
+    max_added_distance_mm: float = 0.0,  # your threshold
     sample_step_mm: float = 50.0
 ) -> list:
         """
@@ -854,8 +918,8 @@ class HybridAStarNode(Node):
                         final_path.append((x, y, theta))
                 
                 smoothed = final_path
-                self.get_logger().info("🧠 Applying intersection optimization...")
-                smoothed = self.optimize_path_with_intersections(smoothed, grid_resolution=grid_resolution)
+                #self.get_logger().info("🧠 Applying intersection optimization...")
+                #smoothed = self.optimize_path_with_intersections(smoothed, grid_resolution=grid_resolution)
                 # Calculate path length
                 total_dist = 0
                 for i in range(len(smoothed) - 1):
@@ -885,6 +949,13 @@ class HybridAStarNode(Node):
                 
                 # Publish visualization
                 self.publish_path_visualization(smoothed, active_obstacles)
+                
+                # Save debug information
+                self.save_debug_info(
+                    start_x, start_y, start_theta,
+                    goal_x, goal_y, goal_theta,
+                    smoothed, active_obstacles, total_dist
+                )
                 
                 self.get_logger().info(f"✅ Success!")
             else:
