@@ -43,8 +43,8 @@ class HybridAStarPathfinder:
         # Permanent static obstacle areas (always blocked, never cleared)
         self.permanent_obstacles = []
         
-        # Orientation discretization (36 = 10° resolution for speed)
-        self.num_orientations = 36
+        # Orientation discretization (24 = 15° resolution for speed)
+        self.num_orientations = 24
         self.orientation_step = 2 * math.pi / self.num_orientations
         
         # Motion primitives (optimized for speed)
@@ -337,18 +337,8 @@ class HybridAStarPathfinder:
         Yields:
             (new_x, new_y, new_theta, cost)
         """
-        # Rotate-in-place primitives (stay at same position, just change orientation)
-        # This allows the robot to turn without moving - critical for tight spaces
-        for rotate_angle in [-90, 90]:  # degrees - just 90° turns for speed
-            turn_rad = math.radians(rotate_angle)
-            new_theta = theta + turn_rad
-            new_theta = math.atan2(math.sin(new_theta), math.cos(new_theta))
-            
-            # Check if rotation is collision-free
-            if not self.is_collision(x, y, new_theta, grid_resolution):
-                # Small cost for rotation (just turning, no distance traveled)
-                cost = self.turn_cost * abs(rotate_angle) * 0.5
-                yield (x, y, new_theta, cost)
+        # Rotate-in-place primitives disabled for speed
+        # The turn_angles in movement primitives provide sufficient turning ability
         
         # Movement primitives (move with optional turn)
         direction = 1 if is_forward else -1
@@ -377,7 +367,7 @@ class HybridAStarPathfinder:
     
     def heuristic(self, x: float, y: float, goal_x: float, goal_y: float) -> float:
         """Euclidean distance heuristic (weighted for faster convergence)."""
-        return 1.2 * math.sqrt((x - goal_x)**2 + (y - goal_y)**2)
+        return 1.5 * math.sqrt((x - goal_x)**2 + (y - goal_y)**2)
     
     def discretize_pose(self, x: float, y: float, theta: float, grid_resolution: float) -> Tuple[int, int, int]:
         """Discretize continuous pose for duplicate detection."""
