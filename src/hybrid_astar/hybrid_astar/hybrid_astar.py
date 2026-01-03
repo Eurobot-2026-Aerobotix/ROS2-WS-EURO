@@ -48,13 +48,13 @@ class HybridAStarPathfinder:
         self.orientation_step = 2 * math.pi / self.num_orientations
         
         # Motion primitives (optimized for speed)
-        self.step_sizes = [50.0]  # mm - single step size for speed
+        self.step_sizes = [25.0]  # mm - single step size for speed
         self.turn_angles = [-30, 0, 30]  # degrees - reduced angles
         
         # Cost weights
         self.forward_cost = 1.0
         self.backward_cost = 5.0  # Heavily discourage backward motion
-        self.turn_cost = 1.5
+        self.turn_cost = 1.0
         self.direction_change_cost = 2.0
         
         # Precomputed footprint masks for each orientation

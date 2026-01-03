@@ -918,8 +918,8 @@ class HybridAStarNode(Node):
                         final_path.append((x, y, theta))
                 
                 smoothed = final_path
-                #self.get_logger().info("🧠 Applying intersection optimization...")
-                #smoothed = self.optimize_path_with_intersections(smoothed, grid_resolution=grid_resolution)
+                self.get_logger().info("🧠 Applying intersection optimization...")
+                smoothed = self.optimize_path_with_intersections(smoothed, grid_resolution=grid_resolution)
                 # Calculate path length
                 total_dist = 0
                 for i in range(len(smoothed) - 1):

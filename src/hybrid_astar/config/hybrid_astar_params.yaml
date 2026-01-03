@@ -16,7 +16,7 @@ hybrid_astar_node:
       allow_diagonal: true
       diagonal_cost: 1.414
       straight_cost: 1.0
-      max_iterations: 50000
+      max_iterations: 5000000
 
     # Path smoothing (from complete_map.json "path_smoothing" section)
     path_smoothing:
