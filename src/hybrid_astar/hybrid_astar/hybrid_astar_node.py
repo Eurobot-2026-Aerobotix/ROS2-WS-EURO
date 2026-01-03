@@ -950,13 +950,6 @@ class HybridAStarNode(Node):
                 # Publish visualization
                 self.publish_path_visualization(smoothed, active_obstacles)
                 
-                # Save debug information
-                self.save_debug_info(
-                    start_x, start_y, start_theta,
-                    goal_x, goal_y, goal_theta,
-                    smoothed, active_obstacles, total_dist
-                )
-                
                 self.get_logger().info(f"✅ Success!")
             else:
                 response.success = False
