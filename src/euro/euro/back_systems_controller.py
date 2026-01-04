@@ -73,7 +73,7 @@ class BackSystemsController(Node):
         """
         if not self.idle_client.wait_for_service(timeout_sec=timeout):
             self.get_logger().error('/back/isIDLE service not available')
-            return False, '/back/isIDLE service not available'
+            return False
         
         request = Trigger.Request()
         
@@ -84,10 +84,10 @@ class BackSystemsController(Node):
             if future.done():
                 response = future.result()
                 self.get_logger().info(f'IDLE response: success={response.success}, message={response.message}')
-                return response.success, response.message
+                return response.success
             else:
                 self.get_logger().error('IDLE service call timeout')
-                return False, 'Service call timeout'
+                return False
         except Exception as e:
             self.get_logger().error(f'IDLE service error: {str(e)}')
             return False, f'Service error: {str(e)}'
