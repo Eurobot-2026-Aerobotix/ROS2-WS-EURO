@@ -12,7 +12,7 @@ from geometry_msgs.msg import PoseStamped, Pose2D, Quaternion,Vector3
 from euro.yaml_loader import load_tasks_from_yaml
 import math
 from euro.pathfinder_controller import PathfinderClient
-from euro.strategy_executor import robot_status, stm32_task, esp1_task, esp2_task, esp3_task, IDLE, EMERGENCY_STOP
+from euro.strategy_executor import robot_status, stm32_task, front_task, back_task, pneumatic_task, IDLE, EMERGENCY_STOP
 
 class StrategyManager(Node):
     """
@@ -29,8 +29,8 @@ class StrategyManager(Node):
         self.queues = {
             'STM': deque(),
             'ESP_front': deque(),
-            'ESP_front': deque(),
-            'esp32_3': deque()
+            'ESP_back': deque(),
+            'ESP_pneumatic': deque()
         }
         
         # Flag to pause task loading during pathfinding
@@ -241,17 +241,25 @@ def main(args=None):
     from euro.stm32_controller import STM32Controller
     from euro.lidar import Lidar
     from euro.pathfinder_controller import PathfinderClient
+    from euro.pneumatic_controller import PneumaticController
+    from euro.front_systems_controller import FrontSystemsController
+    from euro.back_systems_controller import BackSystemsController  
     # Initialize controllers
     stm32 = STM32Controller('rpi_stm32')
     lidar = Lidar()
     # Create strategy manager
     strategy = StrategyManager()
-    
+    front= FrontSystemsController()
+    back= BackSystemsController()
+    pneumatic= PneumaticController()
     # Create executor for ROS2 nodes
     executor = MultiThreadedExecutor()
     executor.add_node(stm32)
     executor.add_node(lidar)
     executor.add_node(strategy)
+    executor.add_node(front)
+    executor.add_node(back)
+    executor.add_node(pneumatic)
      # Start background threads for each device
     strategy.get_logger().info("Starting background threads...")
     
@@ -269,26 +277,26 @@ def main(args=None):
     )
     stm32_thread.start()
     
-    esp1_thread = threading.Thread(
-        target=esp1_task,
-        args=(strategy, None),  # TODO: Pass ESP32_1 controller when available
+    front_thread = threading.Thread(
+        target=front_task,
+        args=(strategy, front),  # TODO: Pass ESP32_1 controller when available
         daemon=True
     )
-    esp1_thread.start()
+    front_thread.start()
     
-    esp2_thread = threading.Thread(
-        target=esp2_task,
-        args=(strategy, None),  # TODO: Pass ESP32_2 controller when available
+    back_thread = threading.Thread(
+        target=back_task,
+        args=(strategy, back),  # TODO: Pass ESP32_2 controller when available
         daemon=True
     )
-    esp2_thread.start()
+    back_thread.start()
     
-    esp3_thread = threading.Thread(
-        target=esp3_task,
-        args=(strategy, None),  # TODO: Pass ESP32_3 controller when available
+    pneumatic_thread = threading.Thread(
+        target=pneumatic_task,
+        args=(strategy, pneumatic),  # TODO: Pass Pneumatic controller when available
         daemon=True
     )
-    esp3_thread.start()
+    pneumatic_thread.start()
     
     strategy.get_logger().info("✓ All threads started\n")
     # Get tasks file path

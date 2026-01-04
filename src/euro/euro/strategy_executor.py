@@ -95,7 +95,7 @@ def stm32_task(strategy, stm32):
         time.sleep(0.1)  # 100ms
 
 
-def esp1_task(strategy, esp1_controller=None):
+def front_task(strategy, front_controller=None):
     """Runs every 100ms to process ESP32_1 queue"""
     while rclpy.ok():
         # Check if there are commands in the queue
@@ -106,14 +106,15 @@ def esp1_task(strategy, esp1_controller=None):
             params = cmd.get('params', {})
             wait = cmd.get('wait', False)
             
-            strategy.get_logger().info(f"📤 ESP32_1: Executing {command} with {params}")
-            
+            strategy.get_logger().info(f"📤 Front: Executing {command} with {params}")
+            if command =='put_down':
+                front_controller.n20(20)
             # TODO: Add execution logic here
             # Example:
             # if command == 'change':
-            #     esp1_controller.change(params)
+            #     front_controller.change(params)
             # elif command == 'request':
-            #     esp1_controller.request(params)
+            #     front_controller.request(params)
             
             # Remove command from queue after execution
             strategy.queues['ESP_front'].popleft()
@@ -121,7 +122,7 @@ def esp1_task(strategy, esp1_controller=None):
         time.sleep(0.1)  # 100ms
 
 
-def esp2_task(strategy, esp2_controller=None):
+def back_task(strategy, back_controller=None):
     """Runs every 100ms to process ESP32_2 queue"""
     while rclpy.ok():
         # Check if there are commands in the queue
@@ -132,14 +133,14 @@ def esp2_task(strategy, esp2_controller=None):
             params = cmd.get('params', {})
             wait = cmd.get('wait', False)
             
-            strategy.get_logger().info(f"📤 ESP32_2: Executing {command} with {params}")
+            strategy.get_logger().info(f"📤 back: Executing {command} with {params}")
             
             # TODO: Add execution logic here
             # Example:
             # if command == 'move':
-            #     esp2_controller.move(params)
+            #     back_controller.move(params)
             # elif command == 'calculate':
-            #     esp2_controller.calculate(params)
+            #     back_controller.calculate(params)
             
             # Remove command from queue after execution
             strategy.queues['ESP_back'].popleft()
@@ -147,25 +148,25 @@ def esp2_task(strategy, esp2_controller=None):
         time.sleep(0.1)  # 100ms
 
 
-def esp3_task(strategy, esp3_controller=None):
+def pneumatic_task(strategy, pneumatic_controller=None):
     """Runs every 100ms to process ESP32_3 queue"""
     while rclpy.ok():
         # Check if there are commands in the queue
-        if len(strategy.queues['ESP_PNEUMATIC']) > 0:
-            cmd = strategy.queues['ESP_PNEUMATIC'][0]  # Peek at first command
+        if len(strategy.queues['ESP_pneumatic']) > 0:
+            cmd = strategy.queues['ESP_pneumatic'][0]  # Peek at first command
             
             command = cmd.get('command')
             params = cmd.get('params', {})
             wait = cmd.get('wait', False)
             
-            strategy.get_logger().info(f"📤 ESP32_3: Executing {command} with {params}")
+            strategy.get_logger().info(f"📤 Pneumatic: Executing {command} with {params}")
             
             # TODO: Add execution logic here
             # Example:
             # if command == 'led_pattern':
-            #     esp3_controller.led_pattern(params['pattern'], params['color'])
+            #     pneumatic_controller.led_pattern(params['pattern'], params['color'])
             
             # Remove command from queue after execution
-            strategy.queues['ESP_PNEUMATIC'].popleft()
+            strategy.queues['ESP_pneumatic'].popleft()
         
         time.sleep(0.1)  # 100ms
