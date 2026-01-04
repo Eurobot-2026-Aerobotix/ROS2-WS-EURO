@@ -23,7 +23,7 @@ setup(
         'console_scripts': [
             'esp32_agents = euro.start_esp32_agents:main',
             'stm32_agent = euro.start_stm32_agent:main',
-            'strategy= euro.strategy_manager:main',
+            'strategy_manager= euro.strategy_manager:main',
         ],
     },
 )
