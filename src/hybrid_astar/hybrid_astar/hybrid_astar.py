@@ -44,7 +44,7 @@ class HybridAStarPathfinder:
         self.permanent_obstacles = []
         
         # Orientation discretization (24 = 15° resolution for speed)
-        self.num_orientations = 24
+        self.num_orientations = 32
         self.orientation_step = 2 * math.pi / self.num_orientations
         
         # Motion primitives (optimized for speed)
