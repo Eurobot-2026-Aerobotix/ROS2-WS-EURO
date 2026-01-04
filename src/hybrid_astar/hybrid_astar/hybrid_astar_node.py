@@ -416,6 +416,7 @@ class HybridAStarNode(Node):
         Extract obstacles from batches and update obstacle database
         Also store batches for color pattern queries
         """
+        self.get_logger().info(f"🔔 Received ArUco mapper state with {len(msg.batches)} batches")
         with self.obstacles_lock:
             # Clear existing dynamic obstacles
             self.obstacles.clear()
@@ -453,8 +454,8 @@ class HybridAStarNode(Node):
                     # IMPORTANT: map_pos is the CENTER of the obstacle
                     # Convert to TOP-LEFT corner (what the planner expects)
                     # Convert from meters to millimeters
-                    center_x_mm = member.map_pos.x * 1000.0
-                    center_y_mm = member.map_pos.y * 1000.0
+                    center_x_mm = member.map_pos.x*1000.0 
+                    center_y_mm = member.map_pos.y *1000.0
                     obs.pose.x = center_x_mm - (obs.width_mm / 2.0)   # Center to top-left
                     obs.pose.y = center_y_mm - (obs.height_mm / 2.0)  # Center to top-left
                     obs.pose.theta = 0.0  # Orientation will be determined by batch direction
@@ -975,26 +976,73 @@ class HybridAStarNode(Node):
         return response
     def handle_get_batch_color_pattern(self, request, response):
         """
-        Service handler: Get color pattern for a batch by known_id
+        Service handler: Get color pattern for a batch by known_id or position
+        If known_id is empty, finds closest batch to the provided position
         """
 
         known_id = request.batch_known_id.strip()
 
         with self.batches_lock:
-            # Find batch by known_id
             batch = None
-            for b in self.batches.values():
-                if b.known_id == known_id:
-                    batch = b
-                    break
+            
+            # If known_id is empty, find closest batch to position
+            if known_id == "":
+                if not self.batches:
+                    response.success = False
+                    response.color_pattern = ""
+                    response.direction = ""
+                    response.message = "No batches available"
+                    self.get_logger().warn("❌ No batches available for position-based search")
+                    return response
+                
+                # Find closest batch to the provided position
+                pos_x = request.pos.x
+                pos_y = request.pos.y
+                min_distance = float('inf')
+                closest_batch = None
+                
+                for b in self.batches.values():
+                    if not b.members:
+                        continue
+                    
+                    # Calculate center of batch
+                    avg_x = sum(m.map_pos.x for m in b.members) / len(b.members)
+                    avg_y = sum(m.map_pos.y for m in b.members) / len(b.members)
+                    
+                    # Calculate distance
+                    distance = math.sqrt((avg_x - pos_x)**2 + (avg_y - pos_y)**2)
+                    
+                    if distance < min_distance:
+                        min_distance = distance
+                        closest_batch = b
+                
+                if closest_batch is None:
+                    response.success = False
+                    response.color_pattern = ""
+                    response.direction = ""
+                    response.message = "No valid batches found"
+                    self.get_logger().warn("❌ No valid batches found for position search")
+                    return response
+                
+                batch = closest_batch
+                self.get_logger().info(
+                    f"📍 Found closest batch '{batch.known_id}' at distance {min_distance:.1f}mm "
+                    f"from position ({pos_x:.1f}, {pos_y:.1f})"
+                )
+            else:
+                # Find batch by known_id
+                for b in self.batches.values():
+                    if b.known_id == known_id:
+                        batch = b
+                        break
 
-            if batch is None:
-                response.success = False
-                response.color_pattern = ""
-                response.direction = ""
-                response.message = f"Batch with known_id '{known_id}' not found"
-                self.get_logger().warn(f"❌ Batch known_id '{known_id}' not found")
-                return response
+                if batch is None:
+                    response.success = False
+                    response.color_pattern = ""
+                    response.direction = ""
+                    response.message = f"Batch with known_id '{known_id}' not found"
+                    self.get_logger().warn(f"❌ Batch known_id '{known_id}' not found")
+                    return response
 
             # Direction
             direction = batch.direction.lower()
@@ -1008,13 +1056,13 @@ class HybridAStarNode(Node):
                 # bottom → top, right → left
                 members.sort(
                     key=lambda m: (m.map_pos.y, m.map_pos.x),
-                    reverse=True
+                    reverse=False
                 )
             else:  # horizontal
                 # right → left, top → bottom
                 members.sort(
                     key=lambda m: (m.map_pos.x, m.map_pos.y),
-                    reverse=True
+                    reverse=False
                 )
 
             # Build color pattern
@@ -1029,12 +1077,18 @@ class HybridAStarNode(Node):
 
             response.success = True
             response.color_pattern = color_pattern
-            response.message = (
-                f"Batch '{known_id}' ({direction}): {color_pattern}"
-            )
+            
+            if known_id == "":
+                response.message = (
+                    f"Closest batch '{batch.known_id}' ({direction}): {color_pattern}"
+                )
+            else:
+                response.message = (
+                    f"Batch '{known_id}' ({direction}): {color_pattern}"
+                )
 
             self.get_logger().info(
-                f"📋 Batch '{known_id}' → pattern='{color_pattern}', "
+                f"📋 Batch '{batch.known_id}' → pattern='{color_pattern}', "
                 f"direction={direction}, members={len(members)}"
             )
 
