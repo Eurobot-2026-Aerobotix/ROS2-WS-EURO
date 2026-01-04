@@ -21,9 +21,9 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'strategy = euro.strategy:main',
-            'start_stm32_agent = euro.start_stm32_agent:main',
-            'strategy_manager = euro.strategy_manager:main',
+            'esp32_agents = euro.start_esp32_agents:main',
+            'stm32_agent = euro.start_stm32_agent:main',
+            'strategy= euro.strategy_manager:main',
         ],
     },
 )
