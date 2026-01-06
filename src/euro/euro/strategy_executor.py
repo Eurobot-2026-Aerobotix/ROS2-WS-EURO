@@ -6,12 +6,13 @@ Handles periodic execution of commands from device queues
 
 import rclpy
 import time
+from geometry_msgs.msg import Point
 
 # Global state variables
 IDLE = True
 EMERGENCY_STOP = False
 
-
+color_pt=None
 def robot_status(strategy, stm32, lidar):
     """Runs every 100ms to check STM32 movement status and lidar obstacles"""
     global IDLE
@@ -94,8 +95,56 @@ def stm32_task(strategy, stm32):
         
         time.sleep(0.1)  # 100ms
 
+def convert_color_pattern(color_pattern, robot_color):
+    """
+    Convert color pattern from 'y'/'b' format to decimal integer.
+    
+    Args:
+        color_pattern (str): Pattern string with 'y' (yellow) and 'b' (blue), e.g., "yybb", "ybyb"
+        robot_color (str): The robot's color, either 'y' (yellow) or 'b' (blue)
+    
+    Returns:
+        int: Decimal value where robot's color is '1' and opposite color is '0'
+        
+    Examples:
+        convert_color_pattern("yybb", "y") -> 12 (binary 1100)
+        convert_color_pattern("yybb", "b") -> 3 (binary 0011)
+        convert_color_pattern("ybyb", "y") -> 10 (binary 1010)
+        convert_color_pattern("ybyb", "b") -> 5 (binary 0101)
+    """
+    if not color_pattern:
+        return 0
+    
+    binary_str = ""
+    for char in color_pattern.lower():
+        if char == robot_color.lower():
+            binary_str += "0"
+        else:
+            binary_str += "1"
+    
+    return int(binary_str, 2)
 
-def front_task(strategy, front_controller=None):
+def talaa(strategy, front_controller=None):
+    """Request color pattern from pathfinding service"""
+    x = strategy.global_pos_x
+    y = strategy.global_pos_y
+    
+    # Create Point for current position
+    pos = Point()
+    pos.x = float(x)
+    pos.y = float(y)
+    pos.z = 0.0
+    known_id = ''
+    color_pattern, success = strategy.pathfinder.get_batch_color(known_id, pos)
+    if success:
+        color_pt=convert_color_pattern(color_pattern,"y")
+        front_controller.n20(color_pt)
+        return color_pattern
+    else:
+        strategy.get_logger().warning("⚠️ Failed to get color pattern")
+        return None
+
+def front_task(strategy, front_controller=None,pneumatic_controller=None):
     """Runs every 100ms to process ESP32_1 queue"""
     while rclpy.ok():
         # Check if there are commands in the queue
@@ -108,7 +157,30 @@ def front_task(strategy, front_controller=None):
             
             strategy.get_logger().info(f"📤 Front: Executing {command} with {params}")
             if command =='put_down':
-                front_controller.n20(20)
+                pneumatic_controller.front(color_pt)
+                time.sleep(0.3)
+                front_controller.n20(16)
+                front_controller.dawer(0)
+                pneumatic_controller.front(15)
+            if(command =='pick_up'):
+                pneumatic_controller.front(0)
+                front_controller.kabech(1)
+                front_controller.n20(16)
+                idle=front_controller.IDLE()
+                while(not idle):
+                    idle=front_controller.IDLE()
+                    time.sleep(0.1)
+                time.sleep(0.2)
+                w=talaa(strategy,front_controller)
+                strategy.get_logger().info(f"Color pattern received: {w}")
+                idle=front_controller.IDLE()
+                while(not idle):
+                    idle=front_controller.IDLE()
+                    time.sleep(0.1)
+                front_controller.kabech(0)
+                front_controller.dawer(1)
+                
+            
             # TODO: Add execution logic here
             # Example:
             # if command == 'change':

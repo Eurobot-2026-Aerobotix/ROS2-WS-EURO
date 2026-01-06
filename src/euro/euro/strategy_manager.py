@@ -279,7 +279,7 @@ def main(args=None):
     
     front_thread = threading.Thread(
         target=front_task,
-        args=(strategy, front),  # TODO: Pass ESP32_1 controller when available
+        args=(strategy, back,pneumatic),  # TODO: Pass ESP32_1 controller when available
         daemon=True
     )
     front_thread.start()
@@ -329,6 +329,7 @@ def main(args=None):
                 if global_goal:
                     strategy.global_pos_x = global_goal.get('x')
                     strategy.global_pos_y = global_goal.get('y')
+                    
                     # Support both 'angle' and 'theta' keys
                     strategy.global_pos_angle = global_goal.get('theta') or global_goal.get('angle')
                     strategy.get_logger().info(
