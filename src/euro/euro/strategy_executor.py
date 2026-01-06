@@ -130,12 +130,14 @@ def talaa(strategy, front_controller=None):
     y = strategy.global_pos_y
     
     # Create Point for current position
-    pos = Point()
-    pos.x = float(x)
-    pos.y = float(y)
-    pos.z = 0.0
+    # pos = Point()
+    # pos.x = float(x)
+    # pos.y = float(y)
+    # pos.z = 0.0
     known_id = ''
-    color_pattern, success = strategy.pathfinder.get_batch_color(known_id, pos)
+    #color_pattern, success = strategy.pathfinder.get_batch_color(known_id, pos)
+    color_pattern="yybb"
+    success=True
     if success:
         color_pt=convert_color_pattern(color_pattern,"y")
         front_controller.n20(color_pt)
@@ -166,17 +168,19 @@ def front_task(strategy, front_controller=None,pneumatic_controller=None):
                 pneumatic_controller.front(0)
                 front_controller.kabech(1)
                 front_controller.n20(16)
-                idle=front_controller.IDLE()
-                while(not idle):
-                    idle=front_controller.IDLE()
-                    time.sleep(0.1)
+                time.sleep(7)
+                # idle=front_controller.IDLE()
+                # while(not idle):
+                #     idle=front_controller.IDLE()
+                #     time.sleep(0.1)
                 time.sleep(0.2)
                 w=talaa(strategy,front_controller)
                 strategy.get_logger().info(f"Color pattern received: {w}")
-                idle=front_controller.IDLE()
-                while(not idle):
-                    idle=front_controller.IDLE()
-                    time.sleep(0.1)
+                time.sleep(7)
+                # idle=front_controller.IDLE()
+                # while(not idle):
+                #     idle=front_controller.IDLE()
+                #     time.sleep(0.1)
                 front_controller.kabech(0)
                 front_controller.dawer(1)
                 

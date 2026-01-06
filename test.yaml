@@ -1,0 +1,19 @@
+name: testsystem
+selected: false
+color: yellow
+tasks:
+- description: Task 1
+  global_goal:
+    x: null
+    y: null
+    theta: null
+  sequence:
+  - device: ESP_front
+    command: pick_up
+    params: []
+    wait: false
+  - device: ESP_front
+    command: put_down
+    params: []
+    wait: false
+  name: Task 1

@@ -14,14 +14,14 @@ def main():
         sys.exit(1)
 
     # Workspace paths
-    ros2_ws = "/home/ubuntu/uros_ws"
+    ros2_ws = "/home/harissa/micro_ros_agent_ws"
     setup_script = os.path.join(ros2_ws, "install/setup.bash")
     agent_cmd = "ros2 run micro_ros_agent micro_ros_agent"
 
     # ESP32 agent commands for 3 agents
-    esp1_cmd = f"bash -c 'source {setup_script} && {agent_cmd} serial --dev /dev/esp1 -b 115200 '"
-    esp2_cmd = f"bash -c 'source {setup_script} && {agent_cmd} serial --dev /dev/esp2 -b 115200 '"
-    esp3_cmd = f"bash -c 'source {setup_script} && {agent_cmd} serial --dev /dev/esp3 -b 115200 '"
+    esp1_cmd = f"bash -c 'source {setup_script} && {agent_cmd} serial --dev /dev/ttyUSB0 -b 115200 '"
+    esp2_cmd = f"bash -c 'source {setup_script} && {agent_cmd} serial --dev /dev/ttyUSB1 -b 115200 '"
+    esp3_cmd = f"bash -c 'source {setup_script} && {agent_cmd} serial --dev /dev/ttyUSB2 -b 115200 '"
 
     # tmux session name
     session_name = "esp32_agents"
