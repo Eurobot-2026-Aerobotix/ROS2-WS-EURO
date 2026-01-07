@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import subprocess
 import os
 import sys
@@ -13,36 +14,42 @@ def main():
         print("   sudo apt install tmux")
         sys.exit(1)
 
-    # Workspace paths
+    # Bashrc path
+    bashrc = os.path.expanduser("~/.bashrc")
     agent_cmd = "ros2 run micro_ros_agent micro_ros_agent"
 
-    # STM32 agent command (using sg dialout for serial port access without sudo)
-    # Need to source ROS setup because sg creates a new shell
-    stm32_cmd = f"sg dialout -c 'source ~/.bashrc && {agent_cmd} serial --dev /dev/ttyACM0 -b 115200'"
+    # ESP32 agent commands for 3 agents - source bashrc (which already has ROS2 sourced)
+    stm32_cmd = f"bash -c 'source {bashrc} && {agent_cmd} serial --dev /dev/ttyACM0 -b 115200'"
+   
 
     # tmux session name
-    session_name = "micro_ros"
+    session_name = "stm32_agents"
 
     # Kill old session
     run_cmd(["tmux", "kill-session", "-t", session_name])
 
-    # Create a new session (detached) - need to wrap command in bash -c for tmux
+    # Create a new session with first agent (detached)
     subprocess.call([
-        "tmux", "new-session", "-d", "-s", session_name, 
-        "bash", "-c", stm32_cmd
+        "tmux", "new-session", "-d", "-s", session_name, stm32_cmd
     ])
 
-    # Optional: set layout
+    # Set even horizontal layout
     subprocess.call([
-        "tmux", "select-layout", "-t", session_name, "even-vertical"
+        "tmux", "select-layout", "-t", session_name, "even-horizontal"
     ])
+
+    print("✅ STM32 micro-ROS agents starting in tmux session:", session_name)
+    print()
+    print("To attach to the session, run:")
+    print(f"   tmux attach -t {session_name}")
+    print()
+    print("To detach: Press Ctrl+B, then D")
+    print("To kill session: tmux kill-session -t", session_name)
 
     # Attach to the session
     subprocess.call([
         "tmux", "attach-session", "-t", session_name
     ])
-
-    print("✅ micro-ROS agent started in tmux session:", session_name)
 
 if __name__ == "__main__":
     main()

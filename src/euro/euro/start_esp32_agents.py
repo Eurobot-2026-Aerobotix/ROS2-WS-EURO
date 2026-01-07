@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import subprocess
 import os
 import sys
@@ -13,15 +14,14 @@ def main():
         print("   sudo apt install tmux")
         sys.exit(1)
 
-    # Workspace paths
-    ros2_ws = "/home/harissa/micro_ros_agent_ws"
-    setup_script = os.path.join(ros2_ws, "install/setup.bash")
+    # Bashrc path
+    bashrc = os.path.expanduser("~/.bashrc")
     agent_cmd = "ros2 run micro_ros_agent micro_ros_agent"
 
-    # ESP32 agent commands for 3 agents
-    esp1_cmd = f"bash -c 'source {setup_script} && {agent_cmd} serial --dev /dev/ttyUSB0 -b 115200 '"
-    esp2_cmd = f"bash -c 'source {setup_script} && {agent_cmd} serial --dev /dev/ttyUSB1 -b 115200 '"
-    esp3_cmd = f"bash -c 'source {setup_script} && {agent_cmd} serial --dev /dev/ttyUSB2 -b 115200 '"
+    # ESP32 agent commands for 3 agents - source bashrc (which already has ROS2 sourced)
+    esp1_cmd = f"bash -c 'source {bashrc} && {agent_cmd} serial --dev /dev/ttyUSB0 -b 115200'"
+    esp2_cmd = f"bash -c 'source {bashrc} && {agent_cmd} serial --dev /dev/ttyUSB1 -b 115200'"
+    esp3_cmd = f"bash -c 'source {bashrc} && {agent_cmd} serial --dev /dev/ttyUSB2 -b 115200'"
 
     # tmux session name
     session_name = "esp32_agents"
@@ -49,15 +49,21 @@ def main():
         "tmux", "select-layout", "-t", session_name, "even-horizontal"
     ])
 
+    print("✅ 3 ESP32 micro-ROS agents starting in tmux session:", session_name)
+    print("   - Agent 1 on /dev/ttyUSB0")
+    print("   - Agent 2 on /dev/ttyUSB1")
+    print("   - Agent 3 on /dev/ttyUSB2")
+    print()
+    print("To attach to the session, run:")
+    print(f"   tmux attach -t {session_name}")
+    print()
+    print("To detach: Press Ctrl+B, then D")
+    print("To kill session: tmux kill-session -t", session_name)
+
     # Attach to the session
     subprocess.call([
         "tmux", "attach-session", "-t", session_name
     ])
-
-    print("✅ 3 ESP32 micro-ROS agents started in tmux session:", session_name)
-    print("   - euro/esp1 on /dev/euro/esp1")
-    print("   - euro/esp2 on /dev/euro/esp2")
-    print("   - euro/esp3 on /dev/euro/esp3")
 
 if __name__ == "__main__":
     main()

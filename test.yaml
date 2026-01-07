@@ -16,4 +16,3 @@ tasks:
     command: put_down
     params: []
     wait: false
-  name: Task 1

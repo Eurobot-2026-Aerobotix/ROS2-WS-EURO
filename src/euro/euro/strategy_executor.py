@@ -128,7 +128,7 @@ def talaa(strategy, front_controller=None):
     """Request color pattern from pathfinding service"""
     x = strategy.global_pos_x
     y = strategy.global_pos_y
-    
+    global color_pt
     # Create Point for current position
     # pos = Point()
     # pos.x = float(x)
@@ -147,6 +147,7 @@ def talaa(strategy, front_controller=None):
         return None
 
 def front_task(strategy, front_controller=None,pneumatic_controller=None):
+    global color_pt
     """Runs every 100ms to process ESP32_1 queue"""
     while rclpy.ok():
         # Check if there are commands in the queue
@@ -159,31 +160,32 @@ def front_task(strategy, front_controller=None,pneumatic_controller=None):
             
             strategy.get_logger().info(f"📤 Front: Executing {command} with {params}")
             if command =='put_down':
+                print(color_pt)
+                time.sleep(1)
                 pneumatic_controller.front(color_pt)
-                time.sleep(0.3)
+                time.sleep(1)
                 front_controller.n20(16)
                 front_controller.dawer(0)
                 pneumatic_controller.front(15)
             if(command =='pick_up'):
                 pneumatic_controller.front(0)
                 front_controller.kabech(1)
+                time.sleep(0.3)
                 front_controller.n20(16)
-                time.sleep(7)
-                # idle=front_controller.IDLE()
-                # while(not idle):
-                #     idle=front_controller.IDLE()
-                #     time.sleep(0.1)
-                time.sleep(0.2)
+                idle=front_controller.IDLE()
+                while(not idle):
+                    idle=front_controller.IDLE()
+                    time.sleep(0.1)
+                time.sleep(1)
                 w=talaa(strategy,front_controller)
                 strategy.get_logger().info(f"Color pattern received: {w}")
-                time.sleep(7)
-                # idle=front_controller.IDLE()
-                # while(not idle):
-                #     idle=front_controller.IDLE()
-                #     time.sleep(0.1)
+                idle=front_controller.IDLE()
+                while(not idle):
+                    idle=front_controller.IDLE()
+                    time.sleep(0.1)
                 front_controller.kabech(0)
                 front_controller.dawer(1)
-                
+                time.sleep(1)
             
             # TODO: Add execution logic here
             # Example:
