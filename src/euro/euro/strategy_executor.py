@@ -140,7 +140,8 @@ def talaa(strategy, front_controller=None):
     success=True
     if success:
         color_pt=convert_color_pattern(color_pattern,"y")
-        front_controller.n20(color_pt)
+        color_pt = str(color_pt).replace('0', 'X').replace('1', '2').replace('X', '1')
+        front_controller.n20(int(color_pt))
         return color_pattern
     else:
         strategy.get_logger().warning("⚠️ Failed to get color pattern")
@@ -164,14 +165,15 @@ def front_task(strategy, front_controller=None,pneumatic_controller=None):
                 time.sleep(1)
                 pneumatic_controller.front(color_pt)
                 time.sleep(1)
-                front_controller.n20(16)
+                color_pt = str(color_pt).replace('1', '2')
+                front_controller.n20(int(color_pt)) 
                 front_controller.dawer(0)
                 pneumatic_controller.front(15)
             if(command =='pick_up'):
                 pneumatic_controller.front(0)
                 front_controller.kabech(1)
                 time.sleep(0.3)
-                front_controller.n20(16)
+                front_controller.n20(0)
                 idle=front_controller.IDLE()
                 while(not idle):
                     idle=front_controller.IDLE()
