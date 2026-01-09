@@ -140,13 +140,14 @@ def talaa(strategy, front_controller=None):
     success=True
     if success:
         color_pt=convert_color_pattern(color_pattern,"y")
-        color_pt = str(color_pt).replace('0', 'X').replace('1', '2').replace('X', '1')
-        front_controller.n20(int(color_pt))
+
+        #front_controller.n20(int(str(color_pt).replace('0', '2').replace('1', '3')))
+        front_controller.n20(3232)
         return color_pattern
     else:
         strategy.get_logger().warning("⚠️ Failed to get color pattern")
         return None
-
+#1 louta wl 2 fel wost wl 3 lfouk
 def front_task(strategy, front_controller=None,pneumatic_controller=None):
     global color_pt
     """Runs every 100ms to process ESP32_1 queue"""
@@ -163,17 +164,21 @@ def front_task(strategy, front_controller=None,pneumatic_controller=None):
             if command =='put_down':
                 print(color_pt)
                 time.sleep(1)
-                pneumatic_controller.front(color_pt)
-                time.sleep(1)
-                color_pt = str(color_pt).replace('1', '2')
-                front_controller.n20(int(color_pt)) 
-                front_controller.dawer(0)
+                #front_controller.n20(int(str(color_pt).replace('1', '3').replace('0', '1')))
+                front_controller.n20(3131)
+                idle=front_controller.IDLE()
+                while(not idle):
+                    idle=front_controller.IDLE()
+                    time.sleep(0.1)
                 pneumatic_controller.front(15)
+                front_controller.dawer(0)
             if(command =='pick_up'):
+                front_controller.n20(2222)
+                time.sleep(1)
                 pneumatic_controller.front(0)
                 front_controller.kabech(1)
                 time.sleep(0.3)
-                front_controller.n20(0)
+                front_controller.n20(1111)
                 idle=front_controller.IDLE()
                 while(not idle):
                     idle=front_controller.IDLE()
