@@ -97,33 +97,40 @@ def stm32_task(strategy, stm32):
 
 def convert_color_pattern(color_pattern, robot_color):
     """
-    Convert color pattern from 'y'/'b' format to decimal integer.
+    Convert color pattern from 'y'/'b' format to binary string.
     
     Args:
         color_pattern (str): Pattern string with 'y' (yellow) and 'b' (blue), e.g., "yybb", "ybyb"
         robot_color (str): The robot's color, either 'y' (yellow) or 'b' (blue)
     
     Returns:
-        int: Decimal value where robot's color is '1' and opposite color is '0'
+        str: Binary string where robot's color (my color) is '0' and opposite color (not my color) is '1'
         
     Examples:
-        convert_color_pattern("yybb", "y") -> 12 (binary 1100)
-        convert_color_pattern("yybb", "b") -> 3 (binary 0011)
-        convert_color_pattern("ybyb", "y") -> 10 (binary 1010)
-        convert_color_pattern("ybyb", "b") -> 5 (binary 0101)
+        convert_color_pattern("yybb", "y") -> "0011"  - first two are my color (0), last two are not (1)
+        convert_color_pattern("yybb", "b") -> "1100" - first two are not my color (1), last two are (0)
+        convert_color_pattern("ybyb", "y") -> "0101"  - y=0, b=1, y=0, b=1
+        convert_color_pattern("ybyb", "b") -> "1010" - y=1, b=0, y=1, b=0
     """
     if not color_pattern:
-        return 0
+        return "0"
     
     binary_str = ""
     for char in color_pattern.lower():
         if char == robot_color.lower():
-            binary_str += "0"
+            binary_str += "0"  # My color = 0
         else:
-            binary_str += "1"
+            binary_str += "1"  # Not my color = 1
     
-    return int(binary_str, 2)
+    return binary_str
 
+
+def stana(controller):
+    idle=controller.IDLE()
+    while(not idle):
+        idle=controller.IDLE()
+        time.sleep(0.1)
+    
 def talaa(strategy, front_controller=None):
     """Request color pattern from pathfinding service"""
     x = strategy.global_pos_x
@@ -139,10 +146,16 @@ def talaa(strategy, front_controller=None):
     color_pattern="yybb"
     success=True
     if success:
-        color_pt=convert_color_pattern(color_pattern,"y")
-
-        #front_controller.n20(int(str(color_pt).replace('0', '2').replace('1', '3')))
-        front_controller.n20(3232)
+        # Convert global color ('yellow' or 'blue') to single letter ('y' or 'b')
+        # Access color from strategy object instead of global variable
+        if  strategy.color:
+            robot_color = 'y' if strategy.color.lower() == 'yellow' else 'b'
+        else:
+            robot_color = 'y'  # Default to 'y' if color not set
+        print(f"Robot color: {strategy.color}")
+        color_pt = convert_color_pattern(color_pattern, robot_color)
+        color_to_N20=int(str(color_pt).replace('0', '2').replace('1', '3'))
+        front_controller.n20(color_to_N20)
         return color_pattern
     else:
         strategy.get_logger().warning("⚠️ Failed to get color pattern")
@@ -164,14 +177,12 @@ def front_task(strategy, front_controller=None,pneumatic_controller=None):
             if command =='put_down':
                 print(color_pt)
                 time.sleep(1)
-                #front_controller.n20(int(str(color_pt).replace('1', '3').replace('0', '1')))
-                front_controller.n20(3131)
-                idle=front_controller.IDLE()
-                while(not idle):
-                    idle=front_controller.IDLE()
-                    time.sleep(0.1)
+                color_to_N20=int(str(color_pt).replace('2', '1'))
+                front_controller.n20(color_to_N20)
+                stana(front_controller)
                 pneumatic_controller.front(15)
                 front_controller.dawer(0)
+                front_controller.n20(2222)
             if(command =='pick_up'):
                 front_controller.n20(2222)
                 time.sleep(1)
@@ -179,17 +190,11 @@ def front_task(strategy, front_controller=None,pneumatic_controller=None):
                 front_controller.kabech(1)
                 time.sleep(0.3)
                 front_controller.n20(1111)
-                idle=front_controller.IDLE()
-                while(not idle):
-                    idle=front_controller.IDLE()
-                    time.sleep(0.1)
+                stana(front_controller)
                 time.sleep(1)
                 w=talaa(strategy,front_controller)
                 strategy.get_logger().info(f"Color pattern received: {w}")
-                idle=front_controller.IDLE()
-                while(not idle):
-                    idle=front_controller.IDLE()
-                    time.sleep(0.1)
+                stana(front_controller)
                 front_controller.kabech(0)
                 front_controller.dawer(1)
                 time.sleep(1)

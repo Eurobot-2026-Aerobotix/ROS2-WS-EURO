@@ -14,6 +14,9 @@ import math
 from euro.pathfinder_controller import PathfinderClient
 from euro.strategy_executor import robot_status, stm32_task, front_task, back_task, pneumatic_task, IDLE, EMERGENCY_STOP
 
+# Global variable to store team color
+color = None
+
 class StrategyManager(Node):
     """
     Simple strategy manager that loads and displays tasks from YAML
@@ -24,6 +27,9 @@ class StrategyManager(Node):
         
         # Task storage - simple list
         self.tasks = []
+        
+        # Team color from YAML
+        self.color = None
         
         # Device queues
         self.queues = {
@@ -317,8 +323,9 @@ def main(args=None):
     # Load tasks
     try:
         strategy.get_logger().info(f"Loading tasks from: {tasks_file}")
-        strategy.tasks = load_tasks_from_yaml(tasks_file)
-        strategy.get_logger().info(f"✓ Loaded {len(strategy.tasks)} tasks\n")
+        strategy.tasks, strategy.color = load_tasks_from_yaml(tasks_file)
+        strategy.get_logger().info(f"✓ Loaded {len(strategy.tasks)} tasks")
+        strategy.get_logger().info(f"✓ Team color: {strategy.color}\n")
         
         # Execute tasks sequentially
         # Start a thread to execute tasks one by one
