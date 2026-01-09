@@ -198,22 +198,16 @@ def front_task(strategy, front_controller=None,pneumatic_controller=None):
                 front_controller.kabech(0)
                 front_controller.dawer(1)
                 time.sleep(1)
-            
-            # TODO: Add execution logic here
-            # Example:
-            # if command == 'change':
-            #     front_controller.change(params)
-            # elif command == 'request':
-            #     front_controller.request(params)
-            
-            # Remove command from queue after execution
             strategy.queues['ESP_front'].popleft()
         
         time.sleep(0.1)  # 100ms
 
 
-def back_task(strategy, back_controller=None):
+def back_task(strategy, back_controller=None,pneumatic_controller=None):
     """Runs every 100ms to process ESP32_2 queue"""
+    while rclpy.ok():
+        global color_pt
+    """Runs every 100ms to process ESP32_1 queue"""
     while rclpy.ok():
         # Check if there are commands in the queue
         if len(strategy.queues['ESP_back']) > 0:
@@ -224,15 +218,30 @@ def back_task(strategy, back_controller=None):
             wait = cmd.get('wait', False)
             
             strategy.get_logger().info(f"📤 back: Executing {command} with {params}")
-            
-            # TODO: Add execution logic here
-            # Example:
-            # if command == 'move':
-            #     back_controller.move(params)
-            # elif command == 'calculate':
-            #     back_controller.calculate(params)
-            
-            # Remove command from queue after execution
+            if command =='put_down':
+                print(color_pt)
+                time.sleep(1)
+                color_to_N20=int(str(color_pt).replace('2', '1'))
+                back_controller.n20(color_to_N20)
+                stana(back_controller)
+                pneumatic_controller.front(15)
+                back_controller.dawer(0)
+                back_controller.n20(2222)
+            if(command =='pick_up'):
+                back_controller.n20(2222)
+                time.sleep(1)
+                pneumatic_controller.front(0)
+                back_controller.kabech(1)
+                time.sleep(0.3)
+                back_controller.n20(1111)
+                stana(back_controller)
+                time.sleep(1)
+                w=talaa(strategy,back_controller)
+                strategy.get_logger().info(f"Color pattern received: {w}")
+                stana(back_controller)
+                back_controller.kabech(0)
+                back_controller.dawer(1)
+                time.sleep(1)
             strategy.queues['ESP_back'].popleft()
         
         time.sleep(0.1)  # 100ms

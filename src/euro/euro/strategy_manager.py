@@ -238,6 +238,15 @@ class StrategyManager(Node):
         
         self.get_logger().info(f"{'='*60}\n")
 
+def reset_systems(pneumatic_controller,front_controller,back_controller):
+    pneumatic_controller.front(0)
+    pneumatic_controller.back(0)
+    front_controller.kabech(0)
+    back_controller.kabech(0)
+    front_controller.dawer(0)
+    back_controller.dawer(0)
+    front_controller.n20(2222)
+    back_controller.n20(2222)
 
 def main(args=None):
     import sys
@@ -285,24 +294,24 @@ def main(args=None):
     
     front_thread = threading.Thread(
         target=front_task,
-        args=(strategy, back,pneumatic),  # TODO: Pass ESP32_1 controller when available
+        args=(strategy, front,pneumatic),  
         daemon=True
     )
     front_thread.start()
     
     back_thread = threading.Thread(
         target=back_task,
-        args=(strategy, back),  # TODO: Pass ESP32_2 controller when available
+        args=(strategy, back,pneumatic), 
         daemon=True
     )
     back_thread.start()
     
-    pneumatic_thread = threading.Thread(
-        target=pneumatic_task,
-        args=(strategy, pneumatic),  # TODO: Pass Pneumatic controller when available
-        daemon=True
-    )
-    pneumatic_thread.start()
+    # pneumatic_thread = threading.Thread(
+    #     target=pneumatic_task,
+    #     args=(strategy, pneumatic),  # TODO: Pass Pneumatic controller when available
+    #     daemon=True
+    # )
+    # pneumatic_thread.start()
     
     strategy.get_logger().info("✓ All threads started\n")
     # Get tasks file path
@@ -326,7 +335,7 @@ def main(args=None):
         strategy.tasks, strategy.color = load_tasks_from_yaml(tasks_file)
         strategy.get_logger().info(f"✓ Loaded {len(strategy.tasks)} tasks")
         strategy.get_logger().info(f"✓ Team color: {strategy.color}\n")
-        
+        reset_systems(pneumatic,front,back)
         # Execute tasks sequentially
         # Start a thread to execute tasks one by one
         def execute_tasks_sequentially():
