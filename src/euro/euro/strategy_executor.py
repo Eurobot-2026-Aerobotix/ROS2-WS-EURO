@@ -152,9 +152,9 @@ def talaa(strategy, front_controller=None):
             robot_color = 'y' if strategy.color.lower() == 'yellow' else 'b'
         else:
             robot_color = 'y'  # Default to 'y' if color not set
-        print(f"Robot color: {strategy.color}")
         color_pt = convert_color_pattern(color_pattern, robot_color)
         color_to_N20=int(str(color_pt).replace('0', '2').replace('1', '3'))
+        #print(f"Converted color pattern: {color_pt}, N20 command: {color_to_N20}")
         front_controller.n20(color_to_N20)
         return color_pattern
     else:
@@ -175,7 +175,6 @@ def front_task(strategy, front_controller=None,pneumatic_controller=None):
             
             strategy.get_logger().info(f"📤 Front: Executing {command} with {params}")
             if command =='put_down':
-                print(color_pt)
                 time.sleep(1)
                 color_to_N20=int(str(color_pt).replace('2', '1'))
                 front_controller.n20(color_to_N20)
@@ -204,9 +203,6 @@ def front_task(strategy, front_controller=None,pneumatic_controller=None):
 
 
 def back_task(strategy, back_controller=None,pneumatic_controller=None):
-    """Runs every 100ms to process ESP32_2 queue"""
-    while rclpy.ok():
-        global color_pt
     """Runs every 100ms to process ESP32_1 queue"""
     while rclpy.ok():
         # Check if there are commands in the queue
@@ -219,13 +215,15 @@ def back_task(strategy, back_controller=None,pneumatic_controller=None):
             
             strategy.get_logger().info(f"📤 back: Executing {command} with {params}")
             if command =='put_down':
-                print(color_pt)
                 time.sleep(1)
-                color_to_N20=int(str(color_pt).replace('2', '1'))
+                color_to_N20=int(str(color_pt).replace('1', '3').replace('0','1'))
+                print(f"Converted color pattern: {color_pt}, N20 command: {color_to_N20}")
+
                 back_controller.n20(color_to_N20)
                 stana(back_controller)
                 pneumatic_controller.front(15)
                 back_controller.dawer(0)
+                time.sleep(1)
                 back_controller.n20(2222)
             if(command =='pick_up'):
                 back_controller.n20(2222)

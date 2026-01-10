@@ -8,11 +8,11 @@ tasks:
     y: null
     theta: null
   sequence:
-  - device: ESP_front
+  - device: ESP_back
     command: pick_up
     params: []
     wait: false
-  - device: ESP_front
+  - device: ESP_back
     command: put_down
     params: []
     wait: false
