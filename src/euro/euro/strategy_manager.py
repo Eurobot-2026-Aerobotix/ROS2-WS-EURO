@@ -247,7 +247,7 @@ def reset_systems(pneumatic_controller,front_controller,back_controller):
     back_controller.dawer(0)
     front_controller.n20(2222)
     back_controller.n20(2222)
-
+    
 def main(args=None):
     import sys
     rclpy.init(args=args)
@@ -386,13 +386,58 @@ def main(args=None):
     
    
     
-    # Keep node alive
+    # Keep node alive with 'q' key shutdown
+    import sys
+    import select
+    import termios
+    import tty
+    
+    # Save terminal settings
+    old_settings = termios.tcgetattr(sys.stdin)
+    
     try:
+        # Set terminal to raw mode to read single characters
+        tty.setcbreak(sys.stdin.fileno())
         
-        executor.spin()
+        strategy.get_logger().info("Press 'q' to stop robot and shutdown gracefully...")
+        
+        shutdown_requested = False
+        while rclpy.ok() and not shutdown_requested:
+            # Spin once to process callbacks
+            executor.spin_once(timeout_sec=0.1)
+            # Check if 'q' was pressed
+            if select.select([sys.stdin], [], [], 0)[0]:
+                key = sys.stdin.read(1)
+                if key.lower() == 'q':
+                    strategy.get_logger().info("\n🛑 'q' pressed - Emergency shutdown...")
+                    shutdown_requested = True
+                    # Stop and reset STM32
+                    try:
+                        strategy.get_logger().info("Stopping STM32...")
+                        stm32.stop(timeout=2.0)
+                        strategy.get_logger().info("Resetting STM32...")
+                        stm32.reset(timeout=2.0)
+                        strategy.get_logger().info("✓ STM32 stopped and reset")
+                    except Exception as e:
+                        strategy.get_logger().error(f"Failed to stop/reset STM32: {e}")
+                    
+                    # Reset all systems
+                    try:
+                        strategy.get_logger().info("Resetting all systems...")
+                        reset_systems(pneumatic, front, back)
+                        strategy.get_logger().info("✓ All systems reset")
+                    except Exception as e:
+                        strategy.get_logger().error(f"Failed to reset systems: {e}")
+                    
+                    break
+    
     except KeyboardInterrupt:
-        strategy.get_logger().info("Shutting down...")
+        strategy.get_logger().info("\nShutting down...")
     finally:
+        # Restore terminal settings
+        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+        
+        # Cleanup nodes
         strategy.destroy_node()
         stm32.destroy_node()
         lidar.destroy_node()
