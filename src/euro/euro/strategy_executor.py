@@ -143,7 +143,7 @@ def talaa(strategy, front_controller=None):
     # pos.z = 0.0
     known_id = ''
     #color_pattern, success = strategy.pathfinder.get_batch_color(known_id, pos)
-    color_pattern="yybb"
+    color_pattern="bbbb"
     success=True
     if success:
         # Convert global color ('yellow' or 'blue') to single letter ('y' or 'b')
@@ -224,7 +224,10 @@ def back_task(strategy, back_controller=None,pneumatic_controller=None):
                 pneumatic_controller.front(15)
                 back_controller.dawer(0)
                 time.sleep(1)
+                back_controller.n20(3333)
+                stana(back_controller)
                 back_controller.n20(2222)
+                stana(back_controller)
             if(command =='pick_up'):
                 back_controller.n20(2222)
                 time.sleep(1)
@@ -240,6 +243,7 @@ def back_task(strategy, back_controller=None,pneumatic_controller=None):
                 back_controller.kabech(0)
                 back_controller.dawer(1)
                 time.sleep(1)
+               
             strategy.queues['ESP_back'].popleft()
         
         time.sleep(0.1)  # 100ms

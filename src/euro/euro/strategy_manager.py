@@ -239,8 +239,8 @@ class StrategyManager(Node):
         self.get_logger().info(f"{'='*60}\n")
 
 def reset_systems(pneumatic_controller,front_controller,back_controller):
-    #pneumatic_controller.front(0)
-    #pneumatic_controller.back(0)
+    pneumatic_controller.front(15)
+    pneumatic_controller.back(15)
     front_controller.kabech(0)
     back_controller.kabech(0)
     front_controller.dawer(0)

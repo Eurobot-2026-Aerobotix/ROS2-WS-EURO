@@ -1,6 +1,6 @@
 name: testsystem
 selected: false
-color: blue
+color: yellow
 tasks:
 - description: Task 1
   global_goal:
