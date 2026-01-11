@@ -1056,13 +1056,13 @@ class HybridAStarNode(Node):
                 # bottom → top, right → left
                 members.sort(
                     key=lambda m: (m.map_pos.y, m.map_pos.x),
-                    reverse=False
+                    reverse=True
                 )
             else:  # horizontal
                 # right → left, top → bottom
                 members.sort(
                     key=lambda m: (m.map_pos.x, m.map_pos.y),
-                    reverse=False
+                    reverse=True
                 )
 
             # Build color pattern
