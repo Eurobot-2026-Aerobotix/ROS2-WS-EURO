@@ -46,7 +46,7 @@ class StrategyManager(Node):
         self.global_pos_x = None
         self.global_pos_y = None
         self.global_pos_angle = None
-        
+        self.latest_robot_pose = None
         self.create_subscription(
             Vector3,
             '/robot_pose_raw',
@@ -60,7 +60,6 @@ class StrategyManager(Node):
         self.get_logger().info('Strategy Manager initialized')
     def robot_pose_callback(self, msg):
         self.latest_robot_pose = msg
-        # self.get_logger().info(f"Robot pose updated: {msg}")
     def path(self, x_goal, y_goal, theta_goal):
         print("Path function called")
         """Create start and goal PoseStamped from current pose and goal"""

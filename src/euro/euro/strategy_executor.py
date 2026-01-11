@@ -98,7 +98,27 @@ def stm32_task(strategy, stm32):
             strategy.queues['STM'].popleft()
         
         time.sleep(0.1)  # 100ms
+def handle_color_pattner( strategy):
+    """Handle color pattern retrieval"""
+    x = strategy.latest_robot_pose.x
+    y = strategy.latest_robot_pose.y
+    # Create Point for current position
+    pos = Point()
+    pos.x = float(x)
+    pos.y = float(y)
+    pos.z = 0.0
+    known_id = ''
+    color_pattern, success,direction = strategy.pathfinder.get_batch_color(known_id, pos)
+    
+    batch_center=Point()
+    batch_center.x=0.800
+    batch_center.y=0.150
+    if(direction=="horizontal" and y<batch_center.y) or (direction=="vertical" and x>batch_center.x):
+        strategy.get_logger().info(f"Batch is before the center point: {batch_center}")
+        #reverse the color pattern
+        color_pattern=color_pattern[::-1]
 
+    return color_pattern
 def convert_color_pattern(color_pattern, robot_color):
     """
     Convert color pattern from 'y'/'b' format to binary string.
@@ -146,8 +166,8 @@ def talaa(strategy, front_controller=None):
     # pos.y = float(y)
     # pos.z = 0.0
     known_id = ''
-    #color_pattern, success = strategy.pathfinder.get_batch_color(known_id, pos)
-    color_pattern="bbbb"
+    color_pattern=handle_color_pattner(strategy)
+    strategy.get_logger().info(f"Retrieved color pattern: {color_pattern}")
     success=True
     if success:
         # Convert global color ('yellow' or 'blue') to single letter ('y' or 'b')
