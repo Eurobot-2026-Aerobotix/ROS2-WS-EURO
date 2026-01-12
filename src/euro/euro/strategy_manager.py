@@ -172,18 +172,18 @@ class StrategyManager(Node):
             
             # Add command to device queue
             if device in self.queues:
-                if(wait):
+                
+                self.queues[device].append(cmd)
+                self.get_logger().info(f"      ✓ Added to {device} queue (wait: {wait})")
+            else:
+                self.get_logger().warn(f"      ⚠ Unknown device: {device}")
+            if(wait):
                     from euro.strategy_executor import IDLE
                     self.get_logger().info(f"   IDLE = {IDLE}.")
                     while(not IDLE):
                         from euro.strategy_executor import IDLE
                         self.get_logger().info("   Waiting for robot to become idle before adding wait command...")
                         time.sleep(0.5)
-                self.queues[device].append(cmd)
-                self.get_logger().info(f"      ✓ Added to {device} queue (wait: {wait})")
-            else:
-                self.get_logger().warn(f"      ⚠ Unknown device: {device}")
-            
         self.get_logger().info(f"\n{'='*60}")
         self.get_logger().info(f"QUEUE STATUS:")
         for device_name, queue in self.queues.items():
