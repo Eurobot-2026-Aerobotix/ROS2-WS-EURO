@@ -158,7 +158,7 @@ class STM32Controller(Node):
             self.get_logger().error(f'Orientate service error: {str(e)}')
             return False, f'Service error: {str(e)}'
 
-    def go_to(self, x, y, speed, is_smooth=0.0, timeout=10.0):
+    def go_to(self, x, y, speed, is_smooth=1.0, timeout=10.0):
         """Send a request to go to a specific position (x, y) at given speed"""
         if not self.navi_client.wait_for_service(timeout_sec=10.0):
             self.get_logger().error('NaviStm service not available')
@@ -191,7 +191,7 @@ class STM32Controller(Node):
         except Exception as e:
             self.get_logger().error(f'Go_to service error: {str(e)}')
             return False, f'Service error: {str(e)}'
-    def go_to_backwards(self, x, y, speed,is_smooth=0.0, timeout=10.0):
+    def go_to_backwards(self, x, y, speed,is_smooth=1.0, timeout=10.0):
         """Send a request to go to backwards a specific position (x, y) at given speed"""
         if not self.navi_client.wait_for_service(timeout_sec=10.0):
             self.get_logger().error('NaviStm service not available')

@@ -177,7 +177,7 @@ def talaa(strategy, front_controller=None):
         else:
             robot_color = 'y'  # Default to 'y' if color not set
         color_pt = convert_color_pattern(color_pattern, robot_color)
-        color_to_N20=int(str(color_pt).replace('0', '2').replace('1', '3'))
+        color_to_N20=int(str(color_pt).replace('0', '3').replace('1', '2'))
         #print(f"Converted color pattern: {color_pt}, N20 command: {color_to_N20}")
         front_controller.n20(color_to_N20)
         return color_pattern
@@ -240,7 +240,7 @@ def back_task(strategy, back_controller=None,pneumatic_controller=None):
             strategy.get_logger().info(f"📤 back: Executing {command} with {params}")
             if command =='put_down':
                 time.sleep(1)
-                color_to_N20=int(str(color_pt).replace('1', '3').replace('0','1'))
+                color_to_N20=int(str(color_pt).replace('1', '1').replace('0','3'))
                 print(f"Converted color pattern: {color_pt}, N20 command: {color_to_N20}")
 
                 back_controller.n20(color_to_N20)
