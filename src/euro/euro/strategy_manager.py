@@ -31,6 +31,9 @@ class StrategyManager(Node):
         # Team color from YAML
         self.color = None
         
+        # Strategy name from YAML
+        self.strategy_name = None
+        
         # Device queues
         self.queues = {
             'STM': deque(),
@@ -331,8 +334,9 @@ def main(args=None):
     # Load tasks
     try:
         strategy.get_logger().info(f"Loading tasks from: {tasks_file}")
-        strategy.tasks, strategy.color = load_tasks_from_yaml(tasks_file)
+        strategy.tasks, strategy.color, strategy.strategy_name = load_tasks_from_yaml(tasks_file)
         strategy.get_logger().info(f"✓ Loaded {len(strategy.tasks)} tasks")
+        strategy.get_logger().info(f"✓ Strategy name: {strategy.strategy_name}")
         strategy.get_logger().info(f"✓ Team color: {strategy.color}\n")
         reset_systems(pneumatic,front,back)
         # Execute tasks sequentially

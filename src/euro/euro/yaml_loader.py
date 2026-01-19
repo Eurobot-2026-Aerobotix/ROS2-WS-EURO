@@ -4,7 +4,7 @@ import yaml
 import os
 from typing import List, Dict, Any
 
-def load_tasks_from_yaml(yaml_file: str) -> tuple[List[Dict[str, Any]], str]:
+def load_tasks_from_yaml(yaml_file: str) -> tuple[List[Dict[str, Any]], str, str]:
     """
     Load tasks from YAML file into a simple list
     
@@ -12,7 +12,7 @@ def load_tasks_from_yaml(yaml_file: str) -> tuple[List[Dict[str, Any]], str]:
         yaml_file: Path to YAML file containing tasks
         
     Returns:
-        Tuple of (list of tasks, color string). Each task is a dictionary with name, description, dependencies, and sequence
+        Tuple of (list of tasks, color string, strategy name string). Each task is a dictionary with name, description, dependencies, and sequence
     """
     if not os.path.exists(yaml_file):
         raise FileNotFoundError(f"YAML file not found: {yaml_file}")
@@ -25,6 +25,9 @@ def load_tasks_from_yaml(yaml_file: str) -> tuple[List[Dict[str, Any]], str]:
     
     # Extract color field (defaults to 'yellow' if not specified)
     color = data.get('color', 'yellow')
+    
+    # Extract strategy name (defaults to 'Unnamed Strategy' if not specified)
+    strategy_name = data.get('name', 'Unnamed Strategy')
     
     # Check if tasks is already a list (new format) or dict (old format)
     tasks_data = data['tasks']
@@ -52,7 +55,7 @@ def load_tasks_from_yaml(yaml_file: str) -> tuple[List[Dict[str, Any]], str]:
             }
             tasks.append(task)
     
-    return tasks, color
+    return tasks, color, strategy_name
 
 
 def _convert_params_to_dict(device: str, command: str, params: list) -> dict:
