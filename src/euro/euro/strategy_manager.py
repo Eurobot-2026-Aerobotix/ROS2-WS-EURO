@@ -240,9 +240,13 @@ class StrategyManager(Node):
         
         self.get_logger().info(f"{'='*60}\n")
 
-def reset_systems(pneumatic_controller,front_controller,back_controller):
-    pneumatic_controller.front(0)
-    pneumatic_controller.back(0)
+def reset_systems(pneumatic_controller,front_controller,back_controller,stm32_controller=None):
+    if stm32_controller:
+        stm32_controller.stop(timeout=2.0)
+        time.sleep(1)
+        stm32_controller.reset(timeout=2.0)
+    pneumatic_controller.front(15)
+    pneumatic_controller.back(15)
     front_controller.kabech(0)
     back_controller.kabech(0)
     front_controller.dawer(0)
@@ -357,6 +361,7 @@ def main(args=None):
             strategy.get_logger().info(f"No PAMI folder found at: {pami_folder}\n")
         
         reset_systems(pneumatic,front,back)
+        time.sleep(2)
         # Execute tasks sequentially
         # Start a thread to execute tasks one by one
         def execute_tasks_sequentially():
@@ -439,11 +444,8 @@ def main(args=None):
                     
                     # Stop and reset STM32
                     try:
-                        strategy.get_logger().info("Stopping STM32...")
-                        stm32.stop(timeout=2.0)
-                        strategy.get_logger().info("Resetting STM32...")
-                        stm32.reset(timeout=2.0)
-                        strategy.get_logger().info("✓ STM32 stopped and reset")
+                        reset_systems(pneumatic,front,back,stm32)
+                        strategy.get_logger().info("✓ reset done ")
                     except Exception as e:
                         strategy.get_logger().error(f"Failed to stop/reset STM32: {e}")
                     
