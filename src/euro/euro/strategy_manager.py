@@ -240,19 +240,32 @@ class StrategyManager(Node):
         
         self.get_logger().info(f"{'='*60}\n")
 
-def reset_systems(pneumatic_controller,front_controller,back_controller,stm32_controller=None):
-    if stm32_controller:
-        stm32_controller.stop(timeout=2.0)
-        time.sleep(1)
-        stm32_controller.reset(timeout=2.0)
-    pneumatic_controller.front(15)
-    pneumatic_controller.back(15)
-    front_controller.kabech(0)
-    back_controller.kabech(0)
-    front_controller.dawer(0)
-    back_controller.dawer(0)
-    front_controller.n20(2222)
-    back_controller.n20(2222)
+def reset_systems(pneumatic_controller,front_controller,back_controller,stm32_controller=None,strategy=None):
+    """Add RESET command to RASP_PI queue for background execution"""
+    if strategy:
+        # Add RESET command to RASP_PI queue
+        strategy.queues['RASP_PI'].append({
+            'command': 'RESET',
+            'params': {},
+            'wait': False
+        })
+        strategy.get_logger().info("✓ RESET command added to RASP_PI queue")
+    else:
+        # Fallback: execute directly if strategy not available
+        if stm32_controller:
+            stm32_controller.stop(timeout=2.0)
+            time.sleep(1)
+            stm32_controller.reset(timeout=2.0)
+        pneumatic_controller.front(15)
+        pneumatic_controller.back(15)
+        front_controller.kabech(0)
+        back_controller.kabech(0)
+        front_controller.dawer(0)
+        back_controller.dawer(0)
+        front_controller.n20(2222)
+        back_controller.n20(2222)
+        # Allow time for messages to be sent
+        time.sleep(0.1)
     
 def main(args=None):
     import sys
@@ -319,7 +332,7 @@ def main(args=None):
     
     rasp_pi_thread = threading.Thread(
         target=rasp_pi_task,
-        args=(strategy, rpi),
+        args=(strategy, rpi, stm32, front, back, pneumatic),
         daemon=True
     )
     rasp_pi_thread.start()
@@ -360,7 +373,7 @@ def main(args=None):
         else:
             strategy.get_logger().info(f"No PAMI folder found at: {pami_folder}\n")
         
-        reset_systems(pneumatic,front,back)
+        reset_systems(pneumatic,front,back,strategy=strategy)
         time.sleep(2)
         # Execute tasks sequentially
         # Start a thread to execute tasks one by one
@@ -444,7 +457,7 @@ def main(args=None):
                     
                     # Stop and reset STM32
                     try:
-                        reset_systems(pneumatic,front,back,stm32)
+                        reset_systems(pneumatic,front,back,stm32,strategy=strategy)
                         strategy.get_logger().info("✓ reset done ")
                     except Exception as e:
                         strategy.get_logger().error(f"Failed to stop/reset STM32: {e}")
@@ -452,7 +465,9 @@ def main(args=None):
                     # Reset all systems
                     try:
                         strategy.get_logger().info("Resetting all systems...")
-                        reset_systems(pneumatic, front, back)
+                        reset_systems(pneumatic, front, back, strategy=strategy)
+                        # Extra time to ensure all reset messages are sent
+                        time.sleep(0.2)
                         strategy.get_logger().info("✓ All systems reset")
                     except Exception as e:
                         strategy.get_logger().error(f"Failed to reset systems: {e}")

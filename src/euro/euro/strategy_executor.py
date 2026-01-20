@@ -303,7 +303,7 @@ def pneumatic_task(strategy, pneumatic_controller=None):
         time.sleep(0.1)  # 100ms
 
 
-def rasp_pi_task(strategy, rpi_controller=None):
+def rasp_pi_task(strategy, rpi_controller=None, stm32_controller=None, front_controller=None, back_controller=None, pneumatic_controller=None):
     """Runs every 100ms to process RASP_PI queue"""
     while rclpy.ok():
         # Check if there are commands in the queue
@@ -323,6 +323,31 @@ def rasp_pi_task(strategy, rpi_controller=None):
                     strategy.get_logger().info(f"✅ Tirette tjebdet  STRATEGY GOOOOOOOOO !!!!")
                 else:
                     strategy.get_logger().warning("RPI controller not available - skipping wait_start")
+            elif command == 'RESET':
+                # Execute reset in background
+                strategy.get_logger().info("🔄 Executing RESET command in background...")
+                if stm32_controller:
+                    stm32_controller.stop(timeout=2.0)
+                    while not IDLE:
+                        time.sleep(0.1)
+                        strategy.get_logger().info("⏳ Waiting for STM32 to become IDLE before reset...")
+                    stm32_controller.reset(timeout=2.0)
+                if pneumatic_controller:
+                    pneumatic_controller.front(15)
+                    pneumatic_controller.back(15)
+                if front_controller:
+                    front_controller.kabech(0)
+                    front_controller.dawer(0)
+                    front_controller.n20(2222)
+                    stana(front_controller)
+                if back_controller:
+                    back_controller.kabech(0)
+                    back_controller.dawer(0)
+                    back_controller.n20(2222)
+                    stana(back_controller)
+                # Allow time for messages to be sent
+                time.sleep(0.1)
+                strategy.get_logger().info("✅ RESET command completed")
             else:
                 strategy.get_logger().warn(f"Unknown RASP_PI command: {command}")
             
