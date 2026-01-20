@@ -295,3 +295,31 @@ def pneumatic_task(strategy, pneumatic_controller=None):
             strategy.queues['ESP_pneumatic'].popleft()
         
         time.sleep(0.1)  # 100ms
+
+
+def rasp_pi_task(strategy, rpi_controller=None):
+    """Runs every 100ms to process RASP_PI queue"""
+    while rclpy.ok():
+        # Check if there are commands in the queue
+        if len(strategy.queues['RASP_PI']) > 0:
+            cmd = strategy.queues['RASP_PI'][0]  # Peek at first command
+            
+            command = cmd.get('command')
+            params = cmd.get('params', {})
+            wait = cmd.get('wait', False)
+            
+            strategy.get_logger().info(f"📤 RASP_PI: Executing {command} with {params}")
+            
+            # Execute RASP_PI commands
+            if command == 'Wait for manual start':
+                if rpi_controller:
+                    rpi_controller.wait_start()
+                else:
+                    strategy.get_logger().warning("RPI controller not available - skipping wait_start")
+            else:
+                strategy.get_logger().warn(f"Unknown RASP_PI command: {command}")
+            
+            # Remove command from queue after execution
+            strategy.queues['RASP_PI'].popleft()
+        
+        time.sleep(0.1)  # 100ms

@@ -12,7 +12,7 @@ from geometry_msgs.msg import PoseStamped, Pose2D, Quaternion,Vector3
 from euro.yaml_loader import load_tasks_from_yaml
 import math
 from euro.pathfinder_controller import PathfinderClient
-from euro.strategy_executor import robot_status, stm32_task, front_task, back_task, pneumatic_task, IDLE, EMERGENCY_STOP
+from euro.strategy_executor import robot_status, stm32_task, front_task, back_task, pneumatic_task, rasp_pi_task, IDLE, EMERGENCY_STOP
 
 # Global variable to store team color
 color = None
@@ -39,7 +39,7 @@ class StrategyManager(Node):
             'STM': deque(),
             'ESP_front': deque(),
             'ESP_back': deque(),
-            'ESP_pneumatic': deque()
+            'RASP_PI': deque()
         }
         
         # Flag to pause task loading during pathfinding
@@ -260,7 +260,8 @@ def main(args=None):
     from euro.pathfinder_controller import PathfinderClient
     from euro.pneumatic_controller import PneumaticController
     from euro.front_systems_controller import FrontSystemsController
-    from euro.back_systems_controller import BackSystemsController  
+    from euro.back_systems_controller import BackSystemsController
+    from euro.rpi_controller import RPiController
     # Initialize controllers
     stm32 = STM32Controller('rpi_stm32')
     lidar = Lidar()
@@ -270,6 +271,7 @@ def main(args=None):
     front= FrontSystemsController()
     back= BackSystemsController()
     pneumatic= PneumaticController()
+    rpi= RPiController()
     # Create executor for ROS2 nodes
     executor = MultiThreadedExecutor()
     executor.add_node(stm32)
@@ -278,6 +280,7 @@ def main(args=None):
     executor.add_node(front)
     executor.add_node(back)
     executor.add_node(pneumatic)
+    executor.add_node(rpi)
      # Start background threads for each device
     strategy.get_logger().info("Starting background threads...")
     
@@ -309,12 +312,13 @@ def main(args=None):
     )
     back_thread.start()
     
-    # pneumatic_thread = threading.Thread(
-    #     target=pneumatic_task,
-    #     args=(strategy, pneumatic),  # TODO: Pass Pneumatic controller when available
-    #     daemon=True
-    # )
-    # pneumatic_thread.start()
+    
+    rasp_pi_thread = threading.Thread(
+        target=rasp_pi_task,
+        args=(strategy, rpi),
+        daemon=True
+    )
+    rasp_pi_thread.start()
     
     strategy.get_logger().info("✓ All threads started\n")
     # Get tasks file path
