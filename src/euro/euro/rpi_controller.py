@@ -17,30 +17,30 @@ class RPiController:
         # Disable warnings
         GPIO.setwarnings(False)
         
-        # Pin 17: Set as OUTPUT and always HIGH
-        self.pin_high = 17
+        # Pin 27: Set as OUTPUT and always HIGH
+        self.pin_high = 27
         GPIO.setup(self.pin_high, GPIO.OUT)
         GPIO.output(self.pin_high, GPIO.HIGH)
         
-        # Pin 27: Set as INPUT to read button state
-        self.pin_read = 27
+        # Pin 17: Set as INPUT to read button state
+        self.pin_read = 17
         GPIO.setup(self.pin_read, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
     
     def wait_start(self):
         """
-        Wait for button press on pin 27
-        Pin 17 is kept HIGH, pin 27 reads the button state
-        Returns the value of pin 27 when button is pressed
+        Wait for button press on pin 17
+        Pin 27 is kept HIGH, pin 17 reads the button state
+        Returns the value of pin 17 when button is pressed
         """
-        print("⏸️  Waiting for manual start button press (pin 27)...")
+        print("⏸️  Waiting for manual start button press (pin 17)...")
         
-        # Wait until pin 27 goes HIGH (button pressed)
+        # Wait until pin 17 goes HIGH (button pressed)
         while GPIO.input(self.pin_read) == GPIO.LOW:
             time.sleep(0.01)  # 10ms polling
         
         # Button is pressed, get the value
         value = GPIO.input(self.pin_read)
-        print(f"✅ Button pressed! Pin 27 value: {value}")
+        print(f"✅ Button pressed! Pin 17 value: {value}")
         
         # Optional: Wait for button release to avoid multiple triggers
         while GPIO.input(self.pin_read) == GPIO.HIGH:
@@ -48,8 +48,8 @@ class RPiController:
         
         return value
     
-    def read_pin_27(self):
-        """Read the current state of pin 27"""
+    def read_pin_17(self):
+        """Read the current state of pin 17"""
         return GPIO.input(self.pin_read)
     
     def cleanup(self):
