@@ -305,15 +305,17 @@ def rasp_pi_task(strategy, rpi_controller=None):
             cmd = strategy.queues['RASP_PI'][0]  # Peek at first command
             
             command = cmd.get('command')
-            params = cmd.get('params', {})
+            params = cmd.get('params', [])
             wait = cmd.get('wait', False)
             
-            strategy.get_logger().info(f"📤 RASP_PI: Executing {command} with {params}")
+            strategy.get_logger().info(f"📤 RASP_PI: Executing {command} with params={params}")
             
             # Execute RASP_PI commands
             if command == 'Wait for manual start':
                 if rpi_controller:
-                    rpi_controller.wait_start()
+                    strategy.get_logger().info("⏸️  Calling rpi_controller.wait_start()...")
+                    result = rpi_controller.wait_start()
+                    strategy.get_logger().info(f"✅ wait_start() returned: {result}")
                 else:
                     strategy.get_logger().warning("RPI controller not available - skipping wait_start")
             else:
