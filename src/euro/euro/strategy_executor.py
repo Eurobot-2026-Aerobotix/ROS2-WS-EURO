@@ -148,9 +148,9 @@ def convert_color_pattern(color_pattern, robot_color):
     binary_str = ""
     for char in color_pattern.lower():
         if char == robot_color.lower():
-            binary_str += "0"  # My color = 0
+            binary_str += "1"  # My color = 1
         else:
-            binary_str += "1"  # Not my color = 1
+            binary_str += "0"  # Not my color = 0
     
     return binary_str
 
