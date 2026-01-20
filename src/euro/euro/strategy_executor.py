@@ -313,9 +313,8 @@ def rasp_pi_task(strategy, rpi_controller=None):
             # Execute RASP_PI commands
             if command == 'Wait for manual start':
                 if rpi_controller:
-                    strategy.get_logger().info("⏸️  Calling rpi_controller.wait_start()...")
                     result = rpi_controller.wait_start()
-                    strategy.get_logger().info(f"✅ wait_start() returned: {result}")
+                    strategy.get_logger().info(f"✅ Tirette tjebdet  STRATEGY GOOOOOOOOO !!!!")
                 else:
                     strategy.get_logger().warning("RPI controller not available - skipping wait_start")
             else:

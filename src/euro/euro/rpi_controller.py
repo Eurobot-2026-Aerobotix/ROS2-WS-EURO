@@ -12,18 +12,14 @@ from rclpy.node import Node
 try:
     from gpiozero import DigitalOutputDevice, DigitalInputDevice, Device
     GPIO_AVAILABLE = True
-    print("gpiozero library loaded successfully")
     # Set default pin factory to lgpio for better RPi 5 support
     try:
         from gpiozero.pins.lgpio import LGPIOFactory
         Device.pin_factory = LGPIOFactory()
-        print("Using lgpio pin factory for RPi 5 compatibility")
-    except ImportError:
-        print("lgpio not available, using default pin factory")
-except (ImportError, RuntimeError) as e:
+    except (ImportError, Exception):
+        pass  # Use default pin factory
+except (ImportError, RuntimeError):
     GPIO_AVAILABLE = False
-    print(f"gpiozero not available: {e}")
-    print("GPIO functions will be simulated for testing purposes")
 
 class RPiController(Node):
     """ROS2 Node for Raspberry Pi GPIO operations"""
@@ -43,10 +39,25 @@ class RPiController(Node):
         self.gpio_initialized = False
         
         if not GPIO_AVAILABLE:
-            self.get_logger().warning("GPIO not available - running in simulation mode")
+            self.get_logger().warning("GPIO library not available - running in simulation mode")
             return
         
         try:
+            # First, try to close any existing pin factory to release GPIO locks
+            try:
+                if Device.pin_factory is not None:
+                    Device.pin_factory.close()
+                    Device.pin_factory = None
+            except Exception:
+                pass
+            
+            # Re-initialize pin factory
+            try:
+                from gpiozero.pins.lgpio import LGPIOFactory
+                Device.pin_factory = LGPIOFactory()
+            except Exception:
+                pass
+            
             # Setup VCC pin as output (always HIGH)
             self.vcc_device = DigitalOutputDevice(self.VCC_PIN, initial_value=True)
             
@@ -54,11 +65,14 @@ class RPiController(Node):
             self.button_device = DigitalInputDevice(self.BUTTON_PIN, pull_up=False)
             
             self.gpio_initialized = True
-            self.get_logger().info("✅ GPIO pins initialized successfully using gpiozero")
-            self.get_logger().info(f"VCC pin: GPIO {self.VCC_PIN} (Output, always HIGH)")
-            self.get_logger().info(f"Button pin: GPIO {self.BUTTON_PIN} (Input with pulldown)")
+            self.get_logger().info(f"✅ GPIO initialized (VCC:{self.VCC_PIN}, Button:{self.BUTTON_PIN})")
+        except PermissionError as pe:
+            self.get_logger().error(f"❌ Permission denied: {pe}")
+            self.get_logger().error("Try: sudo usermod -a -G gpio $USER")
+            self.gpio_initialized = False
         except Exception as e:
-            self.get_logger().error(f"❌ Failed to initialize GPIO: {e}")
+            self.get_logger().error(f"❌ GPIO init failed: {e}")
+            self.get_logger().error("Try: sudo pkill -f strategy")
             self.gpio_initialized = False
     
     def wait_start(self):
@@ -68,20 +82,17 @@ class RPiController(Node):
         Returns the value of pin 17 when button is pressed
         """
         if not self.gpio_initialized:
-            self.get_logger().warning("⚠️  GPIO not initialized - simulating button press after 1 second")
+            self.get_logger().warning("GPIO not initialized - simulating button press")
             time.sleep(1)
-            self.get_logger().info("✅ Simulated button press!")
             return 1
         
-        self.get_logger().info("⏸️  Waiting for manual start button press (pin 17)...")
+        self.get_logger().info("⏸️  Waiting for Triette ...")
         
         # Wait until pin 17 goes LOW (jbeda l tirtette)
-        while  self.button_device.value:
+        while self.button_device.value:
             time.sleep(0.01)  # 10ms polling
         
-        # Button is pressed, get the value
         value = self.button_device.value
-        self.get_logger().info(f"✅ Triette  Removed ! Pin 17 value: {value}")
         
         return value
     
@@ -93,15 +104,26 @@ class RPiController(Node):
     
     def cleanup(self):
         """Clean up GPIO resources"""
-        if self.gpio_initialized and GPIO_AVAILABLE:
+        if GPIO_AVAILABLE:
             try:
                 if self.vcc_device:
                     self.vcc_device.close()
+                    self.vcc_device = None
                 if self.button_device:
                     self.button_device.close()
-                self.get_logger().info("GPIO cleanup completed")
+                    self.button_device = None
+                
+                # Close the pin factory to fully release GPIO
+                if Device.pin_factory is not None:
+                    Device.pin_factory.close()
+                    Device.pin_factory = None
+                
+                self.gpio_initialized = False
+                if hasattr(self, 'get_logger'):
+                    self.get_logger().info("GPIO cleanup completed")
             except Exception as e:
-                self.get_logger().warning(f"GPIO cleanup warning: {e}")
+                if hasattr(self, 'get_logger'):
+                    self.get_logger().warning(f"GPIO cleanup warning: {e}")
     
     def __del__(self):
         """Destructor to ensure GPIO cleanup"""

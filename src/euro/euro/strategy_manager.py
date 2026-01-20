@@ -470,12 +470,20 @@ def main(args=None):
         
         # Cleanup nodes
         try:
+            # Clean up GPIO resources first
+            rpi.cleanup()
+            
+            # Destroy all nodes
             strategy.destroy_node()
             stm32.destroy_node()
             lidar.destroy_node()
+            front.destroy_node()
+            back.destroy_node()
+            pneumatic.destroy_node()
+            rpi.destroy_node()
             executor.shutdown()
-        except:
-            pass  # Nodes may already be destroyed
+        except Exception as e:
+            strategy.get_logger().warning(f"Cleanup warning: {e}")
         
         # Only shutdown if context is still valid
         if rclpy.ok():
