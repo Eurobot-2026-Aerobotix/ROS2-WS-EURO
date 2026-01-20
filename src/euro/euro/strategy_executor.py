@@ -74,7 +74,10 @@ def stm32_task(strategy, stm32):
                 stm32.rotate(params[0], params[1] if len(params) > 1 else 0.0)
                 IDLE = False
             elif command == 'go_to':
-                stm32.go_to(params[0], params[1], params[2])
+                if len(params) > 3:
+                    stm32.go_to(params[0], params[1], params[2], params[3])
+                else:
+                    stm32.go_to(params[0], params[1], params[2])
                 IDLE = False
             elif command == 'orientate':
                 stm32.orientate(params[0], params[1] if len(params) > 1 else 0.0)
@@ -83,7 +86,10 @@ def stm32_task(strategy, stm32):
                 stm32.bezier_curve(params[0], params[1], params[2], params[3], params[4], params[5], params[6])
                 IDLE = False
             elif command == 'go_to_backwards':
-                stm32.go_to_backwards(params[0], params[1], params[2])
+                if len(params) > 3:
+                    stm32.go_to_backwards(params[0], params[1], params[2], params[3])
+                else:
+                    stm32.go_to_backwards(params[0], params[1], params[2])
                 IDLE = False
             elif command == 'bezier_backwards':
                 stm32.bezier_curve_backwards(params[0], params[1], params[2], params[3], params[4], params[5], params[6])
