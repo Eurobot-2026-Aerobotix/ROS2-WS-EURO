@@ -266,6 +266,7 @@ def main(args=None):
     lidar = Lidar()
     # Create strategy manager
     strategy = StrategyManager()
+    strategy
     front= FrontSystemsController()
     back= BackSystemsController()
     pneumatic= PneumaticController()
@@ -338,6 +339,19 @@ def main(args=None):
         strategy.get_logger().info(f"✓ Loaded {len(strategy.tasks)} tasks")
         strategy.get_logger().info(f"✓ Strategy name: {strategy.strategy_name}")
         strategy.get_logger().info(f"✓ Team color: {strategy.color}\n")
+        
+        # Load and publish PAMI strategies
+        pami_folder = os.path.join(os.path.dirname(tasks_file), '..', 'pami_strategies')
+        pami_folder = os.path.abspath(pami_folder)
+        
+        if os.path.exists(pami_folder):
+            strategy.get_logger().info(f"Loading PAMI strategies from: {pami_folder}")
+            from euro.pami_controller import PamiController
+            pami_ctrl = PamiController(strategy.strategy_name, pami_folder, 'pami_controller_internal')
+            strategy.get_logger().info("✓ PAMI strategies loaded and published\n")
+        else:
+            strategy.get_logger().info(f"No PAMI folder found at: {pami_folder}\n")
+        
         reset_systems(pneumatic,front,back)
         # Execute tasks sequentially
         # Start a thread to execute tasks one by one

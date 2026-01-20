@@ -24,6 +24,7 @@ setup(
             'esp32_agents = euro.start_esp32_agents:main',
             'stm32_agent = euro.start_stm32_agent:main',
             'strategy_manager= euro.strategy_manager:main',
+            'pami_controller = euro.pami_controller:main',
         ],
     },
 )
