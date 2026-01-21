@@ -2,6 +2,7 @@
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from std_msgs.msg import Int32
 from std_srvs.srv import Trigger
 
@@ -15,10 +16,17 @@ class FrontSystemsController(Node):
     def __init__(self, node_name='front_systems_controller'):
         super().__init__(node_name)
         
-        # Publishers for front systems
-        self.n20_pub = self.create_publisher(Int32, '/front/n20', 10)
-        self.kabech_pub = self.create_publisher(Int32, '/front/kabech', 10)
-        self.dawer_pub = self.create_publisher(Int32, '/front/dawer', 10)
+        # Create QoS profile with reliable settings
+        qos_profile = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1
+        )
+        
+        # Publishers for front systems with reliable QoS
+        self.n20_pub = self.create_publisher(Int32, '/front/n20', qos_profile)
+        self.kabech_pub = self.create_publisher(Int32, '/front/kabech', qos_profile)
+        self.dawer_pub = self.create_publisher(Int32, '/front/dawer', qos_profile)
         
         # Service client for isIDLE
         self.idle_client = self.create_client(Trigger, '/front/isIDLE')
