@@ -2,6 +2,7 @@
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from std_msgs.msg import Int32
 
 
@@ -14,9 +15,16 @@ class PneumaticController(Node):
     def __init__(self, node_name='pneumatic_controller'):
         super().__init__(node_name)
         
-        # Publishers for pneumatic systems
-        self.front_pub = self.create_publisher(Int32, '/front/pneumatic', 10)
-        self.backward_pub = self.create_publisher(Int32, '/backward/pneumatic', 10)
+        # Create QoS profile with reliable settings
+        qos_profile = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1
+        )
+        
+        # Publishers for pneumatic systems with reliable QoS
+        self.front_pub = self.create_publisher(Int32, '/front/pneumatic', qos_profile)
+        self.backward_pub = self.create_publisher(Int32, '/backward/pneumatic', qos_profile)
         
         self.get_logger().info('Pneumatic Controller initialized')
 
