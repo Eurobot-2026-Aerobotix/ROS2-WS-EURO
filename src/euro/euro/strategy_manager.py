@@ -44,7 +44,7 @@ class StrategyManager(Node):
         
         # Flag to pause task loading during pathfinding
         self.is_replanning = False
-        
+        self.command_waiting=False
         # Global goal position storage
         self.global_pos_x = None
         self.global_pos_y = None
@@ -179,10 +179,8 @@ class StrategyManager(Node):
                 self.get_logger().info(f"      ✓ Added to {device} queue (wait: {wait})")
                 if wait :
                     from euro.strategy_executor import IDLE
-                    self.get_logger().info(f"IDLE: {IDLE}")
-                    self.get_logger().info(f"IDLE: {len(self.queues["STM"])}")
-                    while not IDLE or  len(self.queues["STM"])!=0:
-                        self.get_logger().info(f"IDLE: {IDLE}")
+                    while not IDLE or  len(self.queues["STM"])!=0 :
+                        self.get_logger().info(f"WAITING IDLE LOOP : {IDLE}")
                         from euro.strategy_executor import IDLE
                         time.sleep(0.1)
             else:

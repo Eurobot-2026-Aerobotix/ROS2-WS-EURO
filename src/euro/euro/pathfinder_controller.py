@@ -80,6 +80,8 @@ class PathfinderClient(Node):
         Returns:
             color_pattern (str)
             success (bool)
+            direction (str)
+            batch_center (Point)
         """
 
         request = GetBatchColorPattern.Request()
@@ -91,19 +93,19 @@ class PathfinderClient(Node):
 
         if not future.result():
             self.get_logger().error('❌ Batch color service call failed')
-            return "", False,""
+            return "", False, "", Point()
 
         response = future.result()
 
         if response.success:
             self.get_logger().info(
                 f'🎨 Batch {known_id} → {response.color_pattern} '
-                f'({response.direction})'
+                f'({response.direction}) @ ({response.batch_center.x:.3f}, {response.batch_center.y:.3f})'
             )
-            return response.color_pattern, True,response.direction
+            return response.color_pattern, True, response.direction, response.batch_center
         else:
             self.get_logger().warning(f'⚠ Batch error: {response.message}')
-            return "", False,""
+            return "", False, "", Point()
 
 
 def main(args=None):

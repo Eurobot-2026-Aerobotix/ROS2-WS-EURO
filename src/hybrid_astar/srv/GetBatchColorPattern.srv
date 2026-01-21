@@ -4,4 +4,5 @@ geometry_msgs/Point pos
 bool success
 string color_pattern
 string direction
+geometry_msgs/Point batch_center
 string message

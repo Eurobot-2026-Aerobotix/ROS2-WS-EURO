@@ -991,6 +991,9 @@ class HybridAStarNode(Node):
                     response.success = False
                     response.color_pattern = ""
                     response.direction = ""
+                    response.batch_center.x = 0.0
+                    response.batch_center.y = 0.0
+                    response.batch_center.z = 0.0
                     response.message = "No batches available"
                     self.get_logger().warn("❌ No batches available for position-based search")
                     return response
@@ -1020,6 +1023,9 @@ class HybridAStarNode(Node):
                     response.success = False
                     response.color_pattern = ""
                     response.direction = ""
+                    response.batch_center.x = 0.0
+                    response.batch_center.y = 0.0
+                    response.batch_center.z = 0.0
                     response.message = "No valid batches found"
                     self.get_logger().warn("❌ No valid batches found for position search")
                     return response
@@ -1040,9 +1046,25 @@ class HybridAStarNode(Node):
                     response.success = False
                     response.color_pattern = ""
                     response.direction = ""
+                    response.batch_center.x = 0.0
+                    response.batch_center.y = 0.0
+                    response.batch_center.z = 0.0
                     response.message = f"Batch with known_id '{known_id}' not found"
                     self.get_logger().warn(f"❌ Batch known_id '{known_id}' not found")
                     return response
+
+            # Calculate batch center position
+            if batch.members:
+                center_x = sum(m.map_pos.x for m in batch.members) / len(batch.members)
+                center_y = sum(m.map_pos.y for m in batch.members) / len(batch.members)
+            else:
+                center_x = 0.0
+                center_y = 0.0
+            
+            # Set batch center in response
+            response.batch_center.x = center_x
+            response.batch_center.y = center_y
+            response.batch_center.z = 0.0
 
             # Direction
             direction = batch.direction.lower()
@@ -1089,7 +1111,8 @@ class HybridAStarNode(Node):
 
             self.get_logger().info(
                 f"📋 Batch '{batch.known_id}' → pattern='{color_pattern}', "
-                f"direction={direction}, members={len(members)}"
+                f"direction={direction}, members={len(members)}, "
+                f"center=({center_x:.1f}, {center_y:.1f})"
             )
 
             return response

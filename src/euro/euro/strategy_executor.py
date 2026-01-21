@@ -65,7 +65,6 @@ def stm32_task(strategy, stm32):
             wait = cmd.get('wait', False)
             params = to_float_list(params)
             strategy.get_logger().info(f"📤 STM32: Executing {command} with {params}")
-            
             # Execute command based on type
             if command == 'move_forward':
                 stm32.move_forward(params[0], params[1], params[2] if len(params) > 2 else 0.0)
@@ -98,13 +97,16 @@ def stm32_task(strategy, stm32):
                 stm32.set_position(params[0], params[1], params[2])
             else:
                 strategy.get_logger().warn(f"Unknown STM32 command: {command}")
-            
+            strategy.command_waiting=False
             
             # Remove command from queue after execution
+            if wait:
+                while not IDLE: 
+                    time.sleep(0.1)
             strategy.queues['STM'].popleft()
         
         time.sleep(0.1)  # 100ms
-def handle_color_pattner( strategy):
+def handle_color_pattner(strategy):
     """Handle color pattern retrieval"""
     x = strategy.latest_robot_pose.x
     y = strategy.latest_robot_pose.y
@@ -114,15 +116,15 @@ def handle_color_pattner( strategy):
     pos.y = float(y)
     pos.z = 0.0
     known_id = ''
-    color_pattern, success,direction = strategy.pathfinder.get_batch_color(known_id, pos)
+    color_pattern, success, direction, batch_center = strategy.pathfinder.get_batch_color(known_id, pos)
     
-    batch_center=Point()
-    batch_center.x=0.800
-    batch_center.y=0.150
-    if(direction=="horizontal" and y<batch_center.y) or (direction=="vertical" and x>batch_center.x):
-        strategy.get_logger().info(f"Batch is before the center point: {batch_center}")
-        #reverse the color pattern
-        color_pattern=color_pattern[::-1]
+    if success and batch_center:
+        if (direction == "horizontal" and y < batch_center.y) or (direction == "vertical" and x > batch_center.x):
+            strategy.get_logger().info(f"Batch is before the center point: ({batch_center.x:.3f}, {batch_center.y:.3f})")
+            # Reverse the color pattern
+            color_pattern = color_pattern[::-1]
+    else:
+        strategy.get_logger().warning("Failed to get batch center from service")
 
     return color_pattern
 def convert_color_pattern(color_pattern, robot_color):
@@ -148,9 +150,9 @@ def convert_color_pattern(color_pattern, robot_color):
     binary_str = ""
     for char in color_pattern.lower():
         if char == robot_color.lower():
-            binary_str += "1"  # My color = 1
+            binary_str += "0"  # My color = 0
         else:
-            binary_str += "0"  # Not my color = 0
+            binary_str += "1"  # Not my color = 1
     
     return binary_str
 
@@ -217,12 +219,11 @@ def front_task(strategy, front_controller=None,pneumatic_controller=None):
                 front_controller.n20(0)
                 stana(front_controller)
             if(command =='pick_up'):
-                front_controller.n20(O)
+                front_controller.n20(2222)
                 stana(front_controller)
                 pneumatic_controller.front(0)
                 front_controller.kabech(1)
                 time.sleep(0.3)
-                
                 front_controller.n20(1111)
                 stana(front_controller)
                 time.sleep(1)
@@ -261,7 +262,7 @@ def back_task(strategy, back_controller=None,pneumatic_controller=None):
                 back_controller.n20(0)
                 stana(back_controller)
             if(command =='pick_up'):
-                back_controller.n20(0)
+                back_controller.n20(2222)
                 stana(back_controller)
                 pneumatic_controller.back(0)
                 back_controller.kabech(1)
