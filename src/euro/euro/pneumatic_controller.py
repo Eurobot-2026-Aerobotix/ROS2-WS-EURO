@@ -24,7 +24,7 @@ class PneumaticController(Node):
         
         # Publishers for pneumatic systems with reliable QoS
         self.front_pub = self.create_publisher(Int32, '/front/pneumatic', qos_profile)
-        self.backward_pub = self.create_publisher(Int32, '/backward/pneumatic', qos_profile)
+        self.backward_pub = self.create_publisher(Int32, '/back/pneumatic', qos_profile)
         
         self.get_logger().info('Pneumatic Controller initialized')
 

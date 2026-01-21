@@ -9,7 +9,7 @@ agent_cmd = "ros2 run micro_ros_agent micro_ros_agent"
 esp_cmds = [
     f"bash -c 'source {bashrc} && {agent_cmd} serial --dev /dev/ttyUSB0 -b 115200'",
     f"bash -c 'source {bashrc} && {agent_cmd} serial --dev /dev/ttyUSB1 -b 115200'",
-    f"bash -c 'source {bashrc} && {agent_cmd} serial --dev /dev/ttyACM0 -b 115200'",
+    f"bash -c 'source {bashrc} && {agent_cmd} serial --dev /dev/ttyACM1'",
 ]
 
 session = "esp32_agents"

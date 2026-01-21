@@ -177,6 +177,14 @@ class StrategyManager(Node):
             if device in self.queues:
                 self.queues[device].append(cmd)
                 self.get_logger().info(f"      ✓ Added to {device} queue (wait: {wait})")
+                if wait :
+                    from euro.strategy_executor import IDLE
+                    self.get_logger().info(f"IDLE: {IDLE}")
+                    self.get_logger().info(f"IDLE: {len(self.queues["STM"])}")
+                    while not IDLE or  len(self.queues["STM"])!=0:
+                        self.get_logger().info(f"IDLE: {IDLE}")
+                        from euro.strategy_executor import IDLE
+                        time.sleep(0.1)
             else:
                 self.get_logger().warn(f"      ⚠ Unknown device: {device}")
             
@@ -262,8 +270,9 @@ def reset_systems(pneumatic_controller,front_controller,back_controller,stm32_co
         back_controller.kabech(0)
         front_controller.dawer(0)
         back_controller.dawer(0)
-        front_controller.n20(2222)
-        back_controller.n20(2222)
+        back_controller.n20(0)
+        front_controller.n20(0)
+        back_controller.n20(0)
         # Allow time for messages to be sent
         time.sleep(0.1)
     
@@ -457,7 +466,8 @@ def main(args=None):
                     
                     # Stop and reset STM32
                     try:
-                        reset_systems(pneumatic,front,back,stm32,strategy=strategy)
+                        reset_systems(pneumatic,front,back,stm32,strategy)
+                        time.sleep(1)
                         strategy.get_logger().info("✓ reset done ")
                     except Exception as e:
                         strategy.get_logger().error(f"Failed to stop/reset STM32: {e}")
@@ -467,7 +477,7 @@ def main(args=None):
                         strategy.get_logger().info("Resetting all systems...")
                         reset_systems(pneumatic, front, back, strategy=strategy)
                         # Extra time to ensure all reset messages are sent
-                        time.sleep(0.2)
+                        time.sleep(1)
                         strategy.get_logger().info("✓ All systems reset")
                     except Exception as e:
                         strategy.get_logger().error(f"Failed to reset systems: {e}")

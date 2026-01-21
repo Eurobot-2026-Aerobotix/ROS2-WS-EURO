@@ -171,6 +171,7 @@ def talaa(strategy, front_controller=None):
     # pos.x = float(x)
     # pos.y = float(y)
     # pos.z = 0.0
+    
     known_id = ''
     color_pattern=handle_color_pattner(strategy)
     strategy.get_logger().info(f"Retrieved color pattern: {color_pattern}")
@@ -184,7 +185,7 @@ def talaa(strategy, front_controller=None):
             robot_color = 'y'  # Default to 'y' if color not set
         color_pt = convert_color_pattern(color_pattern, robot_color)
         color_to_N20=int(str(color_pt).replace('0', '3').replace('1', '2'))
-        #print(f"Converted color pattern: {color_pt}, N20 command: {color_to_N20}")
+        print(f"Converted color pattern: {color_pt}, N20 command: {color_to_N20}")
         front_controller.n20(color_to_N20)
         return color_pattern
     else:
@@ -206,18 +207,22 @@ def front_task(strategy, front_controller=None,pneumatic_controller=None):
             strategy.get_logger().info(f"📤 Front: Executing {command} with {params}")
             if command =='put_down':
                 time.sleep(1)
-                color_to_N20=int(str(color_pt).replace('2', '1'))
+                color_to_N20=int(str(color_pt).replace('1', '1').replace('0','3'))
+                print(f"Converted color pattern: {color_pt}, N20 command: {color_to_N20}")
                 front_controller.n20(color_to_N20)
                 stana(front_controller)
                 pneumatic_controller.front(15)
                 front_controller.dawer(0)
-                front_controller.n20(2222)
-            if(command =='pick_up'):
-                front_controller.n20(2222)
                 time.sleep(1)
+                front_controller.n20(0)
+                stana(front_controller)
+            if(command =='pick_up'):
+                front_controller.n20(O)
+                stana(front_controller)
                 pneumatic_controller.front(0)
                 front_controller.kabech(1)
                 time.sleep(0.3)
+                
                 front_controller.n20(1111)
                 stana(front_controller)
                 time.sleep(1)
@@ -248,22 +253,20 @@ def back_task(strategy, back_controller=None,pneumatic_controller=None):
                 time.sleep(1)
                 color_to_N20=int(str(color_pt).replace('1', '1').replace('0','3'))
                 print(f"Converted color pattern: {color_pt}, N20 command: {color_to_N20}")
-
                 back_controller.n20(color_to_N20)
                 stana(back_controller)
-                pneumatic_controller.front(15)
+                pneumatic_controller.back(15)
                 back_controller.dawer(0)
                 time.sleep(1)
-                back_controller.n20(3333)
-                stana(back_controller)
-                back_controller.n20(2222)
+                back_controller.n20(0)
                 stana(back_controller)
             if(command =='pick_up'):
-                back_controller.n20(2222)
-                time.sleep(1)
-                pneumatic_controller.front(0)
+                back_controller.n20(0)
+                stana(back_controller)
+                pneumatic_controller.back(0)
                 back_controller.kabech(1)
                 time.sleep(0.3)
+                stana(back_controller)
                 back_controller.n20(1111)
                 stana(back_controller)
                 time.sleep(1)
@@ -338,12 +341,12 @@ def rasp_pi_task(strategy, rpi_controller=None, stm32_controller=None, front_con
                 if front_controller:
                     front_controller.kabech(0)
                     front_controller.dawer(0)
-                    front_controller.n20(2222)
+                    front_controller.n20(0)
                     stana(front_controller)
                 if back_controller:
                     back_controller.kabech(0)
                     back_controller.dawer(0)
-                    back_controller.n20(2222)
+                    back_controller.n20(0)
                     stana(back_controller)
                 # Allow time for messages to be sent
                 time.sleep(0.1)
