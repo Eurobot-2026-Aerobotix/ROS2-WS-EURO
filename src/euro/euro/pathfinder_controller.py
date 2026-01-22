@@ -28,12 +28,8 @@ class PathfinderClient(Node):
             '/get_batch_color_pattern'
         )
 
-        self.get_logger().info('Waiting for services...')
-
         self.path_client.wait_for_service()
         self.batch_color_client.wait_for_service()
-
-        self.get_logger().info('✅ Pathfinder services available')
 
     # =========================================================
     # 1️⃣ GET PATH
@@ -61,10 +57,6 @@ class PathfinderClient(Node):
         response = future.result()
 
         if response.success:
-            self.get_logger().info(
-                f'✅ Path planned in {response.planning_time_ms:.2f} ms '
-                f'with {response.num_waypoints} waypoints'
-            )
             return response.stm32_commands, True
         else:
             self.get_logger().warning(f'⚠ Path failed: {response.message}')
@@ -98,10 +90,6 @@ class PathfinderClient(Node):
         response = future.result()
 
         if response.success:
-            self.get_logger().info(
-                f'🎨 Batch {known_id} → {response.color_pattern} '
-                f'({response.direction}) @ ({response.batch_center.x:.3f}, {response.batch_center.y:.3f})'
-            )
             return response.color_pattern, True, response.direction, response.batch_center
         else:
             self.get_logger().warning(f'⚠ Batch error: {response.message}')
@@ -115,7 +103,7 @@ def main(args=None):
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
-        node.get_logger().info('Pathfinder client shutting down...')
+        pass
     finally:
         node.destroy_node()
         rclpy.shutdown()

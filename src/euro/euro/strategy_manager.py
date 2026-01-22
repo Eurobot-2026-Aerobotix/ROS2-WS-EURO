@@ -59,8 +59,6 @@ class StrategyManager(Node):
         self.pathfinder = PathfinderClient()
         self.goal = (0.2, 2.7, 1.57079632679)
         self.path_called = False
-        self.get_logger().info("Subscribed to /robot_pose_raw")
-        self.get_logger().info('Strategy Manager initialized')
     def robot_pose_callback(self, msg):
         self.latest_robot_pose = msg
     def path(self, x_goal, y_goal, theta_goal):
@@ -73,11 +71,9 @@ class StrategyManager(Node):
         
         # Set flag to prevent task loading during replanning
         self.is_replanning = True
-        self.get_logger().info("🔄 Replanning path - pausing task execution...")
         
         # Clear the STM32 queue
         self.queues['STM'].clear()
-        self.get_logger().info("🗑️  Cleared STM32 queue")
         
         start_pose = PoseStamped()
         start_pose.header.stamp = self.get_clock().now().to_msg()
@@ -98,14 +94,10 @@ class StrategyManager(Node):
         stm32_commands, success = self.pathfinder.get_path(start_pose, goal_pose)
         last_cmd=None
         for cmd in stm32_commands:
-            self.get_logger().info(f"Path command: {cmd}")
             values = cmd.replace('go_to(', '').replace(')', '').split(',')
             x = float(values[0].strip())
             y = float(values[1].strip())
             speed = int(values[2].strip())
-            self.get_logger().info(
-                f"Parsed → x={x}, y={y}, speed={speed}"
-            )
             if(cmd != last_cmd):
                 self.queues['STM'].append({
                     'command': 'go_to',
@@ -126,11 +118,8 @@ class StrategyManager(Node):
                 },
             })
         
-        self.get_logger().info(f"✅ New path loaded with {len(self.queues['STM'])} commands")
-        
         # Resume task execution
         self.is_replanning = False
-        self.get_logger().info("▶️  Resuming task execution...")
 
     def quaternion_to_yaw(self, quat: Quaternion) -> float:
         """Convert quaternion to yaw angle"""
@@ -159,10 +148,6 @@ class StrategyManager(Node):
         if not task:
             self.get_logger().error(f"Task '{task_name}' not found!")
             return False
-        self.get_logger().info(f"\n{'='*60}")
-        self.get_logger().info(f"LOADING TASK: {task['name']}")
-        self.get_logger().info(f"Description: {task['description']}")
-        self.get_logger().info(f"{'='*60}\n")
         
         # Iterate through sequence and add to queues
         for idx, cmd in enumerate(task['sequence'], 1):
@@ -171,7 +156,7 @@ class StrategyManager(Node):
             params = cmd.get('params', {})
             wait = cmd.get('wait', False)
             
-            self.get_logger().info(f"[{idx}/{len(task['sequence'])}] {device} -> {command}")
+            self.get_logger().info(f"⚙️  [{idx}/{len(task['sequence'])}] {device} -> {command}")
             
             # Add command to device queue
             if device in self.queues:
@@ -180,29 +165,20 @@ class StrategyManager(Node):
                     strategy_executor.ESP_FRONT_IDLE=False
                 if(device == "ESP_BACK" ) :
                     strategy_executor.ESP_BACK_IDLE=False
-                self.get_logger().info(f"      ⏳ Waiting ...")
                 if wait :
+                    self.get_logger().info(f"      ⏳ Waiting for dependencies...")
                     from euro.strategy_executor import IDLE,ESP_FRONT_IDLE,ESP_BACK_IDLE
                     if(device == "STM"):
                         while  not ESP_FRONT_IDLE or not ESP_BACK_IDLE :
                             from euro.strategy_executor import ESP_FRONT_IDLE,ESP_BACK_IDLE
-                            self.get_logger().info(f"WAITING ESP FRONT/BACK IDLE LOOP : {ESP_FRONT_IDLE} / {ESP_BACK_IDLE}")
                             time.sleep(0.1)
                     if(device == "ESP_FRONT" or device == "ESP_BACK"):
                         while not IDLE or  len(self.queues["STM"])!=0 :
-                            self.get_logger().info(f"WAITING  STM IDLE LOOP : {IDLE}")
                             from euro.strategy_executor import IDLE
                             time.sleep(0.1)
                 self.queues[device].append(cmd)
-                self.get_logger().info(f"      ✓ Added to {device} queue (wait: {wait})")
             else:
                 self.get_logger().warn(f"      ⚠ Unknown device: {device}")
-            
-        self.get_logger().info(f"\n{'='*60}")
-        self.get_logger().info(f"QUEUE STATUS:")
-        for device_name, queue in self.queues.items():
-            self.get_logger().info(f"  {device_name}: {len(queue)} commands")
-        self.get_logger().info(f"{'='*60}\n")
         
         return True
     
@@ -216,47 +192,22 @@ class StrategyManager(Node):
     def wait_for_all_queues_empty(self):
         """Wait until all device queues are empty (unless replanning)"""
         
-        self.get_logger().info("⏳ Waiting for all commands to complete...")
         from euro.strategy_executor import IDLE
         while not self.are_all_queues_empty() or not IDLE:
             from euro.strategy_executor import IDLE
             # If replanning is happening, wait for it to finish
             if self.is_replanning:
-                self.get_logger().info("   ⏸️  Paused - replanning in progress...")
                 time.sleep(0.5)
                 continue
             
             if not self.are_all_queues_empty():
                 time.sleep(0.5)
             elif not IDLE:
-                self.get_logger().info("   Waiting for robot to become idle...")
-                self.get_logger().info(f"IDLE =  {IDLE} ")
-                x=self.are_all_queues_empty()
-                self.get_logger().info(f"queues empty: {x}")
                 time.sleep(0.5)
-        
-        self.get_logger().info("✅ All commands completed!")
     
     def display_queue_contents(self):
         """Display the full contents of all queues with parameters"""
-        self.get_logger().info(f"\n{'='*60}")
-        self.get_logger().info(f"QUEUE CONTENTS (with parameters):")
-        self.get_logger().info(f"{'='*60}\n")
-        
-        for device_name, queue in self.queues.items():
-            if len(queue) > 0:
-                self.get_logger().info(f"📦 {device_name} ({len(queue)} commands):")
-                for idx, cmd in enumerate(queue, 1):
-                    self.get_logger().info(f"   [{idx}] Command: {cmd.get('command')}")
-                    self.get_logger().info(f"       Params: {cmd.get('params', {})}")
-                    self.get_logger().info(f"       Wait: {cmd.get('wait', False)}")
-                    if 'delay' in cmd:
-                        self.get_logger().info(f"       Delay: {cmd.get('delay')}s")
-                self.get_logger().info("")
-            else:
-                self.get_logger().info(f"📭 {device_name}: empty")
-        
-        self.get_logger().info(f"{'='*60}\n")
+        pass
 
 def reset_systems(pneumatic_controller,front_controller,back_controller,stm32_controller=None,strategy=None):
     """Add RESET command to RASP_PI queue for background execution"""
@@ -267,7 +218,6 @@ def reset_systems(pneumatic_controller,front_controller,back_controller,stm32_co
             'params': {},
             'wait': False
         })
-        strategy.get_logger().info("✓ RESET command added to RASP_PI queue")
     else:
         # Fallback: execute directly if strategy not available
         if stm32_controller:
@@ -356,12 +306,10 @@ def main(args=None):
     )
     rasp_pi_thread.start()
     
-    strategy.get_logger().info("✓ All threads started\n")
     # Get tasks file path
     # Check if a YAML file path was provided as argument
     if len(sys.argv) > 1:
         tasks_file = sys.argv[1]
-        strategy.get_logger().info(f"Using provided YAML file: {tasks_file}")
     else:
         # Default to tasks.yaml in package config directory
         try:
@@ -374,23 +322,15 @@ def main(args=None):
     
     # Load tasks
     try:
-        strategy.get_logger().info(f"Loading tasks from: {tasks_file}")
         strategy.tasks, strategy.color, strategy.strategy_name = load_tasks_from_yaml(tasks_file)
-        strategy.get_logger().info(f"✓ Loaded {len(strategy.tasks)} tasks")
-        strategy.get_logger().info(f"✓ Strategy name: {strategy.strategy_name}")
-        strategy.get_logger().info(f"✓ Team color: {strategy.color}\n")
         
         # Load and publish PAMI strategies
         pami_folder = os.path.join(os.path.dirname(tasks_file), '..', 'pami_strategies')
         pami_folder = os.path.abspath(pami_folder)
         
         if os.path.exists(pami_folder):
-            strategy.get_logger().info(f"Loading PAMI strategies from: {pami_folder}")
             from euro.pami_controller import PamiController
             pami_ctrl = PamiController(strategy.strategy_name, pami_folder, 'pami_controller_internal')
-            strategy.get_logger().info("✓ PAMI strategies loaded and published\n")
-        else:
-            strategy.get_logger().info(f"No PAMI folder found at: {pami_folder}\n")
         
         reset_systems(pneumatic,front,back,strategy=strategy)
         time.sleep(2)
@@ -406,30 +346,14 @@ def main(args=None):
                     
                     # Support both 'angle' and 'theta' keys
                     strategy.global_pos_angle = global_goal.get('theta') or global_goal.get('angle')
-                    strategy.get_logger().info(
-                        f"Global goal set: x={strategy.global_pos_x}, "
-                        f"y={strategy.global_pos_y}, angle={strategy.global_pos_angle}°"
-                    )
                 else:
                     strategy.get_logger().warning(f"⚠️  No global goal found for task: {task['name']}")
-
-                strategy.get_logger().info(f"\n{'='*60}")
-                strategy.get_logger().info(f"▶️  STARTING TASK: {task['name']}")
-                strategy.get_logger().info(f"{'='*60}\n")
                 
                 # Load task into queues
                 strategy.load_task_to_queues(task['name'])
                 
                 # Wait for all commands to complete
                 strategy.wait_for_all_queues_empty()
-                
-                strategy.get_logger().info(f"\n{'='*60}")
-                strategy.get_logger().info(f"✅ COMPLETED TASK: {task['name']}")
-                strategy.get_logger().info(f"{'='*60}\n")
-            
-            strategy.get_logger().info(f"\n{'='*80}")
-            strategy.get_logger().info(f"🎉 ALL TASKS COMPLETED SUCCESSFULLY!")
-            strategy.get_logger().info(f"{'='*80}\n")
         
         # Start task execution in a background thread
         task_executor_thread = threading.Thread(
@@ -461,8 +385,6 @@ def main(args=None):
         tty.setcbreak(sys.stdin.fileno())
     
     try:
-        strategy.get_logger().info("Press 'q' to stop robot and shutdown...")
-        
         shutdown_requested = False
         while rclpy.ok() and not shutdown_requested:
             # Spin once to process callbacks
@@ -471,32 +393,26 @@ def main(args=None):
             if select.select([sys.stdin], [], [], 0)[0]:
                 key = sys.stdin.read(1)
                 if key.lower() == 'q':
-                    strategy.get_logger().info("\n🛑 'q' pressed - Stopping robot and shutting down...")
                     shutdown_requested = True
                     
                     # Stop and reset STM32
                     try:
                         reset_systems(pneumatic,front,back,stm32,strategy)
                         time.sleep(1)
-                        strategy.get_logger().info("✓ reset done ")
                     except Exception as e:
                         strategy.get_logger().error(f"Failed to stop/reset STM32: {e}")
                     
                     # Reset all systems
                     try:
-                        strategy.get_logger().info("Resetting all systems...")
                         reset_systems(pneumatic, front, back, strategy=strategy)
-                        # Extra time to ensure all reset messages are sent
                         time.sleep(1)
-                        strategy.get_logger().info("✓ All systems reset")
                     except Exception as e:
                         strategy.get_logger().error(f"Failed to reset systems: {e}")
                     
-                    strategy.get_logger().info("✓ Shutdown complete")
                     break
     
     except KeyboardInterrupt:
-        strategy.get_logger().info("\nShutting down...")
+        pass
     finally:
         # Restore terminal settings if they were changed
         if old_settings is not None:

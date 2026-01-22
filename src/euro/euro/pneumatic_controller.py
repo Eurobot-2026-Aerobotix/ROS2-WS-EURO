@@ -25,8 +25,6 @@ class PneumaticController(Node):
         # Publishers for pneumatic systems with reliable QoS
         self.front_pub = self.create_publisher(Int32, '/front/pneumatic', qos_profile)
         self.backward_pub = self.create_publisher(Int32, '/back/pneumatic', qos_profile)
-        
-        self.get_logger().info('Pneumatic Controller initialized')
 
     def front(self, value):
         """
@@ -38,7 +36,6 @@ class PneumaticController(Node):
         msg = Int32()
         msg.data = value
         self.front_pub.publish(msg)
-        self.get_logger().info(f'Published to /front/pneumatic: {value}')
 
     def back(self, value):
         """
@@ -50,7 +47,6 @@ class PneumaticController(Node):
         msg = Int32()
         msg.data = value
         self.backward_pub.publish(msg)
-        self.get_logger().info(f'Published to /backward/pneumatic: {value}')
 
 
 def main(args=None):

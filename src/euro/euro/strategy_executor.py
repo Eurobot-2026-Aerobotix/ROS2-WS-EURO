@@ -37,8 +37,6 @@ def robot_status(strategy, stm32, lidar):
                 strategy.get_logger().warning("⚠️ Failed to check robot status")
             else:
                 IDLE = is_completed
-                if IDLE:
-                    strategy.get_logger().info("✅ Robot completed task and is now IDLE")
         
         # Handle emergency stop
         if EMERGENCY_STOP and first_emergency:
@@ -67,7 +65,6 @@ def stm32_task(strategy, stm32):
             params = cmd.get('params', {})
             wait = cmd.get('wait', False)
             params = to_float_list(params)
-            strategy.get_logger().info(f"📤 STM32: Executing {command} with {params}")
             # Execute command based on type
             if command == 'move_forward':
                 stm32.move_forward(params[0], params[1], params[2] if len(params) > 2 else 0.0)
@@ -120,7 +117,6 @@ def handle_color_pattner(strategy):
     
     if success and batch_center:
         if (direction == "horizontal" and y < batch_center.y) or (direction == "vertical" and x > batch_center.x):
-            strategy.get_logger().info(f"Batch is before the center point: ({batch_center.x:.3f}, {batch_center.y:.3f})")
             # Reverse the color pattern
             color_pattern = color_pattern[::-1]
     else:
@@ -176,7 +172,6 @@ def talaa(strategy, front_controller=None):
     
     known_id = ''
     color_pattern=handle_color_pattner(strategy)
-    strategy.get_logger().info(f"Retrieved color pattern: {color_pattern}")
     success=True
     if success:
         # Convert global color ('yellow' or 'blue') to single letter ('y' or 'b')
@@ -213,10 +208,10 @@ def pick_up(controller,pneumatic,strategy,front):
     color_pattern = talaa(strategy, controller)
     if front:
         color_pt_front = color_pattern
-        strategy.get_logger().info(f"Color pattern received front: {color_pt_front}")
+        strategy.get_logger().info(f"📦 Front picked up - Color pattern: {color_pt_front}")
     else:
         color_pt_back = color_pattern
-        strategy.get_logger().info(f"Color pattern received back: {color_pt_back}")
+        strategy.get_logger().info(f"📦 Back picked up - Color pattern: {color_pt_back}")
     stana(controller)
     if front:
         ESP_FRONT_IDLE=True
@@ -232,9 +227,9 @@ def put_down(controller,pneumatic,strategy,front):
     time.sleep(1)
     color_to_N20=int(str(color_pt_front).replace('1', '3').replace('0','1'))
     if front:
-        strategy.get_logger().info(f"Putting down front with color pattern: {color_pt_front}")
+        strategy.get_logger().info(f"📤 Front putting down - Color pattern: {color_pt_front}")
     else:
-        strategy.get_logger().info(f"Putting down back with color pattern: {color_pt_back}")
+        strategy.get_logger().info(f"📤 Back putting down - Color pattern: {color_pt_back}")
     controller.n20(color_to_N20)
     stana(controller)
     if front:
@@ -264,7 +259,6 @@ def front_task(strategy, front_controller=None,pneumatic_controller=None):
             params = cmd.get('params', {})
             wait = cmd.get('wait', False)
             
-            strategy.get_logger().info(f"📤 Front: Executing {command} with {params}")
             if command =='put_down':
                 put_down(front_controller,pneumatic_controller,strategy,True)
             if(command =='pick_up'):
@@ -286,7 +280,6 @@ def back_task(strategy, back_controller=None,pneumatic_controller=None):
             params = cmd.get('params', {})
             wait = cmd.get('wait', False)
             
-            strategy.get_logger().info(f"📤 back: Executing {command} with {params}")
             if command =='put_down':
                 put_down(back_controller,pneumatic_controller,strategy,False)
             if(command =='pick_up'):
@@ -306,8 +299,6 @@ def rasp_pi_task(strategy, rpi_controller=None, stm32_controller=None, front_con
             params = cmd.get('params', [])
             wait = cmd.get('wait', False)
             
-            strategy.get_logger().info(f"📤 RASP_PI: Executing {command} with params={params}")
-            
             # Execute RASP_PI commands
             if command == 'Wait for manual start':
                 if rpi_controller:
@@ -317,12 +308,10 @@ def rasp_pi_task(strategy, rpi_controller=None, stm32_controller=None, front_con
                     strategy.get_logger().warning("RPI controller not available - skipping wait_start")
             elif command == 'RESET':
                 # Execute reset in background
-                strategy.get_logger().info("🔄 Executing RESET command in background...")
                 if stm32_controller:
                     stm32_controller.stop(timeout=2.0)
                     while not IDLE:
                         time.sleep(0.1)
-                        strategy.get_logger().info("⏳ Waiting for STM32 to become IDLE before reset...")
                     stm32_controller.reset(timeout=2.0)
                 if pneumatic_controller:
                     pneumatic_controller.front(16)
@@ -339,7 +328,6 @@ def rasp_pi_task(strategy, rpi_controller=None, stm32_controller=None, front_con
                     stana(back_controller)
                 # Allow time for messages to be sent
                 time.sleep(0.1)
-                strategy.get_logger().info("✅ RESET command completed")
             else:
                 strategy.get_logger().warn(f"Unknown RASP_PI command: {command}")
             

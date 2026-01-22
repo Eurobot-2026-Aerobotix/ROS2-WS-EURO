@@ -30,8 +30,6 @@ class FrontSystemsController(Node):
         
         # Service client for isIDLE
         self.idle_client = self.create_client(Trigger, '/front/isIDLE')
-        
-        self.get_logger().info('Front Systems Controller initialized')
 
     def n20(self, value):
         """
@@ -43,7 +41,6 @@ class FrontSystemsController(Node):
         msg = Int32()
         msg.data = value
         self.n20_pub.publish(msg)
-        self.get_logger().info(f'Published to /front/n20: {value}')
 
     def kabech(self, value):
         """
@@ -55,7 +52,6 @@ class FrontSystemsController(Node):
         msg = Int32()
         msg.data = value
         self.kabech_pub.publish(msg)
-        self.get_logger().info(f'Published to /front/kabech: {value}')
 
     def dawer(self, value):
         """
@@ -67,7 +63,6 @@ class FrontSystemsController(Node):
         msg = Int32()
         msg.data = value
         self.dawer_pub.publish(msg)
-        self.get_logger().info(f'Published to /front/dawer: {value}')
 
     def IDLE(self, timeout=10.0):
         """
@@ -91,7 +86,6 @@ class FrontSystemsController(Node):
             
             if future.done():
                 response = future.result()
-                self.get_logger().info(f'IDLE response: success={response.success}, message={response.message}')
                 return response.success
             else:
                 self.get_logger().error('IDLE service call timeout')
