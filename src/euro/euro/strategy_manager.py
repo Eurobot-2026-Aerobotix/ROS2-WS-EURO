@@ -175,6 +175,8 @@ class StrategyManager(Node):
             
             # Add command to device queue
             if device in self.queues:
+                if wait and (device == "ESP_FRONT" or device == "ESP_BACK"):
+                        wait_for_all_queues_empty()
                 self.queues[device].append(cmd)
                 self.get_logger().info(f"      ✓ Added to {device} queue (wait: {wait})")
                 if wait :
@@ -262,8 +264,8 @@ def reset_systems(pneumatic_controller,front_controller,back_controller,stm32_co
             stm32_controller.stop(timeout=2.0)
             time.sleep(1)
             stm32_controller.reset(timeout=2.0)
-        pneumatic_controller.front(15)
-        pneumatic_controller.back(15)
+        pneumatic_controller.front(16)
+        pneumatic_controller.back(16)
         front_controller.kabech(0)
         back_controller.kabech(0)
         front_controller.dawer(0)
