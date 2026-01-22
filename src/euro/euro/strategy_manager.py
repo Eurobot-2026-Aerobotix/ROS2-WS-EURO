@@ -12,7 +12,7 @@ from geometry_msgs.msg import PoseStamped, Pose2D, Quaternion,Vector3
 from euro.yaml_loader import load_tasks_from_yaml
 import math
 from euro.pathfinder_controller import PathfinderClient
-from euro.strategy_executor import robot_status, stm32_task, front_task, back_task, pneumatic_task, rasp_pi_task, IDLE, EMERGENCY_STOP
+from euro.strategy_executor import robot_status, stm32_task, front_task, back_task,rasp_pi_task, IDLE, EMERGENCY_STOP
 
 # Global variable to store team color
 color = None
