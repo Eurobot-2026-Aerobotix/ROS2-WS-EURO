@@ -175,16 +175,26 @@ class StrategyManager(Node):
             
             # Add command to device queue
             if device in self.queues:
-                if wait and (device == "ESP_FRONT" or device == "ESP_BACK"):
-                        wait_for_all_queues_empty()
+                from euro import strategy_executor
+                if(device == "ESP_FRONT" ) :
+                    strategy_executor.ESP_FRONT_IDLE=False
+                if(device == "ESP_BACK" ) :
+                    strategy_executor.ESP_BACK_IDLE=False
+                self.get_logger().info(f"      ⏳ Waiting ...")
+                if wait :
+                    from euro.strategy_executor import IDLE,ESP_FRONT_IDLE,ESP_BACK_IDLE
+                    if(device == "STM"):
+                        while  not ESP_FRONT_IDLE or not ESP_BACK_IDLE :
+                            from euro.strategy_executor import ESP_FRONT_IDLE,ESP_BACK_IDLE
+                            self.get_logger().info(f"WAITING ESP FRONT/BACK IDLE LOOP : {ESP_FRONT_IDLE} / {ESP_BACK_IDLE}")
+                            time.sleep(0.1)
+                    if(device == "ESP_FRONT" or device == "ESP_BACK"):
+                        while not IDLE or  len(self.queues["STM"])!=0 :
+                            self.get_logger().info(f"WAITING  STM IDLE LOOP : {IDLE}")
+                            from euro.strategy_executor import IDLE
+                            time.sleep(0.1)
                 self.queues[device].append(cmd)
                 self.get_logger().info(f"      ✓ Added to {device} queue (wait: {wait})")
-                if wait :
-                    from euro.strategy_executor import IDLE
-                    while not IDLE or  len(self.queues["STM"])!=0 :
-                        self.get_logger().info(f"WAITING IDLE LOOP : {IDLE}")
-                        from euro.strategy_executor import IDLE
-                        time.sleep(0.1)
             else:
                 self.get_logger().warn(f"      ⚠ Unknown device: {device}")
             

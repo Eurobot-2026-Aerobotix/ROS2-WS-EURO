@@ -11,7 +11,8 @@ from geometry_msgs.msg import Point
 # Global state variables
 IDLE = True
 EMERGENCY_STOP = False
-
+ESP_FRONT_IDLE=True
+ESP_BACK_IDLE=True
 color_pt_front=None
 color_pt_back=None
 color_pt=None
@@ -102,9 +103,6 @@ def stm32_task(strategy, stm32):
             strategy.command_waiting=False
             
             # Remove command from queue after execution
-            if wait:
-                while not IDLE: 
-                    time.sleep(0.1)
             strategy.queues['STM'].popleft()
         
         time.sleep(0.1)  # 100ms
@@ -195,7 +193,65 @@ def talaa(strategy, front_controller=None):
     else:
         strategy.get_logger().warning("⚠️ Failed to get color pattern")
         return None
+
 #1 louta wl 2 fel wost wl 3 lfouk
+def pick_up(controller,pneumatic,strategy,front):
+    global color_pt_front
+    global color_pt_back
+    global ESP_FRONT_IDLE
+    global ESP_BACK_IDLE
+    controller.n20(2222)
+    stana(controller)
+    if front:
+        pneumatic.front(0)
+    else: pneumatic.back(0)
+    controller.kabech(1)
+    time.sleep(0.3)
+    controller.n20(1111)
+    stana(controller)
+    time.sleep(1)
+    color_pattern = talaa(strategy, controller)
+    if front:
+        color_pt_front = color_pattern
+        strategy.get_logger().info(f"Color pattern received front: {color_pt_front}")
+    else:
+        color_pt_back = color_pattern
+        strategy.get_logger().info(f"Color pattern received back: {color_pt_back}")
+    stana(controller)
+    if front:
+        ESP_FRONT_IDLE=True
+    else: ESP_BACK_IDLE=True
+    controller.kabech(0)
+    controller.dawer(1)
+    time.sleep(1)
+def put_down(controller,pneumatic,strategy,front):
+    global ESP_FRONT_IDLE
+    global ESP_BACK_IDLE
+    global color_pt_front
+    global color_pt_back
+    time.sleep(1)
+    color_to_N20=int(str(color_pt_front).replace('1', '3').replace('0','1'))
+    if front:
+        strategy.get_logger().info(f"Putting down front with color pattern: {color_pt_front}")
+    else:
+        strategy.get_logger().info(f"Putting down back with color pattern: {color_pt_back}")
+    controller.n20(color_to_N20)
+    stana(controller)
+    if front:
+        pneumatic.front(15)
+    else: pneumatic.back(15)
+    controller.dawer(0)
+    time.sleep(1)
+    controller.n20(2222)
+    stana(controller)
+    if front:
+        ESP_FRONT_IDLE=True
+    else: ESP_BACK_IDLE=True
+    controller.n20(0)
+    stana(controller)
+    if front:
+        pneumatic.front(16)
+    else: pneumatic.back(16)
 def front_task(strategy, front_controller=None,pneumatic_controller=None):
     global color_pt_front
     """Runs every 100ms to process ESP32_1 queue"""
@@ -210,32 +266,9 @@ def front_task(strategy, front_controller=None,pneumatic_controller=None):
             
             strategy.get_logger().info(f"📤 Front: Executing {command} with {params}")
             if command =='put_down':
-                time.sleep(1)
-                color_to_N20=int(str(color_pt_front).replace('1', '3').replace('0','1'))
-                print(f"Converted color pattern: {color_pt_front}, N20 command: {color_to_N20}")
-                front_controller.n20(color_to_N20)
-                stana(front_controller)
-                pneumatic_controller.front(15)
-                front_controller.dawer(0)
-                time.sleep(1)
-                front_controller.n20(0)
-                stana(front_controller)
-                pneumatic_controller.front(16)
+                put_down(front_controller,pneumatic_controller,strategy,True)
             if(command =='pick_up'):
-                front_controller.n20(2222)
-                stana(front_controller)
-                pneumatic_controller.front(0)
-                front_controller.kabech(1)
-                time.sleep(0.3)
-                front_controller.n20(1111)
-                stana(front_controller)
-                time.sleep(1)
-                color_pt_front=talaa(strategy,front_controller)
-                strategy.get_logger().info(f"Color pattern received front : {color_pt_front}")
-                stana(front_controller)
-                front_controller.kabech(0)
-                front_controller.dawer(1)
-                time.sleep(1)
+                pick_up(front_controller,pneumatic_controller,strategy,True)
             strategy.queues['ESP_front'].popleft()
         
         time.sleep(0.1)  # 100ms
@@ -255,63 +288,13 @@ def back_task(strategy, back_controller=None,pneumatic_controller=None):
             
             strategy.get_logger().info(f"📤 back: Executing {command} with {params}")
             if command =='put_down':
-                time.sleep(1)
-                color_to_N20=int(str(color_pt_back).replace('1', '3').replace('0','1'))
-                print(f"Converted color pattern: {color_pt_back}, N20 command: {color_to_N20}")
-                back_controller.n20(color_to_N20)
-                stana(back_controller)
-                pneumatic_controller.back(15)
-                back_controller.dawer(0)
-                time.sleep(1)
-                back_controller.n20(0)
-                stana(back_controller)
-                pneumatic_controller.back(16)
+                put_down(back_controller,pneumatic_controller,strategy,False)
             if(command =='pick_up'):
-                back_controller.n20(2222)
-                stana(back_controller)
-                pneumatic_controller.back(0)
-                back_controller.kabech(1)
-                time.sleep(0.3)
-                stana(back_controller)
-                back_controller.n20(1111)
-                stana(back_controller)
-                time.sleep(1)
-                color_pt_back=talaa(strategy,back_controller)
-                strategy.get_logger().info(f"Color pattern received back: {color_pt_back}")
-                stana(back_controller)
-                back_controller.kabech(0)
-                back_controller.dawer(1)
-                time.sleep(1)
+                pick_up(back_controller,pneumatic_controller,strategy,False)
                
             strategy.queues['ESP_back'].popleft()
         
         time.sleep(0.1)  # 100ms
-
-
-def pneumatic_task(strategy, pneumatic_controller=None):
-    """Runs every 100ms to process ESP32_3 queue"""
-    while rclpy.ok():
-        # Check if there are commands in the queue
-        if len(strategy.queues['ESP_pneumatic']) > 0:
-            cmd = strategy.queues['ESP_pneumatic'][0]  # Peek at first command
-            
-            command = cmd.get('command')
-            params = cmd.get('params', {})
-            wait = cmd.get('wait', False)
-            
-            strategy.get_logger().info(f"📤 Pneumatic: Executing {command} with {params}")
-            
-            # TODO: Add execution logic here
-            # Example:
-            # if command == 'led_pattern':
-            #     pneumatic_controller.led_pattern(params['pattern'], params['color'])
-            
-            # Remove command from queue after execution
-            strategy.queues['ESP_pneumatic'].popleft()
-        
-        time.sleep(0.1)  # 100ms
-
-
 def rasp_pi_task(strategy, rpi_controller=None, stm32_controller=None, front_controller=None, back_controller=None, pneumatic_controller=None):
     """Runs every 100ms to process RASP_PI queue"""
     while rclpy.ok():
