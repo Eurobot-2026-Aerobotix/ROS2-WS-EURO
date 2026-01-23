@@ -404,8 +404,8 @@ class HybridAStarNode(Node):
             crate_marker.pose.orientation = self.yaw_to_quaternion(obs.get('theta', 0.0))
             
             # Size: small crates
-            crate_marker.scale.x = obs['height'] / 1000.0
-            crate_marker.scale.y = obs['width'] / 1000.0
+            crate_marker.scale.x = obs['width'] / 1000.0
+            crate_marker.scale.y = obs['height'] / 1000.0
             crate_marker.scale.z = 0.15  # 150mm tall crates
             
             # Color based on crate color
@@ -478,44 +478,120 @@ class HybridAStarNode(Node):
                     else:
                         self.batches_sx[batch.batch_id] = batch
 
-                # Process each member in the batch
-                for member in batch.members:
-                    # Only process if color is valid
-                    if member.color not in ["yellow", "blue"]:
-                        continue
-
-                    # Create obstacle from batch member
-                    obs = Obstacle()
-                    obs.id = f"aruco_{member.aruco_id}"
-                    obs.type = 'crate'
-                    obs.color = member.color
-
+                if not batch.members:
+                    continue
+                
+                if source == 'sx':
+                    # SX: Use batch center and create 4 obstacles with member colors in order
+                    batch_center_x = sum(m.map_pos.x for m in batch.members) / len(batch.members)
+                    batch_center_y = sum(m.map_pos.y for m in batch.members) / len(batch.members)
+                    
+                    # Convert batch center from meters to millimeters
+                    batch_center_x_mm = batch_center_x * 1000.0
+                    batch_center_y_mm = batch_center_y * 1000.0
+                    
                     # Determine obstacle dimensions based on batch direction
+                    # Each obstacle is 15x5 cm or 5x15 cm depending on orientation
                     if batch.direction == "horizontal":
-                        obs.width_mm = self.params['obstacles']['crate_horizontal']['width_mm']
-                        obs.height_mm = self.params['obstacles']['crate_horizontal']['height_mm']
+                        obs_width_mm = 50.0   # 5 cm (narrow)
+                        obs_height_mm = 150.0 # 15 cm (tall)
+                        # For horizontal: 4 obstacles side by side (total width = 200mm)
+                        # Centers at: cx-75, cx-25, cx+25, cx+75 (edge to edge)
+                        offsets = [
+                            (-75.0, 0.0),  # Left-most
+                            (-25.0, 0.0),
+                            (25.0, 0.0),
+                            (75.0, 0.0)    # Right-most
+                        ]
                     elif batch.direction == "vertical":
-                        obs.width_mm = self.params['obstacles']['crate_vertical']['width_mm']
-                        obs.height_mm = self.params['obstacles']['crate_vertical']['height_mm']
+                        obs_width_mm = 150.0  # 15 cm (wide)
+                        obs_height_mm = 50.0  # 5 cm (short)
+                        # For vertical: 4 obstacles stacked (total height = 200mm)
+                        # Centers at: cy-75, cy-25, cy+25, cy+75 (edge to edge)
+                        offsets = [
+                            (0.0, -75.0),  # Bottom-most
+                            (0.0, -25.0),
+                            (0.0, 25.0),
+                            (0.0, 75.0)    # Top-most
+                        ]
                     else:
                         # Default to horizontal if direction is unknown
-                        obs.width_mm = self.params['obstacles']['crate_horizontal']['width_mm']
-                        obs.height_mm = self.params['obstacles']['crate_horizontal']['height_mm']
+                        obs_width_mm = 50.0
+                        obs_height_mm = 150.0
+                        offsets = [(-75.0, 0.0), (-25.0, 0.0), (25.0, 0.0), (75.0, 0.0)]
+                    
+                    # Get colors from members in their original order (up to 4)
+                    member_colors = [m.color for m in batch.members if m.color in ["yellow", "blue"]]
+                    if not member_colors:
+                        continue  # Skip batch if no valid colors
+                    
+                    # Reverse the color order
+                    member_colors.reverse()
+                    
+                    # Create 4 obstacles for this batch
+                    for idx, (offset_x, offset_y) in enumerate(offsets):
+                        obs = Obstacle()
+                        obs.id = f"{source}_batch{batch.batch_id}_member{idx}"
+                        obs.type = 'crate'
+                        # Use color from member at this index (or last color if not enough members)
+                        obs.color = member_colors[idx] if idx < len(member_colors) else member_colors[-1]
+                        obs.width_mm = obs_width_mm
+                        obs.height_mm = obs_height_mm
+                        
+                        # Calculate obstacle center
+                        obs_center_x = batch_center_x_mm + offset_x
+                        obs_center_y = batch_center_y_mm + offset_y
+                        
+                        # Convert to TOP-LEFT corner (what the planner expects)
+                        obs.pose.x = obs_center_x - (obs_width_mm / 2.0)
+                        obs.pose.y = obs_center_y - (obs_height_mm / 2.0)
+                        obs.pose.theta = 0.0
+                        
+                        obs.detected_at = msg.stamp
+                        
+                        # Add to obstacles list and track source
+                        self.obstacles.append(obs)
+                        self.obstacle_sources[obs.id] = source
+                
+                else:
+                    # FX: Use individual member positions
+                    for member in batch.members:
+                        # Only process if color is valid
+                        if member.color not in ["yellow", "blue"]:
+                            continue
 
-                    # IMPORTANT: map_pos is the CENTER of the obstacle
-                    # Convert to TOP-LEFT corner (what the planner expects)
-                    # Convert from meters to millimeters
-                    center_x_mm = member.map_pos.x*1000.0 
-                    center_y_mm = member.map_pos.y *1000.0
-                    obs.pose.x = center_x_mm - (obs.width_mm / 2.0)   # Center to top-left
-                    obs.pose.y = center_y_mm - (obs.height_mm / 2.0)  # Center to top-left
-                    obs.pose.theta = 0.0  # Orientation will be determined by batch direction
+                        # Create obstacle from batch member
+                        obs = Obstacle()
+                        obs.id = f"aruco_{member.aruco_id}"
+                        obs.type = 'crate'
+                        obs.color = member.color
 
-                    obs.detected_at = msg.stamp
+                        # Determine obstacle dimensions based on batch direction
+                        if batch.direction == "horizontal":
+                            obs.width_mm = self.params['obstacles']['crate_horizontal']['width_mm']
+                            obs.height_mm = self.params['obstacles']['crate_horizontal']['height_mm']
+                        elif batch.direction == "vertical":
+                            obs.width_mm = self.params['obstacles']['crate_vertical']['width_mm']
+                            obs.height_mm = self.params['obstacles']['crate_vertical']['height_mm']
+                        else:
+                            # Default to horizontal if direction is unknown
+                            obs.width_mm = self.params['obstacles']['crate_horizontal']['width_mm']
+                            obs.height_mm = self.params['obstacles']['crate_horizontal']['height_mm']
 
-                    # Add to obstacles list and track source
-                    self.obstacles.append(obs)
-                    self.obstacle_sources[obs.id] = source
+                        # IMPORTANT: map_pos is the CENTER of the obstacle
+                        # Convert to TOP-LEFT corner (what the planner expects)
+                        # Convert from meters to millimeters
+                        center_x_mm = member.map_pos.x * 1000.0 
+                        center_y_mm = member.map_pos.y * 1000.0
+                        obs.pose.x = center_x_mm - (obs.width_mm / 2.0)   # Center to top-left
+                        obs.pose.y = center_y_mm - (obs.height_mm / 2.0)  # Center to top-left
+                        obs.pose.theta = 0.0
+
+                        obs.detected_at = msg.stamp
+
+                        # Add to obstacles list and track source
+                        self.obstacles.append(obs)
+                        self.obstacle_sources[obs.id] = source
             
             # Count obstacles by source
             fx_count = sum(1 for v in self.obstacle_sources.values() if v == 'fx')
