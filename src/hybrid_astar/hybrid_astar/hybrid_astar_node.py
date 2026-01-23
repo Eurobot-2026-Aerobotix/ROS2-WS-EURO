@@ -48,7 +48,8 @@ class HybridAStarNode(Node):
     ROS2 node for Hybrid A* pathfinding with dynamic obstacle management.
     
     Subscribes to:
-        - /aruco_mapper_state: Receive batches of obstacles from ArUco mapper
+        - /aruco_mapper/state_fx: Receive batches of obstacles from ArUco mapper (FX side)
+        - /aruco_mapper/state_sx: Receive batches of obstacles from ArUco mapper (SX side)
         - /obstacles/clear_all: Clear all obstacles
         - /obstacle_relative: Receive enemy robot poses as obstacles (PoseStamped)
     
@@ -66,12 +67,16 @@ class HybridAStarNode(Node):
         # Load all parameters
         self.load_parameters()
         
-        # Obstacle database (in-memory only)
+        # Obstacle database (in-memory only) - now tracking source
         self.obstacles: List[Obstacle] = []
         self.obstacles_lock = Lock()
         
-        # Batch storage (for color pattern queries)
-        self.batches: Dict[int, Batch] = {}
+        # Track obstacle sources: 'fx', 'sx', or 'enemy'
+        self.obstacle_sources: Dict[str, str] = {}  # obstacle_id -> source
+        
+        # Batch storage (for color pattern queries) - separate for fx and sx
+        self.batches_fx: Dict[int, Batch] = {}
+        self.batches_sx: Dict[int, Batch] = {}
         self.batches_lock = Lock()
         
         # Static obstacles - now using permanent area instead of JSON file
@@ -80,7 +85,10 @@ class HybridAStarNode(Node):
         
         # Create subscribers
         self.create_subscription(
-            ArucoMapperState, '/aruco_mapper_state', self.handle_aruco_mapper_state, 10)
+            ArucoMapperState, '/aruco_mapper/state_fx', self.handle_aruco_mapper_state_fx, 10)
+        
+        self.create_subscription(
+            ArucoMapperState, '/aruco_mapper/state_sx', self.handle_aruco_mapper_state_sx, 10)
 
         self.create_subscription(
             Empty, '/obstacles/clear_all', self.handle_clear_all, 10)
@@ -232,48 +240,63 @@ class HybridAStarNode(Node):
         with self.obstacles_lock:
             count = len(self.obstacles)
             self.obstacles.clear()
+            self.obstacle_sources.clear()
             self.get_logger().info(f"🗑️  Cleared all {count} obstacles")
         # Publish obstacle visualization after clearing
         self.publish_obstacles(self.get_active_obstacles())
     
     def handle_obstacle_relative(self, msg: PoseStamped):
-        """Handle incoming obstacle from /obstacle_relative topic"""
+        """Handle incoming obstacle from /obstacle_relative topic (keeps accumulating, doesn't delete)"""
         with self.obstacles_lock:
-            # Remove any existing enemy obstacles
-            old_count = len(self.obstacles)
-            self.obstacles = [obs for obs in self.obstacles if obs.color != 'enemy']
-            removed = old_count - len(self.obstacles)
-            
-            # Create obstacle from pose
-            obs = Obstacle()
-            obs.id = f"enemy_{int(time.time() * 1000)}"  # Unique ID based on timestamp
-            obs.type = 'enemy'
-            obs.color = 'enemy'
-            
-            # Use default enemy obstacle size (can be parameterized if needed)
-            # Assuming enemy robot is similar size to our robot
-            obs.width_mm = self.params['robot']['width_mm']
-            obs.height_mm = self.params['robot']['length_mm']
+            # Find and update existing enemy obstacle or add new one
+            # We keep all enemy obstacles, just update if position changes significantly
+            existing_enemy = None
+            for obs in self.obstacles:
+                if obs.color == 'enemy':
+                    # Check if this is close to an existing enemy (within 200mm)
+                    center_x_mm = msg.pose.position.x * 1000.0
+                    center_y_mm = msg.pose.position.y * 1000.0
+                    obs_center_x = obs.pose.x + (obs.width_mm / 2.0)
+                    obs_center_y = obs.pose.y + (obs.height_mm / 2.0)
+                    dist = math.sqrt((obs_center_x - center_x_mm)**2 + (obs_center_y - center_y_mm)**2)
+                    if dist < 200.0:
+                        existing_enemy = obs
+                        break
             
             # Convert position from meters to millimeters
-            # The pose is the center of the obstacle
             center_x_mm = msg.pose.position.x * 1000.0
             center_y_mm = msg.pose.position.y * 1000.0
             
-            # Convert to top-left corner (what the planner expects)
-            obs.pose.x = center_x_mm - (obs.width_mm / 2.0)
-            obs.pose.y = center_y_mm - (obs.height_mm / 2.0)
-            obs.pose.theta = self.quaternion_to_yaw(msg.pose.orientation)
-            
-            obs.detected_at = msg.header.stamp
-            
-            # Add to obstacles list
-            self.obstacles.append(obs)
-            
-            if removed > 0:
+            if existing_enemy:
+                # Update existing enemy obstacle position
+                existing_enemy.pose.x = center_x_mm - (existing_enemy.width_mm / 2.0)
+                existing_enemy.pose.y = center_y_mm - (existing_enemy.height_mm / 2.0)
+                existing_enemy.pose.theta = self.quaternion_to_yaw(msg.pose.orientation)
+                existing_enemy.detected_at = msg.header.stamp
                 self.get_logger().info(
-                    f"🎯 Updated enemy obstacle at ({center_x_mm:.0f}, {center_y_mm:.0f}) mm (replaced {removed} old enemy obstacle(s))")
+                    f"🎯 Updated enemy obstacle at ({center_x_mm:.0f}, {center_y_mm:.0f}) mm")
             else:
+                # Create new enemy obstacle
+                obs = Obstacle()
+                obs.id = f"enemy_{int(time.time() * 1000)}"  # Unique ID based on timestamp
+                obs.type = 'enemy'
+                obs.color = 'enemy'
+                
+                # Use default enemy obstacle size (can be parameterized if needed)
+                # Assuming enemy robot is similar size to our robot
+                obs.width_mm = self.params['robot']['width_mm']
+                obs.height_mm = self.params['robot']['length_mm']
+                
+                # Convert to top-left corner (what the planner expects)
+                obs.pose.x = center_x_mm - (obs.width_mm / 2.0)
+                obs.pose.y = center_y_mm - (obs.height_mm / 2.0)
+                obs.pose.theta = self.quaternion_to_yaw(msg.pose.orientation)
+                
+                obs.detected_at = msg.header.stamp
+                
+                # Add to obstacles list and track source
+                self.obstacles.append(obs)
+                self.obstacle_sources[obs.id] = 'enemy'
                 self.get_logger().info(
                     f"🎯 Added enemy obstacle at ({center_x_mm:.0f}, {center_y_mm:.0f}) mm")
         
@@ -411,22 +434,49 @@ class HybridAStarNode(Node):
             marker_array.markers.append(crate_marker)
         
         self.path_viz_pub.publish(marker_array)
-    def handle_aruco_mapper_state(self, msg: ArucoMapperState):
+    
+    def handle_aruco_mapper_state_fx(self, msg: ArucoMapperState):
         """
-        Handle ArUco mapper state updates
+        Handle ArUco mapper state updates from FX side
         Extract obstacles from batches and update obstacle database
         Also store batches for color pattern queries
         """
-        self.get_logger().info(f"🔔 Received ArUco mapper state with {len(msg.batches)} batches")
+        self._handle_aruco_mapper_state(msg, 'fx')
+    
+    def handle_aruco_mapper_state_sx(self, msg: ArucoMapperState):
+        """
+        Handle ArUco mapper state updates from SX side
+        Extract obstacles from batches and update obstacle database
+        Also store batches for color pattern queries
+        """
+        self._handle_aruco_mapper_state(msg, 'sx')
+    
+    def _handle_aruco_mapper_state(self, msg: ArucoMapperState, source: str):
+        """
+        Internal method to handle ArUco mapper state updates
+        source: 'fx' or 'sx'
+        """
+        self.get_logger().info(f"🔔 Received ArUco mapper state ({source.upper()}) with {len(msg.batches)} batches")
         with self.obstacles_lock:
-            # Clear existing dynamic obstacles
-            self.obstacles.clear()
+            # Remove only obstacles from this source
+            old_count = len(self.obstacles)
+            self.obstacles = [obs for obs in self.obstacles if self.obstacle_sources.get(obs.id, '') != source]
+            removed = old_count - len(self.obstacles)
+            
+            # Clear obstacle sources for this source
+            self.obstacle_sources = {k: v for k, v in self.obstacle_sources.items() if v != source}
+            
+            if removed > 0:
+                self.get_logger().info(f"🗑️  Removed {removed} old {source.upper()} obstacles")
 
             # Process each batch
             for batch in msg.batches:
-                # Store batch by ID
+                # Store batch by ID in the appropriate dictionary
                 with self.batches_lock:
-                    self.batches[batch.batch_id] = batch
+                    if source == 'fx':
+                        self.batches_fx[batch.batch_id] = batch
+                    else:
+                        self.batches_sx[batch.batch_id] = batch
 
                 # Process each member in the batch
                 for member in batch.members:
@@ -463,11 +513,18 @@ class HybridAStarNode(Node):
 
                     obs.detected_at = msg.stamp
 
-                    # Add to obstacles list (allow duplicates)
+                    # Add to obstacles list and track source
                     self.obstacles.append(obs)
-
-            if len(self.obstacles) > 0:
-                self.get_logger().info(f"📦 Updated {len(self.obstacles)} obstacles from {len(msg.batches)} batches")
+                    self.obstacle_sources[obs.id] = source
+            
+            # Count obstacles by source
+            fx_count = sum(1 for v in self.obstacle_sources.values() if v == 'fx')
+            sx_count = sum(1 for v in self.obstacle_sources.values() if v == 'sx')
+            enemy_count = sum(1 for v in self.obstacle_sources.values() if v == 'enemy')
+            
+            self.get_logger().info(
+                f"📦 Updated {source.upper()} obstacles from {len(msg.batches)} batches | "
+                f"Total obstacles: FX={fx_count}, SX={sx_count}, Enemy={enemy_count}")
     def publish_path_visualization(self, waypoints: List[Tuple[float, float, float]], 
                                    obstacles: List[dict]):
         """Publish path and obstacles visualization for RViz"""
@@ -986,9 +1043,12 @@ class HybridAStarNode(Node):
         with self.batches_lock:
             batch = None
             
+            # Combine batches from both fx and sx
+            all_batches = {**self.batches_fx, **self.batches_sx}
+            
             # If known_id is empty, find closest batch to position
             if known_id == "":
-                if not self.batches:
+                if not all_batches:
                     response.success = False
                     response.color_pattern = ""
                     response.direction = ""
@@ -1005,7 +1065,7 @@ class HybridAStarNode(Node):
                 min_distance = float('inf')
                 closest_batch = None
                 
-                for b in self.batches.values():
+                for b in all_batches.values():
                     if not b.members:
                         continue
                     
@@ -1038,7 +1098,7 @@ class HybridAStarNode(Node):
                 )
             else:
                 # Find batch by known_id
-                for b in self.batches.values():
+                for b in all_batches.values():
                     if b.known_id == known_id:
                         batch = b
                         break
