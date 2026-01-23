@@ -16,13 +16,16 @@ ESP_BACK_IDLE=True
 color_pt_front=None
 color_pt_back=None
 color_pt=None
+SHUTDOWN_REQUESTED = False  # Global shutdown flag
+
 def robot_status(strategy, stm32, lidar):
     """Runs every 100ms to check STM32 movement status and lidar obstacles"""
     global IDLE
     global EMERGENCY_STOP
+    global SHUTDOWN_REQUESTED
     first_emergency = True
     
-    while rclpy.ok():
+    while rclpy.ok() and not SHUTDOWN_REQUESTED:
         # Check emergency stop from lidar
         # EMERGENCY_STOP = lidar.getstatus()
         
@@ -54,8 +57,9 @@ def to_float_list(params):
 def stm32_task(strategy, stm32):
     """Runs every 100ms to process STM32 queue"""
     global IDLE
+    global SHUTDOWN_REQUESTED
     
-    while rclpy.ok():
+    while rclpy.ok() and not SHUTDOWN_REQUESTED:
         # Check if there are commands in the queue and robot is idle
         if len(strategy.queues['STM']) > 0 and IDLE:
             cmd = strategy.queues['STM'][0]  # Peek at first command
@@ -97,7 +101,7 @@ def stm32_task(strategy, stm32):
             else:
                 strategy.get_logger().warn(f"Unknown STM32 command: {command}")
             strategy.command_waiting=False
-            while not IDLE : 
+            while not IDLE and not SHUTDOWN_REQUESTED: 
                 time.sleep(0.1)
             # Remove command from queue after execution
             strategy.queues['STM'].popleft()
@@ -154,9 +158,13 @@ def convert_color_pattern(color_pattern, robot_color):
 
 
 def stana(controller):
-    idle=controller.IDLE()
-    while(not idle):
-        idle=controller.IDLE()
+    """Wait for controller to be idle, with shutdown check"""
+    global SHUTDOWN_REQUESTED
+    
+    # Use shorter timeout to allow quicker shutdown response
+    idle = controller.IDLE(timeout=1.0)
+    while not idle and not SHUTDOWN_REQUESTED:
+        idle = controller.IDLE(timeout=1.0)
         time.sleep(0.1)
     
 def talaa(strategy, front_controller=None):
@@ -195,8 +203,16 @@ def pick_up(controller,pneumatic,strategy,front):
     global color_pt_back
     global ESP_FRONT_IDLE
     global ESP_BACK_IDLE
+    global SHUTDOWN_REQUESTED
+    
+    if SHUTDOWN_REQUESTED:
+        return
+    
     controller.n20(2222)
     stana(controller)
+    if SHUTDOWN_REQUESTED:
+        return
+    
     if front:
         pneumatic.front(0)
     else: pneumatic.back(0)
@@ -204,6 +220,9 @@ def pick_up(controller,pneumatic,strategy,front):
     time.sleep(0.3)
     controller.n20(1111)
     stana(controller)
+    if SHUTDOWN_REQUESTED:
+        return
+    
     time.sleep(1)
     color_pattern = talaa(strategy, controller)
     if front:
@@ -213,6 +232,9 @@ def pick_up(controller,pneumatic,strategy,front):
         color_pt_back = color_pattern
         strategy.get_logger().info(f"📦 Back picked up - Color pattern: {color_pt_back}")
     stana(controller)
+    if SHUTDOWN_REQUESTED:
+        return
+    
     if front:
         ESP_FRONT_IDLE=True
     else: ESP_BACK_IDLE=True
@@ -225,6 +247,11 @@ def put_down(controller,pneumatic,strategy,front):
     global ESP_BACK_IDLE
     global color_pt_front
     global color_pt_back
+    global SHUTDOWN_REQUESTED
+    
+    if SHUTDOWN_REQUESTED:
+        return
+    
     time.sleep(1)
     color_to_N20=int(str(color_pt_front).replace('1', '3').replace('0','1'))
     if front:
@@ -233,6 +260,9 @@ def put_down(controller,pneumatic,strategy,front):
         strategy.get_logger().info(f"📤 Back putting down - Color pattern: {color_pt_back}")
     controller.n20(color_to_N20)
     stana(controller)
+    if SHUTDOWN_REQUESTED:
+        return
+    
     if front:
         pneumatic.front(15)
     else: pneumatic.back(15)
@@ -240,18 +270,25 @@ def put_down(controller,pneumatic,strategy,front):
     time.sleep(1)
     controller.n20(2222)
     stana(controller)
+    if SHUTDOWN_REQUESTED:
+        return
+    
     if front:
         ESP_FRONT_IDLE=True
     else: ESP_BACK_IDLE=True
     controller.n20(0)
     stana(controller)
+    if SHUTDOWN_REQUESTED:
+        return
+    
     if front:
         pneumatic.front(16)
     else: pneumatic.back(16)
 def front_task(strategy, front_controller=None,pneumatic_controller=None):
     global color_pt_front
+    global SHUTDOWN_REQUESTED
     """Runs every 100ms to process ESP32_1 queue"""
-    while rclpy.ok():
+    while rclpy.ok() and not SHUTDOWN_REQUESTED:
         # Check if there are commands in the queue
         if len(strategy.queues['ESP_front']) > 0:
             cmd = strategy.queues['ESP_front'][0]  # Peek at first command
@@ -272,7 +309,8 @@ def front_task(strategy, front_controller=None,pneumatic_controller=None):
 def back_task(strategy, back_controller=None,pneumatic_controller=None):
     """Runs every 100ms to process ESP32_1 queue"""
     global color_pt_back
-    while rclpy.ok():
+    global SHUTDOWN_REQUESTED
+    while rclpy.ok() and not SHUTDOWN_REQUESTED:
         # Check if there are commands in the queue
         if len(strategy.queues['ESP_back']) > 0:
             cmd = strategy.queues['ESP_back'][0]  # Peek at first command
@@ -291,7 +329,8 @@ def back_task(strategy, back_controller=None,pneumatic_controller=None):
         time.sleep(0.1)  # 100ms
 def rasp_pi_task(strategy, rpi_controller=None, stm32_controller=None, front_controller=None, back_controller=None, pneumatic_controller=None):
     """Runs every 100ms to process RASP_PI queue"""
-    while rclpy.ok():
+    global SHUTDOWN_REQUESTED
+    while rclpy.ok() and not SHUTDOWN_REQUESTED:
         # Check if there are commands in the queue
         if len(strategy.queues['RASP_PI']) > 0:
             cmd = strategy.queues['RASP_PI'][0]  # Peek at first command

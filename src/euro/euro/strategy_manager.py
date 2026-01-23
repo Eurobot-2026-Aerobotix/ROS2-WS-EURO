@@ -13,6 +13,7 @@ from euro.yaml_loader import load_tasks_from_yaml
 import math
 from euro.pathfinder_controller import PathfinderClient
 from euro.strategy_executor import robot_status, stm32_task, front_task, back_task,rasp_pi_task, IDLE, EMERGENCY_STOP
+import euro.strategy_executor as executor_module  # Import module to access SHUTDOWN_REQUESTED
 
 # Global variable to store team color
 color = None
@@ -194,6 +195,11 @@ class StrategyManager(Node):
         from euro.strategy_executor import IDLE
         while not self.are_all_queues_empty() or not IDLE:
             from euro.strategy_executor import IDLE
+            # Check if shutdown is requested
+            if executor_module.SHUTDOWN_REQUESTED:
+                self.get_logger().info("Shutdown requested, stopping queue wait")
+                return
+            
             # If replanning is happening, wait for it to finish
             if self.is_replanning:
                 time.sleep(0.5)
@@ -207,32 +213,33 @@ class StrategyManager(Node):
         """Display the full contents of all queues with parameters"""
         pass
 
-def reset_systems(pneumatic_controller,front_controller,back_controller,stm32_controller=None,strategy=None):
-    """Add RESET command to RASP_PI queue for background execution"""
-    if strategy:
-        # Add RESET command to RASP_PI queue
+def reset_systems(pneumatic_controller,front_controller,back_controller,stm32_controller=None,strategy=None,immediate=False):
+    """Reset all systems - can queue or execute immediately"""
+    if strategy and not immediate:
+        # Add RESET command to RASP_PI queue for background execution
         strategy.queues['RASP_PI'].append({
             'command': 'RESET',
             'params': {},
             'wait': False
         })
     else:
-        # Fallback: execute directly if strategy not available
+        # Execute reset commands immediately (for shutdown or when strategy not available)
         if stm32_controller:
             stm32_controller.stop(timeout=2.0)
-            time.sleep(1)
+            time.sleep(0.5)
             stm32_controller.reset(timeout=2.0)
+        
+        # Reset pneumatic and ESP controllers
         pneumatic_controller.front(16)
         pneumatic_controller.back(16)
         front_controller.kabech(0)
         back_controller.kabech(0)
         front_controller.dawer(0)
         back_controller.dawer(0)
-        back_controller.n20(0)
         front_controller.n20(0)
         back_controller.n20(0)
         # Allow time for messages to be sent
-        time.sleep(0.1)
+        time.sleep(0.2)
     
 def main(args=None):
     import sys
@@ -336,6 +343,11 @@ def main(args=None):
         # Start a thread to execute tasks one by one
         def execute_tasks_sequentially():
             for task in strategy.tasks:
+                # Check if shutdown was requested
+                if executor_module.SHUTDOWN_REQUESTED:
+                    strategy.get_logger().info("Shutdown requested, stopping task execution")
+                    return
+                
                 # Extract and store global goal
                 global_goal = task['global_goal']
                 if global_goal:
@@ -393,25 +405,47 @@ def main(args=None):
                 if key.lower() == 'q':
                     shutdown_requested = True
                     
-                    # Stop and reset STM32
+                    # Stop STM32 and reset all systems immediately (not queued)
                     try:
-                        reset_systems(pneumatic,front,back,stm32,strategy)
-                        time.sleep(1)
+                        strategy.get_logger().info("Stopping and resetting all systems...")
+                        reset_systems(pneumatic,front,back,stm32,strategy,immediate=True)
+                        time.sleep(0.5)
                     except Exception as e:
-                        strategy.get_logger().error(f"Failed to stop/reset STM32: {e}")
+                        strategy.get_logger().error(f"Failed to stop/reset systems: {e}")
                     
-                    # Reset all systems
-                    try:
-                        reset_systems(pneumatic, front, back, strategy=strategy)
-                        time.sleep(1)
-                    except Exception as e:
-                        strategy.get_logger().error(f"Failed to reset systems: {e}")
+                
                     
                     break
     
     except KeyboardInterrupt:
         pass
     finally:
+        # Signal threads to stop first
+        strategy.get_logger().info("Signaling threads to stop...")
+        executor_module.SHUTDOWN_REQUESTED = True
+        
+        # Give threads time to react to shutdown flag
+        time.sleep(0.3)
+        
+        # Wait for threads to finish (with longer timeout)
+        threads = [
+            ('Status Monitor', status_thread),
+            ('STM32 Task', stm32_thread),
+            ('Front Task', front_thread),
+            ('Back Task', back_thread),
+            ('RaspPi Task', rasp_pi_thread),
+            ('Task Executor', task_executor_thread)
+        ]
+        
+        for name, thread in threads:
+            if thread.is_alive():
+                strategy.get_logger().info(f"Waiting for {name} thread to stop...")
+                thread.join(timeout=5.0)
+                if thread.is_alive():
+                    strategy.get_logger().warning(f"Thread {name} did not stop in time (still blocked)")
+                else:
+                    strategy.get_logger().info(f"✓ {name} thread stopped")
+        
         # Restore terminal settings if they were changed
         if old_settings is not None:
             try:
@@ -421,7 +455,7 @@ def main(args=None):
         
         # Cleanup nodes
         try:
-            # Clean up GPIO resources first
+            # Clean up GPIO resources after threads are stopped
             rpi.cleanup()
             
             # Destroy all nodes

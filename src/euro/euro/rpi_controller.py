@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""
-Raspberry Pi Controller - GPIO button control for manual start
+"""n Raspberry Pi Controller - GPIO button control for manual start
 Gracefully handles non-RPi environments for testing
 """
 
 import time
 import rclpy
 from rclpy.node import Node
+import sys
+import threading
 
 # Try to import gpiozero, handle gracefully if not available or not on RPi
 try:
@@ -105,18 +106,48 @@ class RPiController(Node):
     def cleanup(self):
         """Clean up GPIO resources"""
         if GPIO_AVAILABLE:
+            # Install custom excepthook to suppress GPIO callback thread errors during cleanup
+            original_excepthook = threading.excepthook
+            def suppress_gpio_errors(args):
+                # Suppress lgpio errors from background callback threads
+                if 'lgpio' not in str(args.exc_type) and 'NoneType' not in str(args.exc_value):
+                    original_excepthook(args)
+            threading.excepthook = suppress_gpio_errors
+            
             try:
-                if self.vcc_device:
-                    self.vcc_device.close()
-                    self.vcc_device = None
+                # Disable callbacks first to prevent race conditions with cleanup
                 if self.button_device:
-                    self.button_device.close()
+                    try:
+                        self.button_device.when_activated = None
+                        self.button_device.when_deactivated = None
+                    except Exception:
+                        pass
+                
+                # Close devices (may trigger background thread errors)
+                if self.vcc_device:
+                    try:
+                        self.vcc_device.close()
+                    except Exception:
+                        pass
+                    self.vcc_device = None
+                    
+                if self.button_device:
+                    try:
+                        self.button_device.close()
+                    except Exception:
+                        pass
                     self.button_device = None
                 
                 # Close the pin factory to fully release GPIO
                 if Device.pin_factory is not None:
-                    Device.pin_factory.close()
+                    try:
+                        Device.pin_factory.close()
+                    except Exception:
+                        pass
                     Device.pin_factory = None
+                
+                # Give background threads time to finish
+                time.sleep(0.15)
                 
                 self.gpio_initialized = False
                 if hasattr(self, 'get_logger'):
@@ -124,6 +155,9 @@ class RPiController(Node):
             except Exception as e:
                 if hasattr(self, 'get_logger'):
                     self.get_logger().warning(f"GPIO cleanup warning: {e}")
+            finally:
+                # Restore original excepthook
+                threading.excepthook = original_excepthook
     
     def __del__(self):
         """Destructor to ensure GPIO cleanup"""
