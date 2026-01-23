@@ -10,6 +10,7 @@ from geometry_msgs.msg import Point
 
 # Global state variables
 IDLE = True
+IDLE_FOR_STSEMS=True
 EMERGENCY_STOP = False
 ESP_FRONT_IDLE=True
 ESP_BACK_IDLE=True
@@ -31,14 +32,20 @@ def robot_status(strategy, stm32, lidar):
         
         # Only check if robot is idle when we think it's busy
         if not IDLE:
-            success, is_completed, _ = stm32.IDLE()
+            if not IDLE_FOR_STSEMS:   
+                success, is_completed, _ = stm32.IDLE_FOR_SYSTEMS()
+            else:
+                success, is_completed, _ = stm32.IDLE()
             if not EMERGENCY_STOP:
                 first_emergency = True
                 
             if not success:
                 strategy.get_logger().warning("⚠️ Failed to check robot status")
             else:
-                IDLE = is_completed
+                if not IDLE_FOR_STSEMS:
+                    IDLE_FOR_STSEMS = is_completed
+                else:
+                    IDLE = is_completed
         
         # Handle emergency stop
         if EMERGENCY_STOP and first_emergency:
@@ -58,7 +65,7 @@ def stm32_task(strategy, stm32):
     """Runs every 100ms to process STM32 queue"""
     global IDLE
     global SHUTDOWN_REQUESTED
-    
+    global IDLE_FOR_STSEMS
     while rclpy.ok() and not SHUTDOWN_REQUESTED:
         # Check if there are commands in the queue and robot is idle
         if len(strategy.queues['STM']) > 0 and IDLE:
@@ -72,30 +79,37 @@ def stm32_task(strategy, stm32):
             if command == 'move_forward':
                 stm32.move_forward(params[0], params[1], params[2] if len(params) > 2 else 0.0)
                 IDLE = False
+                IDLE_FOR_STSEMS=False
             elif command == 'rotate':
                 stm32.rotate(params[0], params[1] if len(params) > 1 else 0.0)
                 IDLE = False
+                IDLE_FOR_STSEMS=False
             elif command == 'go_to':
                 if len(params) > 3:
                     stm32.go_to(params[0], params[1], params[2], params[3])
                 else:
                     stm32.go_to(params[0], params[1], params[2])
                 IDLE = False
+                IDLE_FOR_STSEMS=False
             elif command == 'orientate':
                 stm32.orientate(params[0], params[1] if len(params) > 1 else 0.0)
                 IDLE = False
+                IDLE_FOR_STSEMS=False
             elif command == 'bezier':
                 stm32.bezier_curve(params[0], params[1], params[2], params[3], params[4], params[5], params[6])
                 IDLE = False
+                IDLE_FOR_STSEMS=False
             elif command == 'go_to_backwards':
                 if len(params) > 3:
                     stm32.go_to_backwards(params[0], params[1], params[2], params[3])
                 else:
                     stm32.go_to_backwards(params[0], params[1], params[2])
                 IDLE = False
+                IDLE_FOR_STSEMS=False
             elif command == 'bezier_backwards':
                 stm32.bezier_curve_backwards(params[0], params[1], params[2], params[3], params[4], params[5], params[6])
                 IDLE = False
+                IDLE_FOR_STSEMS=False
             elif command == 'set_position':
                 stm32.set_position(params[0], params[1], params[2])
             else:

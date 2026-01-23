@@ -13,7 +13,7 @@ from euro.yaml_loader import load_tasks_from_yaml
 import math
 from euro.pathfinder_controller import PathfinderClient
 from euro.strategy_executor import robot_status, stm32_task, front_task, back_task,rasp_pi_task, IDLE, EMERGENCY_STOP
-import euro.strategy_executor as executor_module  # Import module to access SHUTDOWN_REQUESTED
+import euro.strategy_executor as executor_module  # Import module to access SHUTDOWN_REQUESTED and other globals
 
 # Global variable to store team color
 color = None
@@ -161,20 +161,17 @@ class StrategyManager(Node):
             
             # Add command to device queue
             if device in self.queues:
-                from euro import strategy_executor
                 if(device == "ESP_front" ) :
-                    strategy_executor.ESP_FRONT_IDLE=False
+                    executor_module.ESP_FRONT_IDLE=False
                 if(device == "ESP_back" ) :
-                    strategy_executor.ESP_BACK_IDLE=False
+                    executor_module.ESP_BACK_IDLE=False
                 if wait :
                     self.get_logger().info(f"      ⏳ Waiting for dependencies...")
-                    from euro.strategy_executor import IDLE,ESP_FRONT_IDLE,ESP_BACK_IDLE
                     if(device == "STM"):
-                        while  not ESP_FRONT_IDLE or not ESP_BACK_IDLE :
-                            from euro.strategy_executor import ESP_FRONT_IDLE,ESP_BACK_IDLE
+                        while not executor_module.ESP_FRONT_IDLE or not executor_module.ESP_BACK_IDLE:
+                            time.sleep(0.1)
                     if(device == "ESP_front" or device == "ESP_back"):
-                        while not IDLE or  len(self.queues["STM"])!=0 :
-                            from euro.strategy_executor import IDLE
+                        while not executor_module.IDLE_FOR_STSEMS:
                             time.sleep(0.1)
                 self.queues[device].append(cmd)
             else:
@@ -192,9 +189,7 @@ class StrategyManager(Node):
     def wait_for_all_queues_empty(self):
         """Wait until all device queues are empty (unless replanning)"""
         
-        from euro.strategy_executor import IDLE
-        while not self.are_all_queues_empty() or not IDLE:
-            from euro.strategy_executor import IDLE
+        while not self.are_all_queues_empty() or not executor_module.IDLE:
             # Check if shutdown is requested
             if executor_module.SHUTDOWN_REQUESTED:
                 self.get_logger().info("Shutdown requested, stopping queue wait")
@@ -206,7 +201,7 @@ class StrategyManager(Node):
                 continue
             if not self.are_all_queues_empty():
                 time.sleep(0.1)
-            elif not IDLE:
+            elif not executor_module.IDLE:
                 time.sleep(0.1)
     
     def display_queue_contents(self):

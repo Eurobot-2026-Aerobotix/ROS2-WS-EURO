@@ -463,6 +463,47 @@ class STM32Controller(Node):
         except Exception as e:
             self.get_logger().error(f'Status check error: {str(e)}')
             return False, False, f'Status check error: {str(e)}'
+    def IDLE_FOR_SYSTEMS(self, timeout=10.0):
+        """
+        Check if the current navigation command has completed
+        
+        Returns:
+            tuple: (success, is_completed, response)
+                   success: bool - if the service call was successful
+                   is_completed: bool - if the movement command has finished
+                   response: service response or error message
+        """
+        if not self.navi_client.wait_for_service(timeout_sec=10.0):
+            self.get_logger().error('NaviStm service not available for status check')
+            return False, False, 'NaviStm service not available'
+        
+        request = NaviStm.Request()
+        request.arg1 = 16.0  # Indicates status for systems (pick up put down) command
+        request.arg2 = 0.0
+        request.arg3 = 0.0
+        request.arg4 = 0.0
+        request.arg5 = 0.0
+        request.arg6 = 0.0
+        request.arg7 = 0.0
+        request.arg8 = 0.0
+        request.arg9 = 0.0
+        request.arg10 = 0.0
+        
+        try:
+            future = self.navi_client.call_async(request)
+            rclpy.spin_until_future_complete(self, future, timeout_sec=timeout)
+            
+            if future.done():
+                response = future.result()
+                # Assuming response.result is True when movement is completed, False when still moving
+                is_completed = bool(response.result)
+                return True, is_completed, response
+            else:
+                self.get_logger().error('Status check timeout')
+                return False, False, 'Status check timeout'
+        except Exception as e:
+            self.get_logger().error(f'Status check error: {str(e)}')
+            return False, False, f'Status check error: {str(e)}'
     def wait_for_completion(self, max_wait_time=30.0, check_interval=0.1):
         """
         Wait for the current navigation command to complete using continuous status polling
