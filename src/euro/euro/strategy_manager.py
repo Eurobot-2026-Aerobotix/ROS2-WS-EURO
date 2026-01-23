@@ -115,7 +115,7 @@ class StrategyManager(Node):
                 'params': {
                     'angle': theta_goal,
                     'is_radian': 0.0
-                },
+                },  
             })
         
         # Resume task execution
@@ -209,7 +209,7 @@ class StrategyManager(Node):
         """Display the full contents of all queues with parameters"""
         pass
 
-def reset_systems(pneumatic_controller,front_controller,back_controller,stm32_controller=None,strategy=None):
+def reset_systems(stm32_controller=None,strategy=None):
     """Add RESET command to RASP_PI queue for background execution"""
     if strategy:
         # Add RESET command to RASP_PI queue
@@ -224,15 +224,6 @@ def reset_systems(pneumatic_controller,front_controller,back_controller,stm32_co
             stm32_controller.stop(timeout=2.0)
             time.sleep(1)
             stm32_controller.reset(timeout=2.0)
-        pneumatic_controller.front(16)
-        pneumatic_controller.back(16)
-        front_controller.kabech(0)
-        back_controller.kabech(0)
-        front_controller.dawer(0)
-        back_controller.dawer(0)
-        back_controller.n20(0)
-        front_controller.n20(0)
-        back_controller.n20(0)
         # Allow time for messages to be sent
         time.sleep(0.1)
     
@@ -253,20 +244,11 @@ def main(args=None):
     lidar = Lidar()
     # Create strategy manager
     strategy = StrategyManager()
-    strategy
-    front= FrontSystemsController()
-    back= BackSystemsController()
-    pneumatic= PneumaticController()
-    rpi= RPiController()
     # Create executor for ROS2 nodes
     executor = MultiThreadedExecutor()
     executor.add_node(stm32)
     executor.add_node(lidar)
     executor.add_node(strategy)
-    executor.add_node(front)
-    executor.add_node(back)
-    executor.add_node(pneumatic)
-    executor.add_node(rpi)
      # Start background threads for each device
     strategy.get_logger().info("Starting background threads...")
     
@@ -284,27 +266,6 @@ def main(args=None):
     )
     stm32_thread.start()
     
-    front_thread = threading.Thread(
-        target=front_task,
-        args=(strategy, front,pneumatic),  
-        daemon=True
-    )
-    front_thread.start()
-    
-    back_thread = threading.Thread(
-        target=back_task,
-        args=(strategy, back,pneumatic), 
-        daemon=True
-    )
-    back_thread.start()
-    
-    
-    rasp_pi_thread = threading.Thread(
-        target=rasp_pi_task,
-        args=(strategy, rpi, stm32, front, back, pneumatic),
-        daemon=True
-    )
-    rasp_pi_thread.start()
     
     # Get tasks file path
     # Check if a YAML file path was provided as argument
@@ -332,7 +293,7 @@ def main(args=None):
             from euro.pami_controller import PamiController
             pami_ctrl = PamiController(strategy.strategy_name, pami_folder, 'pami_controller_internal')
         
-        reset_systems(pneumatic,front,back,strategy=strategy)
+        reset_systems(strategy=strategy)
         time.sleep(2)
         # Execute tasks sequentially
         # Start a thread to execute tasks one by one
@@ -397,14 +358,14 @@ def main(args=None):
                     
                     # Stop and reset STM32
                     try:
-                        reset_systems(pneumatic,front,back,stm32,strategy)
+                        reset_systems(stm32,strategy)
                         time.sleep(1)
                     except Exception as e:
                         strategy.get_logger().error(f"Failed to stop/reset STM32: {e}")
                     
                     # Reset all systems
                     try:
-                        reset_systems(pneumatic, front, back, strategy=strategy)
+                        reset_systems(strategy=strategy)
                         time.sleep(1)
                     except Exception as e:
                         strategy.get_logger().error(f"Failed to reset systems: {e}")

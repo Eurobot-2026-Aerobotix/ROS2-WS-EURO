@@ -24,7 +24,7 @@ def robot_status(strategy, stm32, lidar):
     
     while rclpy.ok():
         # Check emergency stop from lidar
-        # EMERGENCY_STOP = lidar.getstatus()
+        EMERGENCY_STOP = lidar.getstatus()
         
         # Only check if robot is idle when we think it's busy
         if not IDLE:

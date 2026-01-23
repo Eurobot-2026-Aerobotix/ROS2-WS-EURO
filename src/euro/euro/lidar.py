@@ -29,8 +29,6 @@ class Lidar(Node):
         self.emergency_status = msg.data
         if self.emergency_status == 1:
             self.get_logger().warning("🚨 Emergency signal received!")
-        else:
-            self.get_logger().info("✅ Emergency signal cleared")
     
     def getstatus(self):
         """
