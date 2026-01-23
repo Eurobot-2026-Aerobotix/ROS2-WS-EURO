@@ -27,7 +27,7 @@ from typing import List, Dict, Optional
 # ROS2 messages
 from std_msgs.msg import String
 from geometry_msgs.msg import PoseStamped, Quaternion, Point
-from hybrid_astar.msg import ArucoMapperState, Batch, BatchMember
+from aruco_mapper_msgs.msg import ArucoMapperState, Batch, BatchMember
 from hybrid_astar.srv import ComputePath, GetBatchColorPattern
 
 

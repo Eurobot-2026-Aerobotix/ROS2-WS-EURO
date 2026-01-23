@@ -15,7 +15,7 @@ if script_dir in sys.path:
 import json
 import rclpy
 from rclpy.node import Node
-from hybrid_astar.msg import ArucoMapperState, Batch, BatchMember
+from aruco_mapper_msgs.msg import ArucoMapperState, Batch, BatchMember
 from hybrid_astar.srv import ComputePath
 from geometry_msgs.msg import PoseStamped, Point
 from builtin_interfaces.msg import Time

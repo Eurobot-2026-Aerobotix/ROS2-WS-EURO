@@ -18,6 +18,7 @@ find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(builtin_interfaces REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
+find_package(aruco_mapper_msgs REQUIRED)
 
 # Generate messages and services
 rosidl_generate_interfaces(${PROJECT_NAME}
@@ -25,13 +26,9 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/ObstacleArray.msg"
   "msg/ObstacleIDArray.msg"
   "msg/ColorCommand.msg"
-  "msg/BatchMember.msg"
-  "msg/Batch.msg"
-  "msg/Track.msg"
-  "msg/ArucoMapperState.msg"
   "srv/ComputePath.srv"
   "srv/GetBatchColorPattern.srv"
-  DEPENDENCIES std_msgs geometry_msgs nav_msgs builtin_interfaces
+  DEPENDENCIES std_msgs geometry_msgs nav_msgs builtin_interfaces aruco_mapper_msgs
 )
 
 # This macro ensures that Python scripts can import the generated messages

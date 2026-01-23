@@ -19,6 +19,7 @@
   <depend>tf2</depend>
   <depend>tf2_ros</depend>
   <depend>builtin_interfaces</depend>
+  <depend>aruco_mapper_msgs</depend>
 
   <exec_depend>rosidl_default_runtime</exec_depend>
 

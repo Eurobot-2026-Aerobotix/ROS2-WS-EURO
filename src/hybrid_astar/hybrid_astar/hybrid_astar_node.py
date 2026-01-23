@@ -35,7 +35,8 @@ from nav_msgs.msg import Path
 from visualization_msgs.msg import Marker, MarkerArray
 
 # Custom messages (will be generated)
-from hybrid_astar.msg import Obstacle, ObstacleArray, ColorCommand, ArucoMapperState, Batch, BatchMember
+from hybrid_astar.msg import Obstacle, ObstacleArray, ColorCommand
+from aruco_mapper_msgs.msg import ArucoMapperState, Batch, BatchMember
 from hybrid_astar.srv import ComputePath, GetBatchColorPattern
 
 # Import the pathfinding algorithm
