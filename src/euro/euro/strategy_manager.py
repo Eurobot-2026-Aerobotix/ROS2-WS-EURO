@@ -161,9 +161,9 @@ class StrategyManager(Node):
             # Add command to device queue
             if device in self.queues:
                 from euro import strategy_executor
-                if(device == "ESP_FRONT" ) :
+                if(device == "ESP_front" ) :
                     strategy_executor.ESP_FRONT_IDLE=False
-                if(device == "ESP_BACK" ) :
+                if(device == "ESP_back" ) :
                     strategy_executor.ESP_BACK_IDLE=False
                 if wait :
                     self.get_logger().info(f"      ⏳ Waiting for dependencies...")
@@ -171,8 +171,7 @@ class StrategyManager(Node):
                     if(device == "STM"):
                         while  not ESP_FRONT_IDLE or not ESP_BACK_IDLE :
                             from euro.strategy_executor import ESP_FRONT_IDLE,ESP_BACK_IDLE
-                            time.sleep(0.1)
-                    if(device == "ESP_FRONT" or device == "ESP_BACK"):
+                    if(device == "ESP_front" or device == "ESP_back"):
                         while not IDLE or  len(self.queues["STM"])!=0 :
                             from euro.strategy_executor import IDLE
                             time.sleep(0.1)
@@ -199,11 +198,10 @@ class StrategyManager(Node):
             if self.is_replanning:
                 time.sleep(0.5)
                 continue
-            
             if not self.are_all_queues_empty():
-                time.sleep(0.5)
+                time.sleep(0.1)
             elif not IDLE:
-                time.sleep(0.5)
+                time.sleep(0.1)
     
     def display_queue_contents(self):
         """Display the full contents of all queues with parameters"""

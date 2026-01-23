@@ -29,7 +29,6 @@ def robot_status(strategy, stm32, lidar):
         # Only check if robot is idle when we think it's busy
         if not IDLE:
             success, is_completed, _ = stm32.IDLE()
-            
             if not EMERGENCY_STOP:
                 first_emergency = True
                 
@@ -98,7 +97,8 @@ def stm32_task(strategy, stm32):
             else:
                 strategy.get_logger().warn(f"Unknown STM32 command: {command}")
             strategy.command_waiting=False
-            
+            while not IDLE : 
+                time.sleep(0.1)
             # Remove command from queue after execution
             strategy.queues['STM'].popleft()
         
@@ -216,6 +216,7 @@ def pick_up(controller,pneumatic,strategy,front):
     if front:
         ESP_FRONT_IDLE=True
     else: ESP_BACK_IDLE=True
+    strategy.get_logger().info("System is IDLE ")
     controller.kabech(0)
     controller.dawer(1)
     time.sleep(1)
