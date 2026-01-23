@@ -203,7 +203,7 @@ def talaa(strategy, front_controller=None):
         else:
             robot_color = 'y'  # Default to 'y' if color not set
         color_pt = convert_color_pattern(color_pattern, robot_color)
-        color_to_N20=int(str(color_pt).replace('0', '2').replace('1', '3'))
+        color_to_N20=int(str(color_pt).replace('0', '3').replace('1', '4'))
         print(f"Converted color pattern: {color_pt}, N20 command: {color_to_N20}")
         front_controller.n20(color_to_N20)
         return color_pt
@@ -222,7 +222,7 @@ def pick_up(controller,pneumatic,strategy,front):
     if SHUTDOWN_REQUESTED:
         return
     
-    controller.n20(2222)
+    controller.n20(3333)
     stana(controller)
     if SHUTDOWN_REQUESTED:
         return
@@ -267,7 +267,7 @@ def put_down(controller,pneumatic,strategy,front):
         return
     
     time.sleep(1)
-    color_to_N20=int(str(color_pt_front).replace('1', '3').replace('0','1'))
+    color_to_N20=int(str(color_pt_front).replace('1', '4').replace('0','1'))
     if front:
         strategy.get_logger().info(f"📤 Front putting down - Color pattern: {color_pt_front}")
     else:
@@ -282,7 +282,7 @@ def put_down(controller,pneumatic,strategy,front):
     else: pneumatic.back(15)
     controller.dawer(0)
     time.sleep(1)
-    controller.n20(2222)
+    controller.n20(3333)
     stana(controller)
     if SHUTDOWN_REQUESTED:
         return
@@ -311,9 +311,17 @@ def front_task(strategy, front_controller=None,pneumatic_controller=None):
             params = cmd.get('params', {})
             wait = cmd.get('wait', False)
             
-            if command =='put_down':
+            if command == 'prepare':
+                action = params.get('action')
+                if action == 'pick_up':
+                    front_controller.n20(2222)
+                    strategy.get_logger().info(f"🔧 Front prepare for pick_up: n20(2222)")
+                else:
+                    cmd_to_n20=int(str(color_pt_front).replace('0','2'))
+                    front_controller.n20(cmd_to_n20)
+            elif command =='put_down':
                 put_down(front_controller,pneumatic_controller,strategy,True)
-            if(command =='pick_up'):
+            elif command =='pick_up':
                 pick_up(front_controller,pneumatic_controller,strategy,True)
             strategy.queues['ESP_front'].popleft()
         
@@ -333,9 +341,17 @@ def back_task(strategy, back_controller=None,pneumatic_controller=None):
             params = cmd.get('params', {})
             wait = cmd.get('wait', False)
             
-            if command =='put_down':
+            if command == 'prepare':
+                action = params.get('action')
+                if action == 'pick_up':
+                    back_controller.n20(2222)
+                    strategy.get_logger().info(f"🔧 Back prepare for pick_up: n20(2222)")
+                else:
+                    cmd_to_n20=int(str(color_pt_back).replace('0','2'))
+                    back_controller.n20(cmd_to_n20)
+            elif command =='put_down':
                 put_down(back_controller,pneumatic_controller,strategy,False)
-            if(command =='pick_up'):
+            elif command =='pick_up':
                 pick_up(back_controller,pneumatic_controller,strategy,False)
                
             strategy.queues['ESP_back'].popleft()

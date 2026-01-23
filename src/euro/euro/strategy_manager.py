@@ -151,13 +151,29 @@ class StrategyManager(Node):
             return False
         
         # Iterate through sequence and add to queues
-        for idx, cmd in enumerate(task['sequence'], 1):
+        for idx, cmd in enumerate(task['sequence']):
             device = cmd.get('device')
             command = cmd.get('command')
             params = cmd.get('params', {})
             wait = cmd.get('wait', False)
             
-            self.get_logger().info(f"⚙️  [{idx}/{len(task['sequence'])}] {device} -> {command}")
+            self.get_logger().info(f"⚙️  [{idx+1}/{len(task['sequence'])}] {device} -> {command}")
+            
+            # Check if next command is pick_up for ESP_front or ESP_back
+            if idx + 1 < len(task['sequence']):
+                next_cmd = task['sequence'][idx + 1]
+                next_device = next_cmd.get('device')
+                next_command = next_cmd.get('command')
+                
+                if next_command in ['pick_up', 'put_down'] and next_device in ['ESP_front', 'ESP_back']:
+                    prepare_cmd = {
+                        'device': next_device,
+                        'command': 'prepare',
+                        'params': {'action': next_command},
+                        'wait': False
+                    }
+                    self.queues[next_device].append(prepare_cmd)
+                    self.get_logger().info(f"      🔧 Adding prepare command for {next_device} with action: {next_command}")
             
             # Add command to device queue
             if device in self.queues:
