@@ -44,7 +44,7 @@ class WebHandlerNode(Node):
         /web/get_batch_color: Query batch color pattern (JSON string)
     
     Publishes:
-        /aruco_mapper_state: Send batches to hybrid_astar_node
+        /aruco_mapper/state_fx: Send batches to hybrid_astar_node
         /obstacle_relative: Send enemy obstacles to hybrid_astar_node (PoseStamped)
         /web/path_result: Return path to web (JSON string)
         /web/batch_color_result: Return batch color to web (JSON string)
@@ -56,7 +56,7 @@ class WebHandlerNode(Node):
         # Publishers
         self.aruco_state_pub = self.create_publisher(
             ArucoMapperState,
-            '/aruco_mapper_state',
+            '/aruco_mapper/state_fx',
             10
         )
         
