@@ -67,6 +67,18 @@ class HybridAStarNode(Node):
         # Load all parameters
         self.load_parameters()
         
+        # Predefined batch positions (in meters) for SX batches
+        self.predefined_batch_positions = {
+            "s1": {"x": 0.80, "y": 0.175, "phi_degrees": 0.0},
+            "s2": {"x": 1.60, "y": 0.175, "phi_degrees": 0.0},
+            "s3": {"x": 1.20, "y": 1.15, "phi_degrees": 90.0},
+            "s4": {"x": 1.825, "y": 1.1, "phi_degrees": 90.0},
+            "s5": {"x": 1.20, "y": 1.85, "phi_degrees": 90.0},
+            "s6": {"x": 1.825, "y": 1.9, "phi_degrees": 90.0},
+            "s7": {"x": 0.80, "y": 2.85, "phi_degrees": 90.0},
+            "s8": {"x": 1.60, "y": 2.85, "phi_degrees": 90.0},
+        }
+        
         # Obstacle database (in-memory only) - now tracking source
         self.obstacles: List[Obstacle] = []
         self.obstacles_lock = Lock()
@@ -482,9 +494,16 @@ class HybridAStarNode(Node):
                     continue
                 
                 if source == 'sx':
-                    # SX: Use batch center and create 4 obstacles with member colors in order
-                    batch_center_x = sum(m.map_pos.x for m in batch.members) / len(batch.members)
-                    batch_center_y = sum(m.map_pos.y for m in batch.members) / len(batch.members)
+                    # SX: Use predefined batch position from lookup table
+                    batch_known_id = batch.known_id
+                    
+                    if batch_known_id not in self.predefined_batch_positions:
+                        self.get_logger().warn(f"⚠️  Batch '{batch_known_id}' not found in predefined positions, skipping")
+                        continue
+                    
+                    batch_pos = self.predefined_batch_positions[batch_known_id]
+                    batch_center_x = batch_pos["x"]  # Already in meters
+                    batch_center_y = batch_pos["y"]  # Already in meters
                     
                     # Convert batch center from meters to millimeters
                     batch_center_x_mm = batch_center_x * 1000.0
@@ -566,17 +585,17 @@ class HybridAStarNode(Node):
                         obs.type = 'crate'
                         obs.color = member.color
 
-                        # Determine obstacle dimensions based on batch direction
+                        # Determine obstacle dimensions based on batch direction (swapped)
                         if batch.direction == "horizontal":
-                            obs.width_mm = self.params['obstacles']['crate_horizontal']['width_mm']
-                            obs.height_mm = self.params['obstacles']['crate_horizontal']['height_mm']
+                            obs.width_mm = self.params['obstacles']['crate_horizontal']['height_mm']
+                            obs.height_mm = self.params['obstacles']['crate_horizontal']['width_mm']
                         elif batch.direction == "vertical":
-                            obs.width_mm = self.params['obstacles']['crate_vertical']['width_mm']
-                            obs.height_mm = self.params['obstacles']['crate_vertical']['height_mm']
+                            obs.width_mm = self.params['obstacles']['crate_vertical']['height_mm']
+                            obs.height_mm = self.params['obstacles']['crate_vertical']['width_mm']
                         else:
                             # Default to horizontal if direction is unknown
-                            obs.width_mm = self.params['obstacles']['crate_horizontal']['width_mm']
-                            obs.height_mm = self.params['obstacles']['crate_horizontal']['height_mm']
+                            obs.width_mm = self.params['obstacles']['crate_horizontal']['height_mm']
+                            obs.height_mm = self.params['obstacles']['crate_horizontal']['width_mm']
 
                         # IMPORTANT: map_pos is the CENTER of the obstacle
                         # Convert to TOP-LEFT corner (what the planner expects)
