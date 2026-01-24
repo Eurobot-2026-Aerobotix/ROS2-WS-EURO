@@ -181,13 +181,15 @@ class StrategyManager(Node):
                     executor_module.ESP_FRONT_IDLE=False
                 if(device == "ESP_back" ) :
                     executor_module.ESP_BACK_IDLE=False
+                if(device == "STM"):
+                    executor_module.IDLE_FOR_SYSTEMS=False
                 if wait :
                     self.get_logger().info(f"      ⏳ Waiting for dependencies...")
                     if(device == "STM"):
                         while not executor_module.ESP_FRONT_IDLE or not executor_module.ESP_BACK_IDLE:
                             time.sleep(0.1)
                     if(device == "ESP_front" or device == "ESP_back"):
-                        while not executor_module.IDLE_FOR_STSEMS:
+                        while not executor_module.IDLE_FOR_SYSTEMS:
                             time.sleep(0.1)
                 self.queues[device].append(cmd)
             else:
