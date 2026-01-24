@@ -14,7 +14,7 @@ import math
 from euro.pathfinder_controller import PathfinderClient
 from euro.strategy_executor import robot_status, stm32_task, front_task, back_task,rasp_pi_task, IDLE, EMERGENCY_STOP
 import euro.strategy_executor as executor_module  # Import module to access SHUTDOWN_REQUESTED and other globals
-
+IDLE_FOR_SYSTEMS_CHECKED=False
 # Global variable to store team color
 color = None
 
@@ -189,7 +189,12 @@ class StrategyManager(Node):
                         while not executor_module.ESP_FRONT_IDLE or not executor_module.ESP_BACK_IDLE:
                             time.sleep(0.1)
                     if(device == "ESP_front" or device == "ESP_back"):
-                        while not executor_module.IDLE_FOR_SYSTEMS:
+                        n=len((self.queues["STM"]))
+                        i=0
+                        while not i==n :
+                            if executor_module.IDLE_FOR_SYSTEMS and not executor_module.IDLE_FOR_SYSTEMS_CHECKED:
+                               i+=1 
+                               executor_module.IDLE_FOR_SYSTEMS_CHECKED=True
                             time.sleep(0.1)
                 self.queues[device].append(cmd)
             else:
@@ -226,7 +231,7 @@ class StrategyManager(Node):
         """Display the full contents of all queues with parameters"""
         pass
 
-def reset_systems(pneumatic_controller,front_controller,back_controller,stm32_controller=None,strategy=None,immediate=False):
+def reset_systems(pneumatic_controller,front_controller,back_controller,stm32_controller=None,strategy=None,immediate=False,xd=True):
     """Reset all systems - can queue or execute immediately"""
     if strategy and not immediate:
         # Add RESET command to RASP_PI queue for background execution
@@ -238,8 +243,9 @@ def reset_systems(pneumatic_controller,front_controller,back_controller,stm32_co
     else:
         # Execute reset commands immediately (for shutdown or when strategy not available)
         if stm32_controller:
-            stm32_controller.stop(timeout=2.0)
-            time.sleep(0.5)
+            if xd:
+                stm32_controller.stop(timeout=2.0)
+                time.sleep(0.5)
             stm32_controller.reset(timeout=2.0)
         
         # Reset pneumatic and ESP controllers
@@ -350,7 +356,7 @@ def main(args=None):
             from euro.pami_controller import PamiController
             pami_ctrl = PamiController(strategy.strategy_name, pami_folder, 'pami_controller_internal')
         
-        reset_systems(pneumatic,front,back,strategy=strategy)
+        reset_systems(pneumatic,front,back,stm32,strategy,False,False)
         time.sleep(2)
         # Execute tasks sequentially
         # Start a thread to execute tasks one by one

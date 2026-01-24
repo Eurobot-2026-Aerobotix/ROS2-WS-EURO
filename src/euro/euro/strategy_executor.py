@@ -18,7 +18,7 @@ color_pt_front=None
 color_pt_back=None
 color_pt=None
 SHUTDOWN_REQUESTED = False  # Global shutdown flag
-
+IDLE_FOR_SYSTEMS_CHECKED=False
 def robot_status(strategy, stm32, lidar):
     """Runs every 100ms to check STM32 movement status and lidar obstacles"""
     global IDLE
@@ -32,7 +32,7 @@ def robot_status(strategy, stm32, lidar):
         
         # Only check if robot is idle when we think it's busy
         if not IDLE:
-            if not IDLE_FOR_SYSTEMS:   
+            if not IDLE_FOR_SYSTEMS :   
                 success, is_completed, _ = stm32.IDLE_FOR_SYSTEMS()
             else:
                 success, is_completed, _ = stm32.IDLE()
@@ -66,11 +66,12 @@ def stm32_task(strategy, stm32):
     global IDLE
     global SHUTDOWN_REQUESTED
     global IDLE_FOR_SYSTEMS
+    global IDLE_FOR_SYSTEMS_CHECKED
     while rclpy.ok() and not SHUTDOWN_REQUESTED:
         # Check if there are commands in the queue and robot is idle
         if len(strategy.queues['STM']) > 0 and IDLE:
             cmd = strategy.queues['STM'][0]  # Peek at first command
-            
+            IDLE_FOR_SYSTEMS_CHECKED=False
             command = cmd.get('command')
             params = cmd.get('params', {})
             wait = cmd.get('wait', False)
@@ -85,12 +86,13 @@ def stm32_task(strategy, stm32):
                 IDLE = False
                 IDLE_FOR_SYSTEMS=False
             elif command == 'go_to':
+                IDLE_FOR_SYSTEMS=False
                 if len(params) > 3:
                     stm32.go_to(params[0], params[1], params[2], params[3])
                 else:
                     stm32.go_to(params[0], params[1], params[2])
                 IDLE = False
-                IDLE_FOR_SYSTEMS=False
+                
             elif command == 'orientate':
                 stm32.orientate(params[0], params[1] if len(params) > 1 else 0.0)
                 IDLE = False
@@ -265,7 +267,10 @@ def put_down(controller,pneumatic,strategy,front):
         return
     
     time.sleep(1)
-    color_to_N20=int(str(color_pt_front).replace('1', '4').replace('0','1'))
+    color_pattern = color_pt_front if front else color_pt_back
+    strategy.get_logger().info(f"color_pattern {color_pattern}")
+    color_to_N20=int(str(color_pattern).replace('1', '4').replace('0','1'))
+    strategy.get_logger().info(f"TO n20 command  {color_to_N20}")
     if front:
         strategy.get_logger().info(f"📤 Front putting down - Color pattern: {color_pt_front}")
     else:
@@ -315,7 +320,7 @@ def front_task(strategy, front_controller=None,pneumatic_controller=None):
                     front_controller.n20(2222)
                     strategy.get_logger().info(f"🔧 Front prepare for pick_up: n20(2222)")
                 else:
-                    cmd_to_n20=int(str(color_pt_front).replace('0','2'))
+                    cmd_to_n20=int(str(color_pt_front).replace('0','2').replace('1','4'))
                     front_controller.n20(cmd_to_n20)
             elif command =='put_down':
                 put_down(front_controller,pneumatic_controller,strategy,True)
@@ -345,7 +350,7 @@ def back_task(strategy, back_controller=None,pneumatic_controller=None):
                     back_controller.n20(2222)
                     strategy.get_logger().info(f"🔧 Back prepare for pick_up: n20(2222)")
                 else:
-                    cmd_to_n20=int(str(color_pt_back).replace('0','2'))
+                    cmd_to_n20=int(str(color_pt_back).replace('0','2').replace('1','4'))
                     back_controller.n20(cmd_to_n20)
             elif command =='put_down':
                 put_down(back_controller,pneumatic_controller,strategy,False)
@@ -377,9 +382,6 @@ def rasp_pi_task(strategy, rpi_controller=None, stm32_controller=None, front_con
             elif command == 'RESET':
                 # Execute reset in background
                 if stm32_controller:
-                    stm32_controller.stop(timeout=2.0)
-                    while not IDLE:
-                        time.sleep(0.1)
                     stm32_controller.reset(timeout=2.0)
                 if pneumatic_controller:
                     pneumatic_controller.front(16)
