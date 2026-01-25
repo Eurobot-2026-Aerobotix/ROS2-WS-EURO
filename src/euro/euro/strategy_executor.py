@@ -63,7 +63,7 @@ def robot_status(strategy, stm32, lidar):
             success, response = stm32.stop()
             first_emergency = False
         
-        time.sleep(0.05)  # 100ms
+        time.sleep(0.1)  # 100ms
 
 def to_float_list(params):
     """Convert all params to float"""

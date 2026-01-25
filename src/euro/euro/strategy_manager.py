@@ -158,7 +158,7 @@ class StrategyManager(Node):
             wait = cmd.get('wait', False)
             
             self.get_logger().info(f"⚙️  [{idx+1}/{len(task['sequence'])}] {device} -> {command}")
-            
+            executor_module.SYSTEMS_IDLE_COUNT=0
             # Check if next command is pick_up for ESP_front or ESP_back
             if idx + 1 < len(task['sequence']):
                 next_cmd = task['sequence'][idx + 1]
@@ -192,11 +192,10 @@ class StrategyManager(Node):
                     if(device == "ESP_front" or device == "ESP_back"):
                         n=len((self.queues["STM"]))
                         i=0
-                        executor_module.SYSTEMS_IDLE_COUNT=0
                         while executor_module.SYSTEMS_IDLE_COUNT !=n :
+                            self.get_logger().info(f"idle count : {executor_module.SYSTEMS_IDLE_COUNT} n: {n}")
                             time.sleep(0.1)
                         self.get_logger().info(f"idle count : {executor_module.SYSTEMS_IDLE_COUNT} n: {n}")
-                        executor_module.SYSTEMS_IDLE_COUNT=0
                 if device =="STM" and command =="set_position":
                     self.queues["RASP_PI"].append(cmd)
                 else:
@@ -221,7 +220,7 @@ class StrategyManager(Node):
     def wait_for_all_queues_empty(self):
         """Wait until all device queues are empty (unless replanning)"""
         
-        while (not (self.are_all_queues_empty() or(  executor_module.ESP_FRONT_IDLE==True and executor_module.ESP_BACK_IDLE==True ))) or (not executor_module.IDLE) or executor_module.WAITING_TIRETTE:
+        while (not (self.are_all_queues_empty() or(  executor_module.ESP_FRONT_IDLE==True and executor_module.ESP_BACK_IDLE==True ))) or (not executor_module.IDLE) or executor_module.WAITING_TIRETTE or len(self.queues["STM"])!=0:
             # Check if shutdown is requested
             if executor_module.SHUTDOWN_REQUESTED:
                 self.get_logger().info("Shutdown requested, stopping queue wait")
