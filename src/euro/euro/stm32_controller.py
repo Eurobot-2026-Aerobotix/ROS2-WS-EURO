@@ -224,7 +224,7 @@ class STM32Controller(Node):
         except Exception as e:
             self.get_logger().error(f'Go_to_backwards service error: {str(e)}')
             return False, f'Service error: {str(e)}'
-    def bezier_curve(self, x1, y1, x2, y2, x3, y3, speed,  is_smooth=0.0,timeout=10.0):
+    def bezier_curve(self, x1, y1, x2, y2, x3, y3, speed,  is_smooth=0.0,timeout=1.0):
         """Send a request to do a bezier curve at given speed"""
         if not self.navi_client.wait_for_service(timeout_sec=10.0):
             self.get_logger().error('NaviStm service not available')

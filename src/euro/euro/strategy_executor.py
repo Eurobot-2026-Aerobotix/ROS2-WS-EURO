@@ -18,7 +18,11 @@ color_pt_front=None
 color_pt_back=None
 color_pt=None
 SHUTDOWN_REQUESTED = False  # Global shutdown flag
-IDLE_FOR_SYSTEMS_CHECKED=False
+IDLE_FOR_SYSTEMS_CHECKED=0
+COMMAND_WAITING=0
+WAITING_TIRETTE=False
+PREVIOUS_IDLE_FOR_SYSTEMS=True
+SYSTEMS_IDLE_COUNT=0
 def robot_status(strategy, stm32, lidar):
     """Runs every 100ms to check STM32 movement status and lidar obstacles"""
     global IDLE
@@ -26,16 +30,19 @@ def robot_status(strategy, stm32, lidar):
     global SHUTDOWN_REQUESTED
     first_emergency = True
     global IDLE_FOR_SYSTEMS
+    global PREVIOUS_IDLE_FOR_SYSTEMS
+    global SYSTEMS_IDLE_COUNT
     while rclpy.ok() and not SHUTDOWN_REQUESTED:
         # Check emergency stop from lidar
         # EMERGENCY_STOP = lidar.getstatus()
         
         # Only check if robot is idle when we think it's busy
         if not IDLE:
-            if not IDLE_FOR_SYSTEMS :   
-                success, is_completed, _ = stm32.IDLE_FOR_SYSTEMS()
+            if not IDLE_FOR_SYSTEMS :
+
+                success, is_completed, _ = stm32.IDLE_FOR_SYSTEMS(1.0)
             else:
-                success, is_completed, _ = stm32.IDLE()
+                success, is_completed, _ = stm32.IDLE(1.0)
             if not EMERGENCY_STOP:
                 first_emergency = True
                 
@@ -43,17 +50,20 @@ def robot_status(strategy, stm32, lidar):
                 strategy.get_logger().warning("⚠️ Failed to check robot status")
             else:
                 if not IDLE_FOR_SYSTEMS:
+                    PREVIOUS_IDLE_FOR_SYSTEMS=IDLE_FOR_SYSTEMS
                     IDLE_FOR_SYSTEMS = is_completed
                 else:
                     IDLE = is_completed
-        
+            if  IDLE_FOR_SYSTEMS ==True and PREVIOUS_IDLE_FOR_SYSTEMS==False:
+                SYSTEMS_IDLE_COUNT+=1
+            PREVIOUS_IDLE_FOR_SYSTEMS=IDLE_FOR_SYSTEMS
         # Handle emergency stop
         if EMERGENCY_STOP and first_emergency:
             strategy.get_logger().warning("🚨 Emergency stop activated!")
             success, response = stm32.stop()
             first_emergency = False
         
-        time.sleep(0.1)  # 100ms
+        time.sleep(0.05)  # 100ms
 
 def to_float_list(params):
     """Convert all params to float"""
@@ -67,11 +77,13 @@ def stm32_task(strategy, stm32):
     global SHUTDOWN_REQUESTED
     global IDLE_FOR_SYSTEMS
     global IDLE_FOR_SYSTEMS_CHECKED
+    global COMMAND_WAITING
     while rclpy.ok() and not SHUTDOWN_REQUESTED:
         # Check if there are commands in the queue and robot is idle
         if len(strategy.queues['STM']) > 0 and IDLE:
+            COMMAND_WAITING-=1
             cmd = strategy.queues['STM'][0]  # Peek at first command
-            IDLE_FOR_SYSTEMS_CHECKED=False
+            IDLE_FOR_SYSTEMS_CHECKED+=1
             command = cmd.get('command')
             params = cmd.get('params', {})
             wait = cmd.get('wait', False)
@@ -101,6 +113,7 @@ def stm32_task(strategy, stm32):
                 stm32.bezier_curve(params[0], params[1], params[2], params[3], params[4], params[5], params[6])
                 IDLE = False
                 IDLE_FOR_SYSTEMS=False
+            
             elif command == 'go_to_backwards':
                 if len(params) > 3:
                     stm32.go_to_backwards(params[0], params[1], params[2], params[3])
@@ -275,18 +288,17 @@ def put_down(controller,pneumatic,strategy,front):
         strategy.get_logger().info(f"📤 Front putting down - Color pattern: {color_pt_front}")
     else:
         strategy.get_logger().info(f"📤 Back putting down - Color pattern: {color_pt_back}")
-    controller.n20(color_to_N20)
-    stana(controller)
+    #controller.n20(color_to_N20)
+    #stana(controller)
     if SHUTDOWN_REQUESTED:
         return
     
     if front:
         pneumatic.front(15)
     else: pneumatic.back(15)
-    controller.dawer(0)
-    time.sleep(1)
-    controller.n20(3333)
-    stana(controller)
+    
+    #controller.n20(3333)
+    #stana(controller)
     if SHUTDOWN_REQUESTED:
         return
     
@@ -294,6 +306,7 @@ def put_down(controller,pneumatic,strategy,front):
         ESP_FRONT_IDLE=True
     else: ESP_BACK_IDLE=True
     controller.n20(0)
+    controller.dawer(0)
     stana(controller)
     if SHUTDOWN_REQUESTED:
         return
@@ -363,6 +376,7 @@ def back_task(strategy, back_controller=None,pneumatic_controller=None):
 def rasp_pi_task(strategy, rpi_controller=None, stm32_controller=None, front_controller=None, back_controller=None, pneumatic_controller=None):
     """Runs every 100ms to process RASP_PI queue"""
     global SHUTDOWN_REQUESTED
+    global WAITING_TIRETTE
     while rclpy.ok() and not SHUTDOWN_REQUESTED:
         # Check if there are commands in the queue
         if len(strategy.queues['RASP_PI']) > 0:
@@ -374,8 +388,11 @@ def rasp_pi_task(strategy, rpi_controller=None, stm32_controller=None, front_con
             
             # Execute RASP_PI commands
             if command == 'Wait for manual start':
+                WAITING_TIRETTE=True
                 if rpi_controller:
                     result = rpi_controller.wait_start()
+                    stm32_controller.reset()
+                    WAITING_TIRETTE=False
                     strategy.get_logger().info(f"✅ Tirette tjebdet  STRATEGY GOOOOOOOOO !!!!")
                 else:
                     strategy.get_logger().warning("RPI controller not available - skipping wait_start")
@@ -398,6 +415,10 @@ def rasp_pi_task(strategy, rpi_controller=None, stm32_controller=None, front_con
                     stana(back_controller)
                 # Allow time for messages to be sent
                 time.sleep(0.1)
+            elif command == 'set_position':
+                strategy.get_logger().info("set position sent from the rasp queue")
+                params = to_float_list(params)
+                stm32_controller.set_position(params[0], params[1], params[2])
             else:
                 strategy.get_logger().warn(f"Unknown RASP_PI command: {command}")
             

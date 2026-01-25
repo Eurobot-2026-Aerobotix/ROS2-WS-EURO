@@ -183,6 +183,7 @@ class StrategyManager(Node):
                     executor_module.ESP_BACK_IDLE=False
                 if(device == "STM"):
                     executor_module.IDLE_FOR_SYSTEMS=False
+                    
                 if wait :
                     self.get_logger().info(f"      ⏳ Waiting for dependencies...")
                     if(device == "STM"):
@@ -191,12 +192,20 @@ class StrategyManager(Node):
                     if(device == "ESP_front" or device == "ESP_back"):
                         n=len((self.queues["STM"]))
                         i=0
-                        while not i==n :
-                            if executor_module.IDLE_FOR_SYSTEMS and not executor_module.IDLE_FOR_SYSTEMS_CHECKED:
-                               i+=1 
-                               executor_module.IDLE_FOR_SYSTEMS_CHECKED=True
+                        executor_module.SYSTEMS_IDLE_COUNT=0
+                        while executor_module.SYSTEMS_IDLE_COUNT !=n :
                             time.sleep(0.1)
-                self.queues[device].append(cmd)
+                        self.get_logger().info(f"idle count : {executor_module.SYSTEMS_IDLE_COUNT} n: {n}")
+                        executor_module.SYSTEMS_IDLE_COUNT=0
+                if device =="STM" and command =="set_position":
+                    self.queues["RASP_PI"].append(cmd)
+                else:
+                    if device =="STM":
+                        executor_module.COMMAND_WAITING+=1
+                    if device =="RASP_PI" and command=="Wait for manual start":
+                        executor_module.WAITING_TIRETTE=True
+                    self.queues[device].append(cmd)
+                
             else:
                 self.get_logger().warn(f"      ⚠ Unknown device: {device}")
         
@@ -212,7 +221,7 @@ class StrategyManager(Node):
     def wait_for_all_queues_empty(self):
         """Wait until all device queues are empty (unless replanning)"""
         
-        while not self.are_all_queues_empty() or not executor_module.IDLE:
+        while (not (self.are_all_queues_empty() or(  executor_module.ESP_FRONT_IDLE==True and executor_module.ESP_BACK_IDLE==True ))) or (not executor_module.IDLE) or executor_module.WAITING_TIRETTE:
             # Check if shutdown is requested
             if executor_module.SHUTDOWN_REQUESTED:
                 self.get_logger().info("Shutdown requested, stopping queue wait")
