@@ -7,9 +7,10 @@ bashrc = os.path.expanduser("~/.bashrc")
 agent_cmd = "ros2 run micro_ros_agent micro_ros_agent"
 
 esp_cmds = [
-    f"bash -c 'source {bashrc} && {agent_cmd} serial --dev /dev/ttyUSB0 -b 115200'",
-    f"bash -c 'source {bashrc} && {agent_cmd} serial --dev /dev/ttyUSB1 -b 115200'",
+    f"bash -c 'source {bashrc} && {agent_cmd} serial --dev /dev/ttyACM0'",
     f"bash -c 'source {bashrc} && {agent_cmd} serial --dev /dev/ttyACM1'",
+    f"bash -c 'source {bashrc} && {agent_cmd} serial --dev /dev/ttyACM2'",
+    f"bash -c 'source {bashrc} && {agent_cmd} serial --dev /dev/ttyACM3'",
 ]
 
 session = "esp32_agents"
@@ -22,6 +23,9 @@ run(["tmux", "split-window", "-h", "-t", session, esp_cmds[1]])
 time.sleep(0.1)
 
 run(["tmux", "split-window", "-h", "-t", session, esp_cmds[2]])
+time.sleep(0.1)
+
+run(["tmux", "split-window", "-h", "-t", session, esp_cmds[3]])
 run(["tmux", "select-layout", "-t", session, "even-horizontal"])
 
 subprocess.call(["tmux", "attach", "-t", session])
