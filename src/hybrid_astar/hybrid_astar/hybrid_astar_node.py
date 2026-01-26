@@ -75,8 +75,8 @@ class HybridAStarNode(Node):
             "s4": {"x": 1.825, "y": 1.1, "phi_degrees": 90.0},
             "s5": {"x": 1.20, "y": 1.85, "phi_degrees": 90.0},
             "s6": {"x": 1.825, "y": 1.9, "phi_degrees": 90.0},
-            "s7": {"x": 0.80, "y": 2.85, "phi_degrees": 90.0},
-            "s8": {"x": 1.60, "y": 2.85, "phi_degrees": 90.0},
+            "s7": {"x": 0.80, "y": 2.8, "phi_degrees": 90.0},
+            "s8": {"x": 1.60, "y": 2.8, "phi_degrees": 90.0},
         }
         
         # Obstacle database (in-memory only) - now tracking source
@@ -114,6 +114,9 @@ class HybridAStarNode(Node):
         
         self.path_viz_pub = self.create_publisher(
             MarkerArray, '/path_visualization', 10)
+        
+        self.relative_obstacle_marker_pub = self.create_publisher(
+            MarkerArray, '/relative_obstacle_marker', 10)
         
         # Create service
         self.path_service = self.create_service(
@@ -258,62 +261,74 @@ class HybridAStarNode(Node):
         self.publish_obstacles(self.get_active_obstacles())
     
     def handle_obstacle_relative(self, msg: PoseStamped):
-        """Handle incoming obstacle from /obstacle_relative topic (keeps accumulating, doesn't delete)"""
+        """Handle incoming obstacle from /obstacle_relative topic (only keeps one enemy)"""
         with self.obstacles_lock:
-            # Find and update existing enemy obstacle or add new one
-            # We keep all enemy obstacles, just update if position changes significantly
-            existing_enemy = None
-            for obs in self.obstacles:
-                if obs.color == 'enemy':
-                    # Check if this is close to an existing enemy (within 200mm)
-                    center_x_mm = msg.pose.position.x * 1000.0
-                    center_y_mm = msg.pose.position.y * 1000.0
-                    obs_center_x = obs.pose.x + (obs.width_mm / 2.0)
-                    obs_center_y = obs.pose.y + (obs.height_mm / 2.0)
-                    dist = math.sqrt((obs_center_x - center_x_mm)**2 + (obs_center_y - center_y_mm)**2)
-                    if dist < 200.0:
-                        existing_enemy = obs
-                        break
+            # Remove all existing enemy obstacles first (only keep one enemy)
+            self.obstacles = [obs for obs in self.obstacles if obs.color != 'enemy']
+            self.obstacle_sources = {k: v for k, v in self.obstacle_sources.items() if v != 'enemy'}
             
             # Convert position from meters to millimeters
             center_x_mm = msg.pose.position.x * 1000.0
             center_y_mm = msg.pose.position.y * 1000.0
             
-            if existing_enemy:
-                # Update existing enemy obstacle position
-                existing_enemy.pose.x = center_x_mm - (existing_enemy.width_mm / 2.0)
-                existing_enemy.pose.y = center_y_mm - (existing_enemy.height_mm / 2.0)
-                existing_enemy.pose.theta = self.quaternion_to_yaw(msg.pose.orientation)
-                existing_enemy.detected_at = msg.header.stamp
-                self.get_logger().info(
-                    f"🎯 Updated enemy obstacle at ({center_x_mm:.0f}, {center_y_mm:.0f}) mm")
-            else:
-                # Create new enemy obstacle
-                obs = Obstacle()
-                obs.id = f"enemy_{int(time.time() * 1000)}"  # Unique ID based on timestamp
-                obs.type = 'enemy'
-                obs.color = 'enemy'
-                
-                # Use default enemy obstacle size (can be parameterized if needed)
-                # Assuming enemy robot is similar size to our robot
-                obs.width_mm = self.params['robot']['width_mm']
-                obs.height_mm = self.params['robot']['length_mm']
-                
-                # Convert to top-left corner (what the planner expects)
-                obs.pose.x = center_x_mm - (obs.width_mm / 2.0)
-                obs.pose.y = center_y_mm - (obs.height_mm / 2.0)
-                obs.pose.theta = self.quaternion_to_yaw(msg.pose.orientation)
-                
-                obs.detected_at = msg.header.stamp
-                
-                # Add to obstacles list and track source
-                self.obstacles.append(obs)
-                self.obstacle_sources[obs.id] = 'enemy'
-                self.get_logger().info(
-                    f"🎯 Added enemy obstacle at ({center_x_mm:.0f}, {center_y_mm:.0f}) mm")
+            # Create new enemy obstacle
+            obs = Obstacle()
+            obs.id = "enemy_robot"  # Fixed ID for the single enemy
+            obs.type = 'enemy'
+            obs.color = 'enemy'
+            
+            # Use default enemy obstacle size (can be parameterized if needed)
+            # Assuming enemy robot is similar size to our robot
+            obs.width_mm = self.params['robot']['width_mm']
+            obs.height_mm = self.params['robot']['length_mm']
+            
+            # Convert to top-left corner (what the planner expects)
+            obs.pose.x = center_x_mm - (obs.width_mm / 2.0)
+            obs.pose.y = center_y_mm - (obs.height_mm / 2.0)
+            obs.pose.theta = self.quaternion_to_yaw(msg.pose.orientation)
+            
+            obs.detected_at = msg.header.stamp
+            
+            # Add to obstacles list and track source
+            self.obstacles.append(obs)
+            self.obstacle_sources[obs.id] = 'enemy'
+            self.get_logger().info(
+                f"🎯 Enemy robot at ({center_x_mm:.0f}, {center_y_mm:.0f}) mm")
         
-        # Publish obstacle visualization
-        self.publish_obstacles(self.get_active_obstacles())
+        # Publish enemy marker to separate topic
+        marker_array = MarkerArray()
+        
+        enemy_marker = Marker()
+        enemy_marker.header.frame_id = "map"
+        enemy_marker.header.stamp = self.get_clock().now().to_msg()
+        enemy_marker.ns = "enemy"
+        enemy_marker.id = 0
+        enemy_marker.type = Marker.CUBE
+        enemy_marker.action = Marker.ADD
+        
+        # Position (center of enemy robot)
+        enemy_marker.pose.position.x = center_x_mm / 1000.0
+        enemy_marker.pose.position.y = center_y_mm / 1000.0
+        enemy_marker.pose.position.z = 0.15  # 150mm high (half of 300mm)
+        enemy_marker.pose.orientation = self.yaw_to_quaternion(obs.pose.theta)
+        
+        # Size
+        enemy_marker.scale.x = obs.width_mm / 1000.0
+        enemy_marker.scale.y = obs.height_mm / 1000.0
+        enemy_marker.scale.z = 0.30  # 300mm tall robot
+        
+        # Dark red/magenta for enemy
+        enemy_marker.color.r = 0.8
+        enemy_marker.color.g = 0.0
+        enemy_marker.color.b = 0.4
+        enemy_marker.color.a = 0.9
+        
+        # Make marker persistent
+        enemy_marker.lifetime.sec = 2
+        enemy_marker.lifetime.nanosec = 0
+        
+        marker_array.markers.append(enemy_marker)
+        self.relative_obstacle_marker_pub.publish(marker_array)
 
     def publish_current_obstacles(self):
         """Periodically publish current obstacle list"""
@@ -431,12 +446,6 @@ class HybridAStarNode(Node):
                 crate_marker.color.g = 0.5
                 crate_marker.color.b = 1.0
                 crate_marker.color.a = 0.8
-            elif obs['color'] == 'enemy':
-                # Dark red/magenta for enemy obstacles
-                crate_marker.color.r = 0.8
-                crate_marker.color.g = 0.0
-                crate_marker.color.b = 0.4
-                crate_marker.color.a = 0.9
             else:  # red or other
                 crate_marker.color.r = 1.0
                 crate_marker.color.g = 0.0
@@ -652,7 +661,7 @@ class HybridAStarNode(Node):
         marker_array.markers.append(path_marker)
         
         # Separate walls from crates
-        crates = [obs for obs in obstacles if obs['color'] != 'wall']
+        crates = [obs for obs in obstacles if obs['color'] == 'yellow' or obs['color'] == 'blue' or obs['color'] == 'red']
         
         marker_id = 1
         # Visualize CRATES (small, colored, on ground)
@@ -687,11 +696,6 @@ class HybridAStarNode(Node):
                 crate_marker.color.r = 0.0
                 crate_marker.color.g = 0.5
                 crate_marker.color.b = 1.0
-                crate_marker.color.a = 0.8
-            else:  # red or other
-                crate_marker.color.r = 1.0
-                crate_marker.color.g = 0.0
-                crate_marker.color.b = 0.0
                 crate_marker.color.a = 0.8
             
             marker_array.markers.append(crate_marker)
