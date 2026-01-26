@@ -14,7 +14,7 @@ import math
 from euro.pathfinder_controller import PathfinderClient
 from euro.strategy_executor import robot_status, stm32_task, front_task, back_task,rasp_pi_task, IDLE, EMERGENCY_STOP
 import euro.strategy_executor as executor_module  # Import module to access SHUTDOWN_REQUESTED and other globals
-IDLE_FOR_SYSTEMS_CHECKED=False
+
 # Global variable to store team color
 color = None
 
@@ -45,7 +45,6 @@ class StrategyManager(Node):
         
         # Flag to pause task loading during pathfinding
         self.is_replanning = False
-        self.command_waiting=False
         # Global goal position storage
         self.global_pos_x = None
         self.global_pos_y = None
@@ -199,8 +198,6 @@ class StrategyManager(Node):
                 if device =="STM" and command =="set_position":
                     self.queues["RASP_PI"].append(cmd)
                 else:
-                    if device =="STM":
-                        executor_module.COMMAND_WAITING+=1
                     if device =="RASP_PI" and command=="Wait for manual start":
                         executor_module.WAITING_TIRETTE=True
                     self.queues[device].append(cmd)

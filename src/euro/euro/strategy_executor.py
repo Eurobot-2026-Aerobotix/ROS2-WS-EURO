@@ -11,6 +11,8 @@ from geometry_msgs.msg import Point
 # Global state variables
 IDLE = True
 IDLE_FOR_SYSTEMS=True
+PREVIOUS_IDLE_FOR_SYSTEMS=True
+SYSTEMS_IDLE_COUNT=0
 EMERGENCY_STOP = False
 ESP_FRONT_IDLE=True
 ESP_BACK_IDLE=True
@@ -18,11 +20,8 @@ color_pt_front=None
 color_pt_back=None
 color_pt=None
 SHUTDOWN_REQUESTED = False  # Global shutdown flag
-IDLE_FOR_SYSTEMS_CHECKED=0
-COMMAND_WAITING=0
 WAITING_TIRETTE=False
-PREVIOUS_IDLE_FOR_SYSTEMS=True
-SYSTEMS_IDLE_COUNT=0
+
 def robot_status(strategy, stm32, lidar):
     """Runs every 100ms to check STM32 movement status and lidar obstacles"""
     global IDLE
@@ -76,14 +75,10 @@ def stm32_task(strategy, stm32):
     global IDLE
     global SHUTDOWN_REQUESTED
     global IDLE_FOR_SYSTEMS
-    global IDLE_FOR_SYSTEMS_CHECKED
-    global COMMAND_WAITING
     while rclpy.ok() and not SHUTDOWN_REQUESTED:
         # Check if there are commands in the queue and robot is idle
         if len(strategy.queues['STM']) > 0 and IDLE:
-            COMMAND_WAITING-=1
             cmd = strategy.queues['STM'][0]  # Peek at first command
-            IDLE_FOR_SYSTEMS_CHECKED+=1
             command = cmd.get('command')
             params = cmd.get('params', {})
             wait = cmd.get('wait', False)
