@@ -548,21 +548,27 @@ class HybridAStarNode(Node):
                         obs_height_mm = 150.0
                         offsets = [(-75.0, 0.0), (-25.0, 0.0), (25.0, 0.0), (75.0, 0.0)]
                     
-                    # Get colors from members in their original order (up to 4)
-                    member_colors = [m.color for m in batch.members if m.color in ["yellow", "blue"]]
-                    if not member_colors:
-                        continue  # Skip batch if no valid colors
+                    # Get color pattern from batch pattern string (e.g., "bbyy")
+                    pattern_str = batch.pattern.lower() if batch.pattern else ""
                     
-                    # Reverse the color order
-                    member_colors.reverse()
+                    # Parse pattern string to extract colors
+                    pattern_colors = []
+                    for char in pattern_str:
+                        if char == 'b':
+                            pattern_colors.append('blue')
+                        elif char == 'y':
+                            pattern_colors.append('yellow')
+                    
+                    if not pattern_colors:
+                        continue  # Skip batch if no valid colors in pattern
                     
                     # Create 4 obstacles for this batch
                     for idx, (offset_x, offset_y) in enumerate(offsets):
                         obs = Obstacle()
                         obs.id = f"{source}_batch{batch.batch_id}_member{idx}"
                         obs.type = 'crate'
-                        # Use color from member at this index (or last color if not enough members)
-                        obs.color = member_colors[idx] if idx < len(member_colors) else member_colors[-1]
+                        # Use color from pattern at this index (or last color if not enough in pattern)
+                        obs.color = pattern_colors[idx] if idx < len(pattern_colors) else pattern_colors[-1]
                         obs.width_mm = obs_width_mm
                         obs.height_mm = obs_height_mm
                         

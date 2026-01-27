@@ -6,3 +6,4 @@ float32 avg_adjacent_dist_m
 aruco_mapper_msgs/BatchMember[] members
 string known_id
 string direction
+string pattern
