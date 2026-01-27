@@ -231,7 +231,7 @@ def pick_up(controller,pneumatic,strategy,front):
     
     if SHUTDOWN_REQUESTED:
         return
-    stana(controller)
+    #stana(controller)
     if SHUTDOWN_REQUESTED:
         return
     
@@ -249,17 +249,15 @@ def pick_up(controller,pneumatic,strategy,front):
     color_pattern = talaa(strategy, controller)
     if front:
         color_pt_front = color_pattern
+        ESP_FRONT_IDLE=True
         strategy.get_logger().info(f"📦 Front picked up - Color pattern: {color_pt_front}")
     else:
         color_pt_back = color_pattern
+        ESP_BACK_IDLE=True
         strategy.get_logger().info(f"📦 Back picked up - Color pattern: {color_pt_back}")
     stana(controller)
     if SHUTDOWN_REQUESTED:
         return
-    
-    if front:
-        ESP_FRONT_IDLE=True
-    else: ESP_BACK_IDLE=True
     strategy.get_logger().info("System is IDLE ")
     controller.kabech(0)
     controller.dawer(1)
@@ -283,25 +281,25 @@ def put_down(controller,pneumatic,strategy,front):
         strategy.get_logger().info(f"📤 Front putting down - Color pattern: {color_pt_front}")
     else:
         strategy.get_logger().info(f"📤 Back putting down - Color pattern: {color_pt_back}")
-    #controller.n20(color_to_N20)
-    #stana(controller)
+    controller.n20(color_to_N20)
+    stana(controller)
     if SHUTDOWN_REQUESTED:
         return
     
     if front:
         pneumatic.front(15)
     else: pneumatic.back(15)
-    
-    #controller.n20(3333)
-    #stana(controller)
-    if SHUTDOWN_REQUESTED:
-        return
-    
     if front:
         ESP_FRONT_IDLE=True
     else: ESP_BACK_IDLE=True
-    controller.n20(0)
     controller.dawer(0)
+    controller.n20(3333)
+    stana(controller)
+    if SHUTDOWN_REQUESTED:
+        return
+    
+    controller.n20(0)
+    
     stana(controller)
     if SHUTDOWN_REQUESTED:
         return
@@ -372,6 +370,8 @@ def rasp_pi_task(strategy, rpi_controller=None, stm32_controller=None, front_con
     """Runs every 100ms to process RASP_PI queue"""
     global SHUTDOWN_REQUESTED
     global WAITING_TIRETTE
+    global IDLE
+    global IDLE_FOR_SYSTEMS
     while rclpy.ok() and not SHUTDOWN_REQUESTED:
         # Check if there are commands in the queue
         if len(strategy.queues['RASP_PI']) > 0:
@@ -414,6 +414,9 @@ def rasp_pi_task(strategy, rpi_controller=None, stm32_controller=None, front_con
                 strategy.get_logger().info("set position sent from the rasp queue")
                 params = to_float_list(params)
                 stm32_controller.set_position(params[0], params[1], params[2])
+                IDLE_FOR_SYSTEMS=True
+                IDLE=False
+
             else:
                 strategy.get_logger().warn(f"Unknown RASP_PI command: {command}")
             

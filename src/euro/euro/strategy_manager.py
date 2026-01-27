@@ -173,7 +173,7 @@ class StrategyManager(Node):
                     }
                     self.queues[next_device].append(prepare_cmd)
                     self.get_logger().info(f"      🔧 Adding prepare command for {next_device} with action: {next_command}")
-            
+
             # Add command to device queue
             if device in self.queues:
                 if(device == "ESP_front" ) :
@@ -189,8 +189,10 @@ class StrategyManager(Node):
                         while not executor_module.ESP_FRONT_IDLE or not executor_module.ESP_BACK_IDLE:
                             time.sleep(0.1)
                     if(device == "ESP_front" or device == "ESP_back"):
+                        executor_module.SYSTEMS_IDLE_COUNT=0
                         n=len((self.queues["STM"]))
-                        i=0
+                        if executor_module.IDLE_FOR_SYSTEMS and not executor_module.IDLE:
+                            executor_module.SYSTEMS_IDLE_COUNT=1
                         while executor_module.SYSTEMS_IDLE_COUNT !=n :
                             self.get_logger().info(f"idle count : {executor_module.SYSTEMS_IDLE_COUNT} n: {n}")
                             time.sleep(0.1)
@@ -361,7 +363,7 @@ def main(args=None):
             from euro.pami_controller import PamiController
             pami_ctrl = PamiController(strategy.strategy_name, pami_folder, 'pami_controller_internal')
         
-        reset_systems(pneumatic,front,back,stm32,strategy,False,False)
+        reset_systems(pneumatic,front,back,stm32,strategy,True,False)
         time.sleep(2)
         # Execute tasks sequentially
         # Start a thread to execute tasks one by one
