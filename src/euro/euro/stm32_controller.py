@@ -101,8 +101,8 @@ class STM32Controller(Node):
                 return False, 'Service call timeout'
             
             response = future.result()
-                self.get_logger().info(f"move_backward response: {response.result}")
-                return True, response
+            self.get_logger().info(f"move_backward response: {response.result}")
+            return True, response
         except Exception as e:
             self.get_logger().error(f'Move_backward service error: {str(e)}')
             return False, f'Service error: {str(e)}'
@@ -132,10 +132,9 @@ class STM32Controller(Node):
                 self.get_logger().error("Service call timeout")
                 return False, "Service call timeout"
             
-            if future.done():
-                response = future.result()
-                self.get_logger().info(f"Rotate response: {response.result}")
-                return True, response
+            response = future.result()
+            self.get_logger().info(f"Rotate response: {response.result}")
+            return True, response
         except Exception as e:
             self.get_logger().error(f'Rotate service error: {str(e)}')
             return False, f'Service error: {str(e)}'
@@ -167,8 +166,8 @@ class STM32Controller(Node):
                 return False, 'Service call timeout'
             
             response = future.result()
-                self.get_logger().info(f"Orientate response: {response.result}")
-                return True, response
+            self.get_logger().info(f"Orientate response: {response.result}")
+            return True, response
         except Exception as e:
             self.get_logger().error(f'Orientate service error: {str(e)}')
             return False, f'Service error: {str(e)}'
@@ -199,8 +198,8 @@ class STM32Controller(Node):
                 return False, 'Service call timeout'
             
             response = future.result()
-                self.get_logger().info(f"go_to response: {response.result}")
-                return True, response
+            self.get_logger().info(f"go_to response: {response.result}")
+            return True, response
         except Exception as e:
             self.get_logger().error(f'Go_to service error: {str(e)}')
             return False, f'Service error: {str(e)}'
@@ -230,8 +229,8 @@ class STM32Controller(Node):
                 return False, 'Service call timeout'
             
             response = future.result()
-                self.get_logger().info(f"go_to_backwards response: {response.result}")
-                return True, response
+            self.get_logger().info(f"go_to_backwards response: {response.result}")
+            return True, response
         except Exception as e:
             self.get_logger().error(f'Go_to_backwards service error: {str(e)}')
             return False, f'Service error: {str(e)}'
@@ -260,8 +259,8 @@ class STM32Controller(Node):
                 return False, 'Service call timeout'
             
             response = future.result()
-                self.get_logger().info(f"Bezier_curve response: {response.result}")
-                return True, response
+            self.get_logger().info(f"Bezier_curve response: {response.result}")
+            return True, response
         except Exception as e:
             self.get_logger().error(f'Bezier_curve service error: {str(e)}')
             return False, f'Service error: {str(e)}'
@@ -291,8 +290,8 @@ class STM32Controller(Node):
                 return False, 'Service call timeout'
             
             response = future.result()
-                self.get_logger().info(f"Bezier_curve_backwards response: {response.result}")
-                return True, response
+            self.get_logger().info(f"Bezier_curve_backwards response: {response.result}")
+            return True, response
         except Exception as e:
             self.get_logger().error(f'Bezier_curve_backwards service error: {str(e)}')
             return False, f'Service error: {str(e)}'
@@ -322,8 +321,8 @@ class STM32Controller(Node):
                 return False, 'Service call timeout'
             
             response = future.result()
-                self.get_logger().info(f"move_forward_with_left_deviation response: {response.result}")
-                return True, response
+            self.get_logger().info(f"move_forward_with_left_deviation response: {response.result}")
+            return True, response
         except Exception as e:
             self.get_logger().error(f'Move_forward_with_left_deviation service error: {str(e)}')
             return False, f'Service error: {str(e)}'
@@ -353,8 +352,8 @@ class STM32Controller(Node):
                 return False, 'Service call timeout'
             
             response = future.result()
-                self.get_logger().info(f"circle curve response: {response.result}")
-                return True, response
+            self.get_logger().info(f"circle curve response: {response.result}")
+            return True, response
         except Exception as e:
             self.get_logger().error(f'circle curve  service error: {str(e)}')
             return False, f'Service error: {str(e)}'
@@ -384,8 +383,8 @@ class STM32Controller(Node):
                 return False, 'Service call timeout'
             
             response = future.result()
-                self.get_logger().info(f"Set position response: {response.result}")
-                return True, response
+            self.get_logger().info(f"Set position response: {response.result}")
+            return True, response
         except Exception as e:
             self.get_logger().error(f'Set position service error: {str(e)}')
             return False, f'Service error: {str(e)}'
@@ -415,8 +414,8 @@ class STM32Controller(Node):
                 return False, 'Service call timeout'
             
             response = future.result()
-                self.get_logger().info(f"LED blink response: {response.result}")
-                return True, response
+            self.get_logger().info(f"LED blink response: {response.result}")
+            return True, response
         except Exception as e:
             self.get_logger().error(f'LED blink service error: {str(e)}')
             return False, f'Service error: {str(e)}'
@@ -450,16 +449,13 @@ class STM32Controller(Node):
         try:
             future = self.navi_client.call_async(request)
             if not self._wait_for_future(future, timeout):
-                self.get_logger().error('Service call timeout')
-                return False, 'Service call timeout'
-            
-            response = future.result()
-                # Assuming response.result is True when movement is completed, False when still moving
-                is_completed = bool(response.result)
-                return True, is_completed, response
-            else:
                 self.get_logger().error('Status check timeout')
                 return False, False, 'Status check timeout'
+            
+            response = future.result()
+            # Assuming response.result is True when movement is completed, False when still moving
+            is_completed = bool(response.result)
+            return True, is_completed, response
         except Exception as e:
             self.get_logger().error(f'Status check error: {str(e)}')
             return False, False, f'Status check error: {str(e)}'
@@ -492,16 +488,13 @@ class STM32Controller(Node):
         try:
             future = self.navi_client.call_async(request)
             if not self._wait_for_future(future, timeout):
-                self.get_logger().error('Service call timeout')
-                return False, 'Service call timeout'
-            
-            response = future.result()
-                # Assuming response.result is True when movement is completed, False when still moving
-                is_completed = bool(response.result)
-                return True, is_completed, response
-            else:
                 self.get_logger().error('Status check timeout')
                 return False, False, 'Status check timeout'
+            
+            response = future.result()
+            # Assuming response.result is True when movement is completed, False when still moving
+            is_completed = bool(response.result)
+            return True, is_completed, response
         except Exception as e:
             self.get_logger().error(f'Status check error: {str(e)}')
             return False, False, f'Status check error: {str(e)}'
@@ -575,15 +568,12 @@ class STM32Controller(Node):
         try:
             future = self.navi_client.call_async(request)
             if not self._wait_for_future(future, timeout):
-                self.get_logger().error('Service call timeout')
-                return False, 'Service call timeout'
-            
-            response = future.result()
-                self.get_logger().info(f"Emergency stop response: {response.result}")
-                return True, response
-            else:
                 self.get_logger().error('Stop command timeout')
                 return False, 'Stop timeout'
+            
+            response = future.result()
+            self.get_logger().info(f"Emergency stop response: {response.result}")
+            return True, response
         except Exception as e:
             self.get_logger().error(f'Stop command error: {str(e)}')
             return False, f'Stop error: {str(e)}'
@@ -642,12 +632,12 @@ class STM32Controller(Node):
         try:
             future = self.navi_client.call_async(request)
             if not self._wait_for_future(future, timeout):
-                self.get_logger().error('Service call timeout')
+                self.get_logger().error('Reset service call timeout')
                 return False, 'Service call timeout'
             
             response = future.result()
-                self.get_logger().info(f"Reset response: {response.result}")
-                return True, response
+            self.get_logger().info(f"Reset response: {response.result}")
+            return True, response
         except Exception as e:
             self.get_logger().error(f'Reset service error: {str(e)}')
             return False, f'Service error: {str(e)}'
