@@ -32,10 +32,12 @@ class RPiController(Node):
         # GPIO pin configuration
         self.VCC_PIN = 27        # Output pin for VCC (always HIGH)
         self.BUTTON_PIN = 17     # Input pin for button reading
+        self.STM32_RESET_PIN = 5 # Output pin for STM32 reset (active LOW)
         
         # GPIO device objects
         self.vcc_device = None
         self.button_device = None
+        self.stm32_reset_device = None
         
         self.gpio_initialized = False
         
@@ -65,8 +67,11 @@ class RPiController(Node):
             # Setup button pin as input with pull-down resistor
             self.button_device = DigitalInputDevice(self.BUTTON_PIN, pull_up=False)
             
+            # Setup STM32 reset pin as output (initially HIGH - not in reset)
+            self.stm32_reset_device = DigitalOutputDevice(self.STM32_RESET_PIN, initial_value=True)
+            
             self.gpio_initialized = True
-            self.get_logger().info(f"✅ GPIO initialized (VCC:{self.VCC_PIN}, Button:{self.BUTTON_PIN})")
+            self.get_logger().info(f"✅ GPIO initialized (VCC:{self.VCC_PIN}, Button:{self.BUTTON_PIN}, STM32_Reset:{self.STM32_RESET_PIN})")
         except PermissionError as pe:
             self.get_logger().error(f"❌ Permission denied: {pe}")
             self.get_logger().error("Try: sudo usermod -a -G gpio $USER")
@@ -103,6 +108,80 @@ class RPiController(Node):
             return 0
         return self.button_device.value
     
+    def write_stm32_reset_high(self):
+        """
+        Write HIGH to the STM32 reset pin (release reset)
+        
+        Returns:
+            bool: True if write was successful, False otherwise
+        """
+        if not self.gpio_initialized:
+            self.get_logger().warning("GPIO not initialized - cannot write to STM32 reset pin")
+            return False
+            
+        try:
+            self.stm32_reset_device.on()
+            self.get_logger().info('STM32 reset pin set to HIGH (reset released)')
+            return True
+            
+        except Exception as e:
+            self.get_logger().error(f'Failed to write HIGH to STM32 reset pin: {str(e)}')
+            return False
+    
+    def write_stm32_reset_low(self):
+        """
+        Write LOW to the STM32 reset pin (activate reset)
+        
+        Returns:
+            bool: True if write was successful, False otherwise
+        """
+        if not self.gpio_initialized:
+            self.get_logger().warning("GPIO not initialized - cannot write to STM32 reset pin")
+            return False
+            
+        try:
+            self.stm32_reset_device.off()
+            self.get_logger().info('STM32 reset pin set to LOW (reset active)')
+            return True
+            
+        except Exception as e:
+            self.get_logger().error(f'Failed to write LOW to STM32 reset pin: {str(e)}')
+            return False
+    
+    def reset_stm32(self, hold_time_ms=100):
+        """
+        Perform a complete reset sequence on STM32
+        Pulls reset LOW, waits, then releases back to HIGH
+        
+        Args:
+            hold_time_ms: Time to hold reset LOW in milliseconds (default 100ms)
+        
+        Returns:
+            bool: True if reset sequence completed successfully, False otherwise
+        """
+        if not self.gpio_initialized:
+            self.get_logger().warning("GPIO not initialized - cannot reset STM32")
+            return False
+        
+        try:
+            # Pull reset LOW (activate reset)
+            if not self.write_stm32_reset_low():
+                return False
+            
+            # Hold reset for specified time
+            time.sleep(hold_time_ms / 1000.0)
+            
+            # Release reset back to HIGH
+            if not self.write_stm32_reset_high():
+                return False
+            
+            self.get_logger().info(f'✅ STM32 reset sequence completed ({hold_time_ms}ms)')
+            return True
+            
+        except Exception as e:
+            self.get_logger().error(f'STM32 reset sequence failed: {str(e)}')
+            return False
+    
     def cleanup(self):
         """Clean up GPIO resources"""
         if GPIO_AVAILABLE:
@@ -137,6 +216,13 @@ class RPiController(Node):
                     except Exception:
                         pass
                     self.button_device = None
+                
+                if self.stm32_reset_device:
+                    try:
+                        self.stm32_reset_device.close()
+                    except Exception:
+                        pass
+                    self.stm32_reset_device = None
                 
                 # Close the pin factory to fully release GPIO
                 if Device.pin_factory is not None:

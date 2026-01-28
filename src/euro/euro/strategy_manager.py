@@ -298,7 +298,7 @@ def main(args=None):
     executor.add_node(rpi)
      # Start background threads for each device
     strategy.get_logger().info("Starting background threads...")
-    
+    rpi.reset_stm32()
     status_thread = threading.Thread(
         target=robot_status,
         args=(strategy, stm32, lidar),
