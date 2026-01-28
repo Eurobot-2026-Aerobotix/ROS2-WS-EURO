@@ -239,7 +239,7 @@ def pick_up(controller,pneumatic,strategy,front):
         pneumatic.front(0)
     else: pneumatic.back(0)
     controller.kabech(1)
-    time.sleep(0.3)
+    time.sleep(0.7)
     controller.n20(1111)
     stana(controller)
     if SHUTDOWN_REQUESTED:
@@ -274,15 +274,12 @@ def put_down(controller,pneumatic,strategy,front):
     
     time.sleep(1)
     color_pattern = color_pt_front if front else color_pt_back
+    strategy.get_logger().info(f"color pt for debug front: {color_pt_front} color pt back : {color_pt_back} ")
     strategy.get_logger().info(f"color_pattern {color_pattern}")
     color_to_N20=int(str(color_pattern).replace('1', '4').replace('0','1'))
     strategy.get_logger().info(f"TO n20 command  {color_to_N20}")
-    if front:
-        strategy.get_logger().info(f"📤 Front putting down - Color pattern: {color_pt_front}")
-    else:
-        strategy.get_logger().info(f"📤 Back putting down - Color pattern: {color_pt_back}")
-    controller.n20(color_to_N20)
-    stana(controller)
+    #controller.n20(color_to_N20)
+    #stana(controller)
     if SHUTDOWN_REQUESTED:
         return
     
@@ -293,8 +290,6 @@ def put_down(controller,pneumatic,strategy,front):
         ESP_FRONT_IDLE=True
     else: ESP_BACK_IDLE=True
     controller.dawer(0)
-    controller.n20(3333)
-    stana(controller)
     if SHUTDOWN_REQUESTED:
         return
     
@@ -358,6 +353,9 @@ def back_task(strategy, back_controller=None,pneumatic_controller=None):
                 else:
                     cmd_to_n20=int(str(color_pt_back).replace('0','2').replace('1','4'))
                     back_controller.n20(cmd_to_n20)
+                    back_controller.n20(cmd_to_n20)
+                    back_controller.n20(cmd_to_n20)
+                    print("bbaaaaatht prepare ")
             elif command =='put_down':
                 put_down(back_controller,pneumatic_controller,strategy,False)
             elif command =='pick_up':

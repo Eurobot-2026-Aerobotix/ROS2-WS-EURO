@@ -41,7 +41,7 @@ from hybrid_astar.srv import ComputePath, GetBatchColorPattern
 
 # Import the pathfinding algorithm
 from hybrid_astar.hybrid_astar import HybridAStarPathfinder
-
+first_crate_update =False
 
 class HybridAStarNode(Node):
     """
@@ -477,164 +477,167 @@ class HybridAStarNode(Node):
         Internal method to handle ArUco mapper state updates
         source: 'fx' or 'sx'
         """
-        self.get_logger().info(f"🔔 Received ArUco mapper state ({source.upper()}) with {len(msg.batches)} batches")
-        with self.obstacles_lock:
-            # Remove only obstacles from this source
-            old_count = len(self.obstacles)
-            self.obstacles = [obs for obs in self.obstacles if self.obstacle_sources.get(obs.id, '') != source]
-            removed = old_count - len(self.obstacles)
-            
-            # Clear obstacle sources for this source
-            self.obstacle_sources = {k: v for k, v in self.obstacle_sources.items() if v != source}
-            
-            if removed > 0:
-                self.get_logger().info(f"🗑️  Removed {removed} old {source.upper()} obstacles")
-
-            # Process each batch
-            for batch in msg.batches:
-                # Store batch by ID in the appropriate dictionary
-                with self.batches_lock:
-                    if source == 'fx':
-                        self.batches_fx[batch.batch_id] = batch
-                    else:
-                        self.batches_sx[batch.batch_id] = batch
-
-                if not batch.members:
-                    continue
+        global first_crate_update
+        if(not first_crate_update or len(self.obstacles)<16):
+            first_crate_update=True
+            self.get_logger().info(f"🔔 Received ArUco mapper state ({source.upper()}) with {len(msg.batches)} batches")
+            with self.obstacles_lock:
+                # Remove only obstacles from this source
+                old_count = len(self.obstacles)
+                self.obstacles = [obs for obs in self.obstacles if self.obstacle_sources.get(obs.id, '') != source]
+                removed = old_count - len(self.obstacles)
                 
-                if source == 'sx':
-                    # SX: Use predefined batch position from lookup table
-                    batch_known_id = batch.known_id
-                    
-                    if batch_known_id not in self.predefined_batch_positions:
-                        self.get_logger().warn(f"⚠️  Batch '{batch_known_id}' not found in predefined positions, skipping")
+                # Clear obstacle sources for this source
+                self.obstacle_sources = {k: v for k, v in self.obstacle_sources.items() if v != source}
+                
+                if removed > 0:
+                    self.get_logger().info(f"🗑️  Removed {removed} old {source.upper()} obstacles")
+
+                # Process each batch
+                for batch in msg.batches:
+                    # Store batch by ID in the appropriate dictionary
+                    with self.batches_lock:
+                        if source == 'fx':
+                            self.batches_fx[batch.batch_id] = batch
+                        else:
+                            self.batches_sx[batch.batch_id] = batch
+
+                    if not batch.members:
                         continue
                     
-                    batch_pos = self.predefined_batch_positions[batch_known_id]
-                    batch_center_x = batch_pos["x"]  # Already in meters
-                    batch_center_y = batch_pos["y"]  # Already in meters
-                    
-                    # Convert batch center from meters to millimeters
-                    batch_center_x_mm = batch_center_x * 1000.0
-                    batch_center_y_mm = batch_center_y * 1000.0
-                    
-                    # Determine obstacle dimensions based on batch direction
-                    # Each obstacle is 15x5 cm or 5x15 cm depending on orientation
-                    if batch.direction == "horizontal":
-                        obs_width_mm = 50.0   # 5 cm (narrow)
-                        obs_height_mm = 150.0 # 15 cm (tall)
-                        # For horizontal: 4 obstacles side by side (total width = 200mm)
-                        # Centers at: cx-75, cx-25, cx+25, cx+75 (edge to edge)
-                        offsets = [
-                            (-75.0, 0.0),  # Left-most
-                            (-25.0, 0.0),
-                            (25.0, 0.0),
-                            (75.0, 0.0)    # Right-most
-                        ]
-                    elif batch.direction == "vertical":
-                        obs_width_mm = 150.0  # 15 cm (wide)
-                        obs_height_mm = 50.0  # 5 cm (short)
-                        # For vertical: 4 obstacles stacked (total height = 200mm)
-                        # Centers at: cy-75, cy-25, cy+25, cy+75 (edge to edge)
-                        offsets = [
-                            (0.0, -75.0),  # Bottom-most
-                            (0.0, -25.0),
-                            (0.0, 25.0),
-                            (0.0, 75.0)    # Top-most
-                        ]
-                    else:
-                        # Default to horizontal if direction is unknown
-                        obs_width_mm = 50.0
-                        obs_height_mm = 150.0
-                        offsets = [(-75.0, 0.0), (-25.0, 0.0), (25.0, 0.0), (75.0, 0.0)]
-                    
-                    # Get color pattern from batch pattern string (e.g., "bbyy")
-                    pattern_str = batch.pattern.lower() if batch.pattern else ""
-                    
-                    # Parse pattern string to extract colors
-                    pattern_colors = []
-                    for char in pattern_str:
-                        if char == 'b':
-                            pattern_colors.append('blue')
-                        elif char == 'y':
-                            pattern_colors.append('yellow')
-                    
-                    if not pattern_colors:
-                        continue  # Skip batch if no valid colors in pattern
-                    
-                    # Create 4 obstacles for this batch
-                    for idx, (offset_x, offset_y) in enumerate(offsets):
-                        obs = Obstacle()
-                        obs.id = f"{source}_batch{batch.batch_id}_member{idx}"
-                        obs.type = 'crate'
-                        # Use color from pattern at this index (or last color if not enough in pattern)
-                        obs.color = pattern_colors[idx] if idx < len(pattern_colors) else pattern_colors[-1]
-                        obs.width_mm = obs_width_mm
-                        obs.height_mm = obs_height_mm
+                    if source == 'sx':
+                        # SX: Use predefined batch position from lookup table
+                        batch_known_id = batch.known_id
                         
-                        # Calculate obstacle center
-                        obs_center_x = batch_center_x_mm + offset_x
-                        obs_center_y = batch_center_y_mm + offset_y
-                        
-                        # Convert to TOP-LEFT corner (what the planner expects)
-                        obs.pose.x = obs_center_x - (obs_width_mm / 2.0)
-                        obs.pose.y = obs_center_y - (obs_height_mm / 2.0)
-                        obs.pose.theta = 0.0
-                        
-                        obs.detected_at = msg.stamp
-                        
-                        # Add to obstacles list and track source
-                        self.obstacles.append(obs)
-                        self.obstacle_sources[obs.id] = source
-                
-                else:
-                    # FX: Use individual member positions
-                    for member in batch.members:
-                        # Only process if color is valid
-                        if member.color not in ["yellow", "blue"]:
+                        if batch_known_id not in self.predefined_batch_positions:
+                            self.get_logger().warn(f"⚠️  Batch '{batch_known_id}' not found in predefined positions, skipping")
                             continue
-
-                        # Create obstacle from batch member
-                        obs = Obstacle()
-                        obs.id = f"aruco_{member.aruco_id}"
-                        obs.type = 'crate'
-                        obs.color = member.color
-
-                        # Determine obstacle dimensions based on batch direction (swapped)
+                        
+                        batch_pos = self.predefined_batch_positions[batch_known_id]
+                        batch_center_x = batch_pos["x"]  # Already in meters
+                        batch_center_y = batch_pos["y"]  # Already in meters
+                        
+                        # Convert batch center from meters to millimeters
+                        batch_center_x_mm = batch_center_x * 1000.0
+                        batch_center_y_mm = batch_center_y * 1000.0
+                        
+                        # Determine obstacle dimensions based on batch direction
+                        # Each obstacle is 15x5 cm or 5x15 cm depending on orientation
                         if batch.direction == "horizontal":
-                            obs.width_mm = self.params['obstacles']['crate_horizontal']['height_mm']
-                            obs.height_mm = self.params['obstacles']['crate_horizontal']['width_mm']
+                            obs_width_mm = 50.0   # 5 cm (narrow)
+                            obs_height_mm = 150.0 # 15 cm (tall)
+                            # For horizontal: 4 obstacles side by side (total width = 200mm)
+                            # Centers at: cx-75, cx-25, cx+25, cx+75 (edge to edge)
+                            offsets = [
+                                (-75.0, 0.0),  # Left-most
+                                (-25.0, 0.0),
+                                (25.0, 0.0),
+                                (75.0, 0.0)    # Right-most
+                            ]
                         elif batch.direction == "vertical":
-                            obs.width_mm = self.params['obstacles']['crate_vertical']['height_mm']
-                            obs.height_mm = self.params['obstacles']['crate_vertical']['width_mm']
+                            obs_width_mm = 150.0  # 15 cm (wide)
+                            obs_height_mm = 50.0  # 5 cm (short)
+                            # For vertical: 4 obstacles stacked (total height = 200mm)
+                            # Centers at: cy-75, cy-25, cy+25, cy+75 (edge to edge)
+                            offsets = [
+                                (0.0, -75.0),  # Bottom-most
+                                (0.0, -25.0),
+                                (0.0, 25.0),
+                                (0.0, 75.0)    # Top-most
+                            ]
                         else:
                             # Default to horizontal if direction is unknown
-                            obs.width_mm = self.params['obstacles']['crate_horizontal']['height_mm']
-                            obs.height_mm = self.params['obstacles']['crate_horizontal']['width_mm']
+                            obs_width_mm = 50.0
+                            obs_height_mm = 150.0
+                            offsets = [(-75.0, 0.0), (-25.0, 0.0), (25.0, 0.0), (75.0, 0.0)]
+                        
+                        # Get color pattern from batch pattern string (e.g., "bbyy")
+                        pattern_str = batch.pattern.lower() if batch.pattern else ""
+                        
+                        # Parse pattern string to extract colors
+                        pattern_colors = []
+                        for char in pattern_str:
+                            if char == 'b':
+                                pattern_colors.append('blue')
+                            elif char == 'y':
+                                pattern_colors.append('yellow')
+                        
+                        if not pattern_colors:
+                            continue  # Skip batch if no valid colors in pattern
+                        
+                        # Create 4 obstacles for this batch
+                        for idx, (offset_x, offset_y) in enumerate(offsets):
+                            obs = Obstacle()
+                            obs.id = f"{source}_batch{batch.batch_id}_member{idx}"
+                            obs.type = 'crate'
+                            # Use color from pattern at this index (or last color if not enough in pattern)
+                            obs.color = pattern_colors[idx] if idx < len(pattern_colors) else pattern_colors[-1]
+                            obs.width_mm = obs_width_mm
+                            obs.height_mm = obs_height_mm
+                            
+                            # Calculate obstacle center
+                            obs_center_x = batch_center_x_mm + offset_x
+                            obs_center_y = batch_center_y_mm + offset_y
+                            
+                            # Convert to TOP-LEFT corner (what the planner expects)
+                            obs.pose.x = obs_center_x - (obs_width_mm / 2.0)
+                            obs.pose.y = obs_center_y - (obs_height_mm / 2.0)
+                            obs.pose.theta = 0.0
+                            
+                            obs.detected_at = msg.stamp
+                            
+                            # Add to obstacles list and track source
+                            self.obstacles.append(obs)
+                            self.obstacle_sources[obs.id] = source
+                    
+                    else:
+                        # FX: Use individual member positions
+                        for member in batch.members:
+                            # Only process if color is valid
+                            if member.color not in ["yellow", "blue"]:
+                                continue
 
-                        # IMPORTANT: map_pos is the CENTER of the obstacle
-                        # Convert to TOP-LEFT corner (what the planner expects)
-                        # Convert from meters to millimeters
-                        center_x_mm = member.map_pos.x * 1000.0 
-                        center_y_mm = member.map_pos.y * 1000.0
-                        obs.pose.x = center_x_mm - (obs.width_mm / 2.0)   # Center to top-left
-                        obs.pose.y = center_y_mm - (obs.height_mm / 2.0)  # Center to top-left
-                        obs.pose.theta = 0.0
+                            # Create obstacle from batch member
+                            obs = Obstacle()
+                            obs.id = f"aruco_{member.aruco_id}"
+                            obs.type = 'crate'
+                            obs.color = member.color
 
-                        obs.detected_at = msg.stamp
+                            # Determine obstacle dimensions based on batch direction (swapped)
+                            if batch.direction == "horizontal":
+                                obs.width_mm = self.params['obstacles']['crate_horizontal']['height_mm']
+                                obs.height_mm = self.params['obstacles']['crate_horizontal']['width_mm']
+                            elif batch.direction == "vertical":
+                                obs.width_mm = self.params['obstacles']['crate_vertical']['height_mm']
+                                obs.height_mm = self.params['obstacles']['crate_vertical']['width_mm']
+                            else:
+                                # Default to horizontal if direction is unknown
+                                obs.width_mm = self.params['obstacles']['crate_horizontal']['height_mm']
+                                obs.height_mm = self.params['obstacles']['crate_horizontal']['width_mm']
 
-                        # Add to obstacles list and track source
-                        self.obstacles.append(obs)
-                        self.obstacle_sources[obs.id] = source
-            
-            # Count obstacles by source
-            fx_count = sum(1 for v in self.obstacle_sources.values() if v == 'fx')
-            sx_count = sum(1 for v in self.obstacle_sources.values() if v == 'sx')
-            enemy_count = sum(1 for v in self.obstacle_sources.values() if v == 'enemy')
-            
-            self.get_logger().info(
-                f"📦 Updated {source.upper()} obstacles from {len(msg.batches)} batches | "
-                f"Total obstacles: FX={fx_count}, SX={sx_count}, Enemy={enemy_count}")
+                            # IMPORTANT: map_pos is the CENTER of the obstacle
+                            # Convert to TOP-LEFT corner (what the planner expects)
+                            # Convert from meters to millimeters
+                            center_x_mm = member.map_pos.x * 1000.0 
+                            center_y_mm = member.map_pos.y * 1000.0
+                            obs.pose.x = center_x_mm - (obs.width_mm / 2.0)   # Center to top-left
+                            obs.pose.y = center_y_mm - (obs.height_mm / 2.0)  # Center to top-left
+                            obs.pose.theta = 0.0
+
+                            obs.detected_at = msg.stamp
+
+                            # Add to obstacles list and track source
+                            self.obstacles.append(obs)
+                            self.obstacle_sources[obs.id] = source
+                
+                # Count obstacles by source
+                fx_count = sum(1 for v in self.obstacle_sources.values() if v == 'fx')
+                sx_count = sum(1 for v in self.obstacle_sources.values() if v == 'sx')
+                enemy_count = sum(1 for v in self.obstacle_sources.values() if v == 'enemy')
+                
+                self.get_logger().info(
+                    f"📦 Updated {source.upper()} obstacles from {len(msg.batches)} batches | "
+                    f"Total obstacles: FX={fx_count}, SX={sx_count}, Enemy={enemy_count}")
     def publish_path_visualization(self, waypoints: List[Tuple[float, float, float]], 
                                    obstacles: List[dict]):
         """Publish path and obstacles visualization for RViz"""
