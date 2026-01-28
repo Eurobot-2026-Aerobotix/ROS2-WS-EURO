@@ -620,7 +620,7 @@ class STM32Controller(Node):
             self.get_logger().error(f'NaviStm service not available after 10 seconds')
             return False, f'NaviStm service not available after 10 seconds'
 
-        self.get_logger().info('NaviStm service is now available!')
+        #self.get_logger().info('NaviStm service is now available!')
         request = NaviStm.Request()
         request.arg1 = 6.0  # Indicates reset command
         request.arg2 = 0.0

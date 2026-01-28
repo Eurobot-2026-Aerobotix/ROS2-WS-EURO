@@ -253,7 +253,7 @@ def reset_systems(pneumatic_controller,front_controller,back_controller,stm32_co
             if xd:
                 stm32_controller.stop(timeout=2.0)
                 time.sleep(0.5)
-            stm32_controller.reset(timeout=2.0)
+            #stm32_controller.reset(timeout=2.0)
         
         # Reset pneumatic and ESP controllers
         pneumatic_controller.front(16)
@@ -280,27 +280,35 @@ def main(args=None):
     from euro.back_systems_controller import BackSystemsController
     from euro.rpi_controller import RPiController
     # Initialize controllers
-    stm32 = STM32Controller('rpi_stm32')
+    
     lidar = Lidar()
     # Create strategy manager
     strategy = StrategyManager()
-    strategy
+   
     front= FrontSystemsController()
     back= BackSystemsController()
     pneumatic= PneumaticController()
     rpi= RPiController()
     # Create executor for ROS2 nodes
     executor = MultiThreadedExecutor()
-    executor.add_node(stm32)
     executor.add_node(lidar)
     executor.add_node(strategy)
     executor.add_node(front)
     executor.add_node(back)
     executor.add_node(pneumatic)
     executor.add_node(rpi)
+    rpi.reset_stm32()
+    time.sleep(1)
+    stm32 = STM32Controller('rpi_stm32')
+    executor.add_node(stm32)
+    strategy.get_logger().info("Waiting for STM32 service to become available...")
+    if stm32.navi_client.wait_for_service(timeout_sec=20.0):
+        strategy.get_logger().info("✅ STM32 service is ready!")
+    else:
+        strategy.get_logger().error("❌ STM32 service not available after 20 seconds - robot may not respond to commands")
      # Start background threads for each device
     strategy.get_logger().info("Starting background threads...")
-    rpi.reset_stm32()
+    time.sleep(1)
     status_thread = threading.Thread(
         target=robot_status,
         args=(strategy, stm32, lidar),

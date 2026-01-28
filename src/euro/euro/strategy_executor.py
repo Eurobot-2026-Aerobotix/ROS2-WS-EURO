@@ -393,8 +393,8 @@ def rasp_pi_task(strategy, rpi_controller=None, stm32_controller=None, front_con
                     strategy.get_logger().warning("RPI controller not available - skipping wait_start")
             elif command == 'RESET':
                 # Execute reset in background
-                if stm32_controller:
-                    stm32_controller.reset(timeout=2.0)
+                #if stm32_controller:
+                    #stm32_controller.reset(timeout=2.0)
                 if pneumatic_controller:
                     pneumatic_controller.front(16)
                     pneumatic_controller.back(16)

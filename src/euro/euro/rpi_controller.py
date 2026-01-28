@@ -169,7 +169,7 @@ class RPiController(Node):
                 return False
             
             # Hold reset for specified time
-            time.sleep(hold_time_ms / 1000.0)
+            #time.sleep(hold_time_ms / 1000.0)
             
             # Release reset back to HIGH
             if not self.write_stm32_reset_high():
