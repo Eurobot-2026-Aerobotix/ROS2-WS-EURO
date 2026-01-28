@@ -297,15 +297,25 @@ def main(args=None):
     executor.add_node(back)
     executor.add_node(pneumatic)
     executor.add_node(rpi)
+    
+    # Reset STM32 and wait for reconnection
+    strategy.get_logger().info("Resetting STM32...")
     rpi.reset_stm32()
-    time.sleep(1)
+    
+    # Wait longer for STM32 to boot and connect to micro-ROS agent
+    strategy.get_logger().info("Waiting for STM32 to boot and connect to micro-ROS agent...")
+    time.sleep(3)
+    
     stm32 = STM32Controller('rpi_stm32')
     executor.add_node(stm32)
+    
+    # Wait for STM32 service to become available
     strategy.get_logger().info("Waiting for STM32 service to become available...")
     if stm32.navi_client.wait_for_service(timeout_sec=20.0):
         strategy.get_logger().info("✅ STM32 service is ready!")
     else:
         strategy.get_logger().error("❌ STM32 service not available after 20 seconds - robot may not respond to commands")
+    
      # Start background threads for each device
     strategy.get_logger().info("Starting background threads...")
     time.sleep(1)

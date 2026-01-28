@@ -23,6 +23,26 @@ class STM32Controller(Node):
         self.last_request = None
         self.get_logger().info('STM32 Controller initialized')
 
+    def _wait_for_future(self, future, timeout):
+        """
+        Wait for a future to complete without using spin_until_future_complete.
+        This avoids the 'wait set index too big' error when the node is already in an executor.
+        
+        Args:
+            future: The future to wait for
+            timeout: Timeout in seconds
+            
+        Returns:
+            bool: True if future completed, False if timeout
+        """
+        start_time = time.time()
+        while not future.done():
+            if time.time() - start_time > timeout:
+                return False
+            time.sleep(0.01)  # Small sleep to prevent busy-waiting
+        return True
+
+
     def move_forward(self, distance, speed, is_smooth=0.0, timeout=10.0):
         """Send a request to move forward a certain distance at a specific speed"""
         if not self.navi_client.wait_for_service(timeout_sec=10.0):
@@ -44,14 +64,13 @@ class STM32Controller(Node):
         
         try:
             future = self.navi_client.call_async(request)
-            rclpy.spin_until_future_complete(self, future, timeout_sec=timeout)
-            if future.done():
-                response = future.result()
-                self.get_logger().info(f"move_forward response: {response.result}")
-                return True, response
-            else:
+            if not self._wait_for_future(future, timeout):
                 self.get_logger().error('Move_forward service call timeout')
                 return False, 'Service call timeout'
+            
+            response = future.result()
+            self.get_logger().info(f"move_forward response: {response.result}")
+            return True, response
         except Exception as e:
             self.get_logger().error(f'Move_forward service error: {str(e)}')
             return False, f'Service error: {str(e)}'
@@ -77,15 +96,13 @@ class STM32Controller(Node):
         
         try:
             future = self.navi_client.call_async(request)
-            rclpy.spin_until_future_complete(self, future, timeout_sec=timeout)
+            if not self._wait_for_future(future, timeout):
+                self.get_logger().error('Service call timeout')
+                return False, 'Service call timeout'
             
-            if future.done():
-                response = future.result()
+            response = future.result()
                 self.get_logger().info(f"move_backward response: {response.result}")
                 return True, response
-            else:
-                self.get_logger().error('Move_backward service call timeout')
-                return False, 'Service call timeout'
         except Exception as e:
             self.get_logger().error(f'Move_backward service error: {str(e)}')
             return False, f'Service error: {str(e)}'
@@ -111,14 +128,14 @@ class STM32Controller(Node):
         
         try:
             future = self.navi_client.call_async(request)
-            rclpy.spin_until_future_complete(self, future, timeout_sec=timeout)
+            if not self._wait_for_future(future, timeout):
+                self.get_logger().error("Service call timeout")
+                return False, "Service call timeout"
+            
             if future.done():
                 response = future.result()
                 self.get_logger().info(f"Rotate response: {response.result}")
                 return True, response
-            else:
-                self.get_logger().error('Rotate service call timeout')
-                return False, 'Service call timeout'
         except Exception as e:
             self.get_logger().error(f'Rotate service error: {str(e)}')
             return False, f'Service error: {str(e)}'
@@ -145,15 +162,13 @@ class STM32Controller(Node):
         try:
             # Phase 1: Send command and wait for acceptance
             future = self.navi_client.call_async(request)
-            rclpy.spin_until_future_complete(self, future, timeout_sec=timeout)
+            if not self._wait_for_future(future, timeout):
+                self.get_logger().error('Service call timeout')
+                return False, 'Service call timeout'
             
-            if future.done():
-                response = future.result()
+            response = future.result()
                 self.get_logger().info(f"Orientate response: {response.result}")
                 return True, response
-            else:
-                self.get_logger().error('Orientate service call timeout')
-                return False, 'Service call timeout'
         except Exception as e:
             self.get_logger().error(f'Orientate service error: {str(e)}')
             return False, f'Service error: {str(e)}'
@@ -179,15 +194,13 @@ class STM32Controller(Node):
         
         try:
             future = self.navi_client.call_async(request)
-            rclpy.spin_until_future_complete(self, future, timeout_sec=timeout)
+            if not self._wait_for_future(future, timeout):
+                self.get_logger().error('Service call timeout')
+                return False, 'Service call timeout'
             
-            if future.done():
-                response = future.result()
+            response = future.result()
                 self.get_logger().info(f"go_to response: {response.result}")
                 return True, response
-            else:
-                self.get_logger().error('Go_to service call timeout')
-                return False, 'Service call timeout'
         except Exception as e:
             self.get_logger().error(f'Go_to service error: {str(e)}')
             return False, f'Service error: {str(e)}'
@@ -212,15 +225,13 @@ class STM32Controller(Node):
         
         try:
             future = self.navi_client.call_async(request)
-            rclpy.spin_until_future_complete(self, future, timeout_sec=timeout)
+            if not self._wait_for_future(future, timeout):
+                self.get_logger().error('Service call timeout')
+                return False, 'Service call timeout'
             
-            if future.done():
-                response = future.result()
+            response = future.result()
                 self.get_logger().info(f"go_to_backwards response: {response.result}")
                 return True, response
-            else:
-                self.get_logger().error('Go_to_backwards service call timeout')
-                return False, 'Service call timeout'
         except Exception as e:
             self.get_logger().error(f'Go_to_backwards service error: {str(e)}')
             return False, f'Service error: {str(e)}'
@@ -244,15 +255,13 @@ class STM32Controller(Node):
         
         try:
             future = self.navi_client.call_async(request)
-            rclpy.spin_until_future_complete(self, future, timeout_sec=timeout)
+            if not self._wait_for_future(future, timeout):
+                self.get_logger().error('Service call timeout')
+                return False, 'Service call timeout'
             
-            if future.done():
-                response = future.result()
+            response = future.result()
                 self.get_logger().info(f"Bezier_curve response: {response.result}")
                 return True, response
-            else:
-                self.get_logger().error('Bezier_curve service call timeout')
-                return False, 'Service call timeout'
         except Exception as e:
             self.get_logger().error(f'Bezier_curve service error: {str(e)}')
             return False, f'Service error: {str(e)}'
@@ -277,15 +286,13 @@ class STM32Controller(Node):
         
         try:
             future = self.navi_client.call_async(request)
-            rclpy.spin_until_future_complete(self, future, timeout_sec=timeout)
+            if not self._wait_for_future(future, timeout):
+                self.get_logger().error('Service call timeout')
+                return False, 'Service call timeout'
             
-            if future.done():
-                response = future.result()
+            response = future.result()
                 self.get_logger().info(f"Bezier_curve_backwards response: {response.result}")
                 return True, response
-            else:
-                self.get_logger().error('Bezier_curve_backwards service call timeout')
-                return False, 'Service call timeout'
         except Exception as e:
             self.get_logger().error(f'Bezier_curve_backwards service error: {str(e)}')
             return False, f'Service error: {str(e)}'
@@ -310,15 +317,13 @@ class STM32Controller(Node):
         
         try:
             future = self.navi_client.call_async(request)
-            rclpy.spin_until_future_complete(self, future, timeout_sec=timeout)
+            if not self._wait_for_future(future, timeout):
+                self.get_logger().error('Service call timeout')
+                return False, 'Service call timeout'
             
-            if future.done():
-                response = future.result()
+            response = future.result()
                 self.get_logger().info(f"move_forward_with_left_deviation response: {response.result}")
                 return True, response
-            else:
-                self.get_logger().error('Move_forward_with_left_deviation service call timeout')
-                return False, 'Service call timeout'
         except Exception as e:
             self.get_logger().error(f'Move_forward_with_left_deviation service error: {str(e)}')
             return False, f'Service error: {str(e)}'
@@ -343,15 +348,13 @@ class STM32Controller(Node):
         
         try:
             future = self.navi_client.call_async(request)
-            rclpy.spin_until_future_complete(self, future, timeout_sec=timeout)
+            if not self._wait_for_future(future, timeout):
+                self.get_logger().error('Service call timeout')
+                return False, 'Service call timeout'
             
-            if future.done():
-                response = future.result()
+            response = future.result()
                 self.get_logger().info(f"circle curve response: {response.result}")
                 return True, response
-            else:
-                self.get_logger().error('circle curve  service call timeout')
-                return False, 'Service call timeout'
         except Exception as e:
             self.get_logger().error(f'circle curve  service error: {str(e)}')
             return False, f'Service error: {str(e)}'
@@ -376,15 +379,13 @@ class STM32Controller(Node):
         
         try:
             future = self.navi_client.call_async(request)
-            rclpy.spin_until_future_complete(self, future, timeout_sec=timeout)
+            if not self._wait_for_future(future, timeout):
+                self.get_logger().error('Service call timeout')
+                return False, 'Service call timeout'
             
-            if future.done():
-                response = future.result()
+            response = future.result()
                 self.get_logger().info(f"Set position response: {response.result}")
                 return True, response
-            else:
-                self.get_logger().error('Set position service call timeout')
-                return False, 'Service call timeout'
         except Exception as e:
             self.get_logger().error(f'Set position service error: {str(e)}')
             return False, f'Service error: {str(e)}'
@@ -409,15 +410,13 @@ class STM32Controller(Node):
         
         try:
             future = self.navi_client.call_async(request)
-            rclpy.spin_until_future_complete(self, future, timeout_sec=timeout)
+            if not self._wait_for_future(future, timeout):
+                self.get_logger().error('Service call timeout')
+                return False, 'Service call timeout'
             
-            if future.done():
-                response = future.result()
+            response = future.result()
                 self.get_logger().info(f"LED blink response: {response.result}")
                 return True, response
-            else:
-                self.get_logger().error('LED blink service call timeout')
-                return False, 'Service call timeout'
         except Exception as e:
             self.get_logger().error(f'LED blink service error: {str(e)}')
             return False, f'Service error: {str(e)}'
@@ -450,10 +449,11 @@ class STM32Controller(Node):
         
         try:
             future = self.navi_client.call_async(request)
-            rclpy.spin_until_future_complete(self, future, timeout_sec=timeout)
+            if not self._wait_for_future(future, timeout):
+                self.get_logger().error('Service call timeout')
+                return False, 'Service call timeout'
             
-            if future.done():
-                response = future.result()
+            response = future.result()
                 # Assuming response.result is True when movement is completed, False when still moving
                 is_completed = bool(response.result)
                 return True, is_completed, response
@@ -491,10 +491,11 @@ class STM32Controller(Node):
         
         try:
             future = self.navi_client.call_async(request)
-            rclpy.spin_until_future_complete(self, future, timeout_sec=timeout)
+            if not self._wait_for_future(future, timeout):
+                self.get_logger().error('Service call timeout')
+                return False, 'Service call timeout'
             
-            if future.done():
-                response = future.result()
+            response = future.result()
                 # Assuming response.result is True when movement is completed, False when still moving
                 is_completed = bool(response.result)
                 return True, is_completed, response
@@ -573,10 +574,11 @@ class STM32Controller(Node):
         
         try:
             future = self.navi_client.call_async(request)
-            rclpy.spin_until_future_complete(self, future, timeout_sec=timeout)
+            if not self._wait_for_future(future, timeout):
+                self.get_logger().error('Service call timeout')
+                return False, 'Service call timeout'
             
-            if future.done():
-                response = future.result()
+            response = future.result()
                 self.get_logger().info(f"Emergency stop response: {response.result}")
                 return True, response
             else:
@@ -602,7 +604,10 @@ class STM32Controller(Node):
         
         try:
             future = self.navi_client.call_async(request_msg)
-            rclpy.spin_until_future_complete(self, future, timeout_sec=timeout)
+            if not self._wait_for_future(future, timeout):
+                self.get_logger().error("Service call timeout")
+                return False, "Service call timeout"
+            
             if future.result() is not None:
                 response = future.result()
                 self.get_logger().info(f'NaviStm service response: {response}')
@@ -636,15 +641,13 @@ class STM32Controller(Node):
         
         try:
             future = self.navi_client.call_async(request)
-            rclpy.spin_until_future_complete(self, future, timeout_sec=timeout)
+            if not self._wait_for_future(future, timeout):
+                self.get_logger().error('Service call timeout')
+                return False, 'Service call timeout'
             
-            if future.done():
-                response = future.result()
+            response = future.result()
                 self.get_logger().info(f"Reset response: {response.result}")
                 return True, response
-            else:
-                self.get_logger().error('Reset service call timeout')
-                return False, 'Service call timeout'
         except Exception as e:
             self.get_logger().error(f'Reset service error: {str(e)}')
             return False, f'Service error: {str(e)}'

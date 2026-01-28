@@ -82,17 +82,21 @@ class BackSystemsController(Node):
         
         try:
             future = self.idle_client.call_async(request)
-            rclpy.spin_until_future_complete(self, future, timeout_sec=timeout)
             
-            if future.done():
-                response = future.result()
-                return response.success
-            else:
-                self.get_logger().error('IDLE service call timeout')
-                return False
+            # Poll the future instead of spin_until_future_complete to avoid executor conflicts
+            import time
+            start_time = time.time()
+            while not future.done():
+                if time.time() - start_time > timeout:
+                    self.get_logger().error('IDLE service call timeout')
+                    return False
+                time.sleep(0.01)
+            
+            response = future.result()
+            return response.success
         except Exception as e:
             self.get_logger().error(f'IDLE service error: {str(e)}')
-            return False, f'Service error: {str(e)}'
+            return False
 
 
 def main(args=None):
