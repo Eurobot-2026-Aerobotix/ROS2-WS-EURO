@@ -1,0 +1,10 @@
+# Request to update the map with stable batches
+string batch_types_filter    # e.g., "s", "sf", "sfg" - filter by batch type
+
+---
+
+# Response
+bool success
+string message
+int32 num_batches_received
+int32 num_obstacles_created

@@ -30,6 +30,7 @@ from typing import Dict, List, Tuple, Optional
 
 # ROS2 messages
 from std_msgs.msg import Empty, Header
+from std_srvs.srv import Trigger
 from geometry_msgs.msg import PoseStamped, Pose2D, Quaternion
 from nav_msgs.msg import Path
 from visualization_msgs.msg import Marker, MarkerArray
@@ -37,6 +38,7 @@ from visualization_msgs.msg import Marker, MarkerArray
 # Custom messages (will be generated)
 from hybrid_astar.msg import Obstacle, ObstacleArray, ColorCommand
 from aruco_mapper_msgs.msg import ArucoMapperState, Batch, BatchMember
+from aruco_mapper_msgs.srv import GetStableBatches
 from hybrid_astar.srv import ComputePath, GetBatchColorPattern
 
 # Import the pathfinding algorithm
@@ -48,8 +50,6 @@ class HybridAStarNode(Node):
     ROS2 node for Hybrid A* pathfinding with dynamic obstacle management.
     
     Subscribes to:
-        - /aruco_mapper/state_fx: Receive batches of obstacles from ArUco mapper (FX side)
-        - /aruco_mapper/state_sx: Receive batches of obstacles from ArUco mapper (SX side)
         - /obstacles/clear_all: Clear all obstacles
         - /obstacle_relative: Receive enemy robot poses as obstacles (PoseStamped)
     
@@ -59,6 +59,11 @@ class HybridAStarNode(Node):
     
     Services:
         - /compute_path: Compute path from start to goal
+        - /get_batch_color_pattern: Get color pattern for a batch
+        - /update_map: Trigger to fetch stable batches from ArUco mapper
+    
+    Clients:
+        - /aruco_mapper/get_stable_batches: Request stable batches from ArUco mapper
     """
     
     def __init__(self):
@@ -67,8 +72,12 @@ class HybridAStarNode(Node):
         # Load all parameters
         self.load_parameters()
         
+        # Create client for GetStableBatches service FIRST (needed by MapManager)
+        self.get_stable_batches_client = self.create_client(
+            GetStableBatches, '/aruco_mapper/get_stable_batches')
+        
         # Initialize map manager (handles obstacles, batches, and topics)
-        self.map_manager = MapManager(self, self.params)
+        self.map_manager = MapManager(self, self.params, self.get_stable_batches_client)
         
         # Create services
         self.path_service = self.create_service(
@@ -76,6 +85,10 @@ class HybridAStarNode(Node):
         
         self.batch_color_service = self.create_service(
             GetBatchColorPattern, '/get_batch_color_pattern', self.handle_get_batch_color_pattern)
+        
+        # Delegate update_map service to MapManager
+        self.update_map_service = self.create_service(
+            Trigger, '/update_map', self.map_manager.handle_update_map)
         
         # Initialize pathfinder
         grid_width = int(self.params['map']['width_mm'] / 
@@ -863,6 +876,7 @@ class HybridAStarNode(Node):
         )
 
         return response
+    
     def waypoints_to_stm32_go_to_commands(self, waypoints, speed=100):
         """
         Convert a list of (x, y, theta) waypoints to STM32 go_to(x, y, speed) commands.
