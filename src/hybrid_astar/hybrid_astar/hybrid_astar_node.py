@@ -500,13 +500,21 @@ class HybridAStarNode(Node):
                     if source == 'fx' and not batch.members:
                         continue
                     
+                    # Store batch by ID in the appropriate dictionary FIRST (always store, even if can't create obstacles)
+                    with self.batches_lock:
+                        if source == 'fx':
+                            self.batches_fx[batch.batch_id] = batch
+                        else:
+                            self.batches_sx[batch.batch_id] = batch
+                    
                     if source == 'sx':
                         # SX: Use predefined batch position from lookup table
                         batch_known_id = batch.known_id
+                        self.get_logger().info(f"🔍 Processing SX batch '{batch_known_id}', pattern='{batch.pattern}', direction='{batch.direction}'")
                         
                         if batch_known_id not in self.predefined_batch_positions:
-                            self.get_logger().warn(f"⚠️  Batch '{batch_known_id}' not found in predefined positions, skipping")
-                            continue
+                            self.get_logger().warn(f"⚠️  Batch '{batch_known_id}' not found in predefined positions, skipping obstacle creation")
+                            continue  # Skip obstacle creation, but batch is already stored
                         
                         batch_pos = self.predefined_batch_positions[batch_known_id]
                         batch_center_x = batch_pos["x"]  # Already in meters
@@ -517,13 +525,6 @@ class HybridAStarNode(Node):
                         batch.center.x = batch_center_x
                         batch.center.y = batch_center_y
                         batch.center.z = 0.0
-                    
-                    # Store batch by ID in the appropriate dictionary
-                    with self.batches_lock:
-                        if source == 'fx':
-                            self.batches_fx[batch.batch_id] = batch
-                        else:
-                            self.batches_sx[batch.batch_id] = batch
                     
                     if source == 'sx':
                         # Continue with SX obstacle creation using predefined position
@@ -574,12 +575,19 @@ class HybridAStarNode(Node):
                                 pattern_colors.append('yellow')
                         
                         if not pattern_colors:
-                            continue  # Skip batch if no valid colors in pattern
+                            # If no valid pattern, use default pattern (all blue) and warn
+                            self.get_logger().warn(
+                                f"⚠️  Batch '{batch_known_id}' has no valid pattern (pattern='{batch.pattern}'), "
+                                f"using default pattern 'bbbb'"
+                            )
+                            pattern_colors = ['blue', 'blue', 'blue', 'blue']
+                        
+                        self.get_logger().info(f"✅ Creating 4 obstacles for batch '{batch_known_id}' with pattern {pattern_colors}")
                         
                         # Create 4 obstacles for this batch
                         for idx, (offset_x, offset_y) in enumerate(offsets):
                             obs = Obstacle()
-                            obs.id = f"{source}_batch{batch.batch_id}_member{idx}"
+                            obs.id = f"{source}_{batch_known_id}_member{idx}"  # Use known_id for unique IDs
                             obs.type = 'crate'
                             # Use color from pattern at this index (or last color if not enough in pattern)
                             obs.color = pattern_colors[idx] if idx < len(pattern_colors) else pattern_colors[-1]
