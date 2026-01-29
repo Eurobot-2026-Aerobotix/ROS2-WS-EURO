@@ -198,6 +198,7 @@ def talaa(strategy, front_controller=None):
     x = strategy.global_pos_x
     y = strategy.global_pos_y
     global color_pt
+    strategy.get_logger().info(f"📞 talaa() called - about to request color pattern from pathfinder")
     # Create Point for current position
     # pos = Point()
     # pos.x = float(x)
@@ -231,7 +232,10 @@ def pick_up(controller,pneumatic,strategy,front):
     global ESP_BACK_IDLE
     global SHUTDOWN_REQUESTED
     
+    strategy.get_logger().info(f"🚀 pick_up() called for {'FRONT' if front else 'BACK'}")
+    
     if SHUTDOWN_REQUESTED:
+        strategy.get_logger().warning("⚠️ pick_up() aborted - SHUTDOWN_REQUESTED")
         return
     #stana(controller)
     if SHUTDOWN_REQUESTED:
@@ -248,15 +252,16 @@ def pick_up(controller,pneumatic,strategy,front):
         return
     
     time.sleep(1)
+    strategy.get_logger().info(f"🔍 Requesting NEW color pattern for {'FRONT' if front else 'BACK'} at position ({strategy.latest_robot_pose.x:.2f}, {strategy.latest_robot_pose.y:.2f})")
     color_pattern = talaa(strategy, controller)
     if front:
         color_pt_front = color_pattern
         ESP_FRONT_IDLE=True
-        strategy.get_logger().info(f"📦 Front picked up - Color pattern: {color_pt_front}")
+        strategy.get_logger().info(f"📦 Front picked up - NEW Color pattern: {color_pt_front}")
     else:
         color_pt_back = color_pattern
         ESP_BACK_IDLE=True
-        strategy.get_logger().info(f"📦 Back picked up - Color pattern: {color_pt_back}")
+        strategy.get_logger().info(f"📦 Back picked up - NEW Color pattern: {color_pt_back}")
     stana(controller)
     if SHUTDOWN_REQUESTED:
         return
