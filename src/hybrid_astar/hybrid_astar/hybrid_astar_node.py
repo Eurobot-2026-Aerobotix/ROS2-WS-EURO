@@ -495,13 +495,6 @@ class HybridAStarNode(Node):
 
                 # Process each batch
                 for batch in msg.batches:
-                    # Store batch by ID in the appropriate dictionary
-                    with self.batches_lock:
-                        if source == 'fx':
-                            self.batches_fx[batch.batch_id] = batch
-                        else:
-                            self.batches_sx[batch.batch_id] = batch
-
                     if not batch.members:
                         continue
                     
@@ -516,6 +509,22 @@ class HybridAStarNode(Node):
                         batch_pos = self.predefined_batch_positions[batch_known_id]
                         batch_center_x = batch_pos["x"]  # Already in meters
                         batch_center_y = batch_pos["y"]  # Already in meters
+                        
+                        # Update batch center with predefined position
+                        # This is CRITICAL for distance calculations in handle_get_batch_color_pattern
+                        batch.center.x = batch_center_x
+                        batch.center.y = batch_center_y
+                        batch.center.z = 0.0
+                    
+                    # Store batch by ID in the appropriate dictionary
+                    with self.batches_lock:
+                        if source == 'fx':
+                            self.batches_fx[batch.batch_id] = batch
+                        else:
+                            self.batches_sx[batch.batch_id] = batch
+                    
+                    if source == 'sx':
+                        # Continue with SX obstacle creation using predefined position
                         
                         # Convert batch center from meters to millimeters
                         batch_center_x_mm = batch_center_x * 1000.0
