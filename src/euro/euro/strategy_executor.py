@@ -149,6 +149,7 @@ def handle_color_pattner(strategy):
             color_pattern = color_pattern[::-1]
     else:
         strategy.get_logger().warning("Failed to get batch center from service")
+    strategy.get_logger().info(f"color received from beacon{color_pattern}")
 
     return color_pattern
 def convert_color_pattern(color_pattern, robot_color):
@@ -186,9 +187,9 @@ def stana(controller):
     global SHUTDOWN_REQUESTED
     
     # Use shorter timeout to allow quicker shutdown response
-    idle = controller.IDLE(timeout=1.0)
+    idle = controller.IDLE(timeout=2.0)
     while not idle and not SHUTDOWN_REQUESTED:
-        idle = controller.IDLE(timeout=1.0)
+        idle = controller.IDLE(timeout=2.0)
         time.sleep(0.1)
     
 def talaa(strategy, front_controller=None):
@@ -258,9 +259,7 @@ def pick_up(controller,pneumatic,strategy,front):
     stana(controller)
     if SHUTDOWN_REQUESTED:
         return
-    strategy.get_logger().info("System is IDLE ")
     controller.kabech(0)
-    controller.dawer(1)
     time.sleep(1)
 def put_down(controller,pneumatic,strategy,front):
     global ESP_FRONT_IDLE
@@ -274,7 +273,6 @@ def put_down(controller,pneumatic,strategy,front):
     
     time.sleep(1)
     color_pattern = color_pt_front if front else color_pt_back
-    strategy.get_logger().info(f"color pt for debug front: {color_pt_front} color pt back : {color_pt_back} ")
     strategy.get_logger().info(f"color_pattern {color_pattern}")
     color_to_N20=int(str(color_pattern).replace('1', '4').replace('0','1'))
     strategy.get_logger().info(f"TO n20 command  {color_to_N20}")
@@ -289,7 +287,7 @@ def put_down(controller,pneumatic,strategy,front):
     if front:
         ESP_FRONT_IDLE=True
     else: ESP_BACK_IDLE=True
-    controller.dawer(0)
+    
     if SHUTDOWN_REQUESTED:
         return
     
@@ -319,9 +317,11 @@ def front_task(strategy, front_controller=None,pneumatic_controller=None):
                 action = params.get('action')
                 if action == 'pick_up':
                     front_controller.n20(2222)
+                    front_controller.dawer(0)
                     strategy.get_logger().info(f"🔧 Front prepare for pick_up: n20(2222)")
                 else:
                     cmd_to_n20=int(str(color_pt_front).replace('0','2').replace('1','4'))
+                    front_controller.dawer(1)
                     front_controller.n20(cmd_to_n20)
             elif command =='put_down':
                 put_down(front_controller,pneumatic_controller,strategy,True)
@@ -349,13 +349,12 @@ def back_task(strategy, back_controller=None,pneumatic_controller=None):
                 action = params.get('action')
                 if action == 'pick_up':
                     back_controller.n20(2222)
+                    back_controller.dawer(0)
                     strategy.get_logger().info(f"🔧 Back prepare for pick_up: n20(2222)")
                 else:
                     cmd_to_n20=int(str(color_pt_back).replace('0','2').replace('1','4'))
+                    back_controller.dawer(1)
                     back_controller.n20(cmd_to_n20)
-                    back_controller.n20(cmd_to_n20)
-                    back_controller.n20(cmd_to_n20)
-                    print("bbaaaaatht prepare ")
             elif command =='put_down':
                 put_down(back_controller,pneumatic_controller,strategy,False)
             elif command =='pick_up':

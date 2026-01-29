@@ -180,7 +180,7 @@ class StrategyManager(Node):
                     executor_module.ESP_FRONT_IDLE=False
                 if(device == "ESP_back" ) :
                     executor_module.ESP_BACK_IDLE=False
-                if(device == "STM"):
+                if(device == "STM" and command !="set_position"):
                     executor_module.IDLE_FOR_SYSTEMS=False
                     
                 if wait :

@@ -1178,8 +1178,8 @@ class HybridAStarNode(Node):
                         continue
                     
                     # Calculate center of batch
-                    avg_x = sum(m.map_pos.x for m in b.members) / len(b.members)
-                    avg_y = sum(m.map_pos.y for m in b.members) / len(b.members)
+                    avg_x =b.center.x
+                    avg_y = b.center.y
                     
                     # Calculate distance
                     distance = math.sqrt((avg_x - pos_x)**2 + (avg_y - pos_y)**2)

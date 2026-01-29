@@ -64,7 +64,7 @@ class FrontSystemsController(Node):
         msg.data = value
         self.dawer_pub.publish(msg)
 
-    def IDLE(self, timeout=0.5):
+    def IDLE(self, timeout=2.0):
         """
         Call the /front/isIDLE service
         

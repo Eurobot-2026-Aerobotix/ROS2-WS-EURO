@@ -107,7 +107,7 @@ class STM32Controller(Node):
             self.get_logger().error(f'Move_backward service error: {str(e)}')
             return False, f'Service error: {str(e)}'
 
-    def rotate(self, angle, is_radian, is_smooth=0.0, timeout=10.0):
+    def rotate(self, angle, is_radian, is_smooth=0.0, timeout=2.0):
         """Send a request to rotate by a certain angle"""
         if not self.navi_client.wait_for_service(timeout_sec=2.0):
             self.get_logger().error('NaviStm service not available')
@@ -139,9 +139,9 @@ class STM32Controller(Node):
             self.get_logger().error(f'Rotate service error: {str(e)}')
             return False, f'Service error: {str(e)}'
 
-    def orientate(self, orientation, is_radian, is_smooth=0.0, timeout=10.0):
+    def orientate(self, orientation, is_radian, is_smooth=0.0, timeout=2.0):
         """Send a request to orientate to a specific orientation"""
-        if not self.navi_client.wait_for_service(timeout_sec=10.0):
+        if not self.navi_client.wait_for_service(timeout_sec=2.0):
             self.get_logger().error('NaviStm service not available')
             return False, 'NaviStm service not available'
         
@@ -172,9 +172,9 @@ class STM32Controller(Node):
             self.get_logger().error(f'Orientate service error: {str(e)}')
             return False, f'Service error: {str(e)}'
 
-    def go_to(self, x, y, speed, is_smooth=1.0, timeout=10.0):
+    def go_to(self, x, y, speed, is_smooth=1.0, timeout=2.0):
         """Send a request to go to a specific position (x, y) at given speed"""
-        if not self.navi_client.wait_for_service(timeout_sec=10.0):
+        if not self.navi_client.wait_for_service(timeout_sec=2.0):
             self.get_logger().error('NaviStm service not available')
             return False, 'NaviStm service not available'
         
@@ -203,9 +203,9 @@ class STM32Controller(Node):
         except Exception as e:
             self.get_logger().error(f'Go_to service error: {str(e)}')
             return False, f'Service error: {str(e)}'
-    def go_to_backwards(self, x, y, speed,is_smooth=1.0, timeout=10.0):
+    def go_to_backwards(self, x, y, speed,is_smooth=1.0, timeout=2.0):
         """Send a request to go to backwards a specific position (x, y) at given speed"""
-        if not self.navi_client.wait_for_service(timeout_sec=10.0):
+        if not self.navi_client.wait_for_service(timeout_sec=2.0):
             self.get_logger().error('NaviStm service not available')
             return False, 'NaviStm service not available'
         
@@ -234,9 +234,9 @@ class STM32Controller(Node):
         except Exception as e:
             self.get_logger().error(f'Go_to_backwards service error: {str(e)}')
             return False, f'Service error: {str(e)}'
-    def bezier_curve(self, x1, y1, x2, y2, x3, y3, speed,  is_smooth=0.0,timeout=1.0):
+    def bezier_curve(self, x1, y1, x2, y2, x3, y3, speed,  is_smooth=0.0,timeout=2.0):
         """Send a request to do a bezier curve at given speed"""
-        if not self.navi_client.wait_for_service(timeout_sec=10.0):
+        if not self.navi_client.wait_for_service(timeout_sec=2.0):
             self.get_logger().error('NaviStm service not available')
             return False, 'NaviStm service not available'
         request = NaviStm.Request()
@@ -264,9 +264,9 @@ class STM32Controller(Node):
         except Exception as e:
             self.get_logger().error(f'Bezier_curve service error: {str(e)}')
             return False, f'Service error: {str(e)}'
-    def bezier_curve_backwards(self, x1, y1, x2, y2, x3, y3, speed,is_smooth=0.0, timeout=10.0 ):
+    def bezier_curve_backwards(self, x1, y1, x2, y2, x3, y3, speed,is_smooth=0.0, timeout=2.0 ):
         """Send a request to do a bezier curve backwards at given speed"""
-        if not self.navi_client.wait_for_service(timeout_sec=10.0):
+        if not self.navi_client.wait_for_service(timeout_sec=2.0):
             self.get_logger().error('NaviStm service not available')
             return False, 'NaviStm service not available'
         
@@ -295,9 +295,9 @@ class STM32Controller(Node):
         except Exception as e:
             self.get_logger().error(f'Bezier_curve_backwards service error: {str(e)}')
             return False, f'Service error: {str(e)}'
-    def move_forward_with_left_deviation(self, distance, deviation, speed, is_smooth=0.0, timeout=10.0):
+    def move_forward_with_left_deviation(self, distance, deviation, speed, is_smooth=0.0, timeout=2.0):
         """Send a request to move forward with left deviation"""
-        if not self.navi_client.wait_for_service(timeout_sec=10.0):
+        if not self.navi_client.wait_for_service(timeout_sec=2.0):
             self.get_logger().error('NaviStm service not available')
             return False, 'NaviStm service not available'
         
@@ -326,7 +326,7 @@ class STM32Controller(Node):
         except Exception as e:
             self.get_logger().error(f'Move_forward_with_left_deviation service error: {str(e)}')
             return False, f'Service error: {str(e)}'
-    def circle_curve(self, x, y, angle,speed, timeout=10.0, is_smooth=0.0):
+    def circle_curve(self, x, y, angle,speed, timeout=2.0, is_smooth=0.0):
         """Send a request to rotate by a certain angle"""
         if not self.navi_client.wait_for_service(timeout_sec=2.0):
             self.get_logger().error('NaviStm service not available')
@@ -357,9 +357,9 @@ class STM32Controller(Node):
         except Exception as e:
             self.get_logger().error(f'circle curve  service error: {str(e)}')
             return False, f'Service error: {str(e)}'
-    def set_position(self,x,y,angle, timeout=10.0):
+    def set_position(self,x,y,angle, timeout=2.0):
         """Send a request to set position (synchronous)"""
-        if not self.navi_client.wait_for_service(timeout_sec=10.0):
+        if not self.navi_client.wait_for_service(timeout_sec=2.0):
             self.get_logger().error('NaviStm service not available')
             return False, 'NaviStm service not available'
             
@@ -388,9 +388,9 @@ class STM32Controller(Node):
         except Exception as e:
             self.get_logger().error(f'Set position service error: {str(e)}')
             return False, f'Service error: {str(e)}'
-    def led_blink(self, timeout=10.0):
+    def led_blink(self, timeout=2.0):
         """Send a request to blink LED (synchronous)"""
-        if not self.navi_client.wait_for_service(timeout_sec=10.0):
+        if not self.navi_client.wait_for_service(timeout_sec=2.0):
             self.get_logger().error('NaviStm service not available')
             return False, 'NaviStm service not available'
             
@@ -420,7 +420,7 @@ class STM32Controller(Node):
             self.get_logger().error(f'LED blink service error: {str(e)}')
             return False, f'Service error: {str(e)}'
 
-    def IDLE(self, timeout=10.0):
+    def IDLE(self, timeout=2.0):
         """
         Check if the current navigation command has completed
         
@@ -430,7 +430,7 @@ class STM32Controller(Node):
                    is_completed: bool - if the movement command has finished
                    response: service response or error message
         """
-        if not self.navi_client.wait_for_service(timeout_sec=10.0):
+        if not self.navi_client.wait_for_service(timeout_sec=2.0):
             self.get_logger().error('NaviStm service not available for status check')
             return False, False, 'NaviStm service not available'
         
@@ -469,7 +469,7 @@ class STM32Controller(Node):
                    is_completed: bool - if the movement command has finished
                    response: service response or error message
         """
-        if not self.navi_client.wait_for_service(timeout_sec=10.0):
+        if not self.navi_client.wait_for_service(timeout_sec=2.0):
             self.get_logger().error('NaviStm service not available for status check')
             return False, False, 'NaviStm service not available'
         
@@ -546,7 +546,7 @@ class STM32Controller(Node):
         
         return False, "ROS shutdown during wait"
 
-    def stop(self, timeout=5.0):
+    def stop(self, timeout=2.0):
         """Send an emergency stop command to the STM32"""
         if not self.navi_client.wait_for_service(timeout_sec=2.0):
             self.get_logger().error('NaviStm service not available for stop command')

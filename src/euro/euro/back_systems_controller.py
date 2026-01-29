@@ -64,7 +64,7 @@ class BackSystemsController(Node):
         msg.data = value
         self.dawer_pub.publish(msg)
 
-    def IDLE(self, timeout=10.0):
+    def IDLE(self, timeout=2.0):
         """
         Call the /back/isIDLE service
         
