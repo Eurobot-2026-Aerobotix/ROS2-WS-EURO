@@ -87,8 +87,9 @@ class HybridAStarNode(Node):
         self.obstacle_sources: Dict[str, str] = {}  # obstacle_id -> source
         
         # Batch storage (for color pattern queries) - separate for fx and sx
-        self.batches_fx: Dict[int, Batch] = {}
-        self.batches_sx: Dict[int, Batch] = {}
+        # Using known_id as key to avoid overwrites when batch_id is reused
+        self.batches_fx: Dict[str, Batch] = {}
+        self.batches_sx: Dict[str, Batch] = {}
         self.batches_lock = Lock()
         
         # Static obstacles - now using permanent area instead of JSON file
@@ -500,12 +501,12 @@ class HybridAStarNode(Node):
                     if source == 'fx' and not batch.members:
                         continue
                     
-                    # Store batch by ID in the appropriate dictionary FIRST (always store, even if can't create obstacles)
+                    # Store batch by known_id in the appropriate dictionary FIRST (always store, even if can't create obstacles)
                     with self.batches_lock:
                         if source == 'fx':
-                            self.batches_fx[batch.batch_id] = batch
+                            self.batches_fx[batch.known_id] = batch
                         else:
-                            self.batches_sx[batch.batch_id] = batch
+                            self.batches_sx[batch.known_id] = batch
                     
                     if source == 'sx':
                         # SX: Use predefined batch position from lookup table
