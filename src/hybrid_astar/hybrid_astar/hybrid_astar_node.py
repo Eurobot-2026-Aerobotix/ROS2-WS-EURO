@@ -495,7 +495,9 @@ class HybridAStarNode(Node):
 
                 # Process each batch
                 for batch in msg.batches:
-                    if not batch.members:
+                    # For FX batches, skip if no members
+                    # For SX batches, we use predefined positions, so members are not required
+                    if source == 'fx' and not batch.members:
                         continue
                     
                     if source == 'sx':
