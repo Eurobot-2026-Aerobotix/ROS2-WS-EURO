@@ -139,6 +139,7 @@ def handle_color_pattner(strategy):
     pos = Point()
     pos.x = float(x)
     pos.y = float(y)
+    strategy.get_logger().info(f"robot position : x={x} , y={y}")
     pos.z = 0.0
     known_id = ''
     color_pattern, success, direction, batch_center = strategy.pathfinder.get_batch_color(known_id, pos)

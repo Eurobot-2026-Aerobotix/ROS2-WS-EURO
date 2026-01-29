@@ -1183,6 +1183,7 @@ class HybridAStarNode(Node):
                 closest_batch = None
                 
                 for b in all_batches.values():
+                    self.get_logger().info(f"batch known_id={b.known_id} and  its center : {b.center}")
                     if not b.members:
                         continue
                     
