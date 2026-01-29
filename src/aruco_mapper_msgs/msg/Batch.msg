@@ -7,3 +7,4 @@ aruco_mapper_msgs/BatchMember[] members
 string known_id
 string direction
 string pattern
+string state

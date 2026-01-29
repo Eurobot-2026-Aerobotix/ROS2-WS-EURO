@@ -11,6 +11,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/BatchMember.msg"
   "msg/Batch.msg"
   "msg/ArucoMapperState.msg"
+  "srv/GetStableBatches.srv"
   DEPENDENCIES geometry_msgs builtin_interfaces
 )
 

@@ -1,0 +1,352 @@
+Home
+Strategy
+Pathfinding
+Real-Time
+⚙️
+AeRobotix Logo
+Eurobot Dashboard
+Prepare Robot
+Start Strategy
+test_wait
+Stop Strategy
+View Output:
+
+Pathfinding
+[Process completed]
+🚀 Starting pathfinding node...
+tee: '': No such file or directory
+[INFO] [launch]: All log files can be found below /home/ubuntu/.ros/log/2026-01-29-20-46-01-513070-ubuntu-14080
+[INFO] [launch]: Default logging verbosity is set to INFO
+[INFO] [hybrid_astar_node.py-1]: process started with pid [14084]
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 🗺️  Map Manager initialized[0m
+[hybrid_astar_node.py-1] 🔧 Precomputing footprints for 32 orientations...
+[hybrid_astar_node.py-1] ✅ Footprints precomputed (avg 150.0 cells per orientation)
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 🚫 Adding permanent obstacle area...[0m
+[hybrid_astar_node.py-1] 🚫 Added permanent obstacle area: (0,600) to (450,2400)
+[hybrid_astar_node.py-1]    Size: 450mm × 1800mm
+[hybrid_astar_node.py-1]    Grid cells: [0:19, 24:97]
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ============================================================[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] Hybrid A* Path Planner Node Ready![0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ============================================================[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] Grid: 80x120 @ 25.0mm[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] Robot: 300.0x300.0mm[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] Safety margin: 5.0mm[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] Map: 2000.0x3000.0mm[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ============================================================[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] Waiting for path planning requests...[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's2' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's1' with pattern ['yellow', 'yellow', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's8' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's7' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated SX obstacles from 4 batches | Total obstacles: FX=0, SX=16, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated FX obstacles from 0 batches | Total obstacles: FX=0, SX=16, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated FX obstacles from 0 batches | Total obstacles: FX=0, SX=16, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's3' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's1' with pattern ['yellow', 'yellow', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's2' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's8' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's7' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated SX obstacles from 5 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated FX obstacles from 0 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's3' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's1' with pattern ['yellow', 'yellow', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's2' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's8' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's7' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated SX obstacles from 5 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated FX obstacles from 0 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's2' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's3' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's1' with pattern ['yellow', 'yellow', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's8' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's7' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated SX obstacles from 5 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated FX obstacles from 0 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's2' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's3' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's1' with pattern ['yellow', 'yellow', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's8' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's7' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated SX obstacles from 5 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated FX obstacles from 0 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's2' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's3' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's1' with pattern ['yellow', 'yellow', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's8' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's7' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated SX obstacles from 5 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated FX obstacles from 0 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's2' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's3' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's1' with pattern ['yellow', 'yellow', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's8' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's7' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated SX obstacles from 5 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's3' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's2' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's1' with pattern ['yellow', 'yellow', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's8' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's7' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated SX obstacles from 5 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated FX obstacles from 0 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated FX obstacles from 0 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's3' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's2' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's1' with pattern ['yellow', 'yellow', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's8' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's7' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated SX obstacles from 5 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated FX obstacles from 0 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's2' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's3' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's1' with pattern ['yellow', 'yellow', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's8' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's7' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated SX obstacles from 5 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated FX obstacles from 0 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's2' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's3' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's1' with pattern ['yellow', 'yellow', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's8' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's7' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated SX obstacles from 5 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's3' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's2' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's1' with pattern ['yellow', 'yellow', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's8' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's7' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated SX obstacles from 5 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated FX obstacles from 0 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's2' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's3' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's1' with pattern ['yellow', 'yellow', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's8' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's7' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated SX obstacles from 5 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated FX obstacles from 0 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's2' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's3' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's1' with pattern ['yellow', 'yellow', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's8' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's7' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated SX obstacles from 5 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated FX obstacles from 0 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's2' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's3' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's1' with pattern ['yellow', 'yellow', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's8' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's7' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated SX obstacles from 5 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated FX obstacles from 0 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's2' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's3' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's1' with pattern ['yellow', 'yellow', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's8' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's7' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated SX obstacles from 5 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated FX obstacles from 0 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's3' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's2' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's1' with pattern ['yellow', 'yellow', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's8' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's7' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated SX obstacles from 5 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated FX obstacles from 0 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's3' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's2' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's1' with pattern ['yellow', 'yellow', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's8' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's7' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated SX obstacles from 5 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated FX obstacles from 0 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's2' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's3' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's1' with pattern ['yellow', 'yellow', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's8' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's7' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated SX obstacles from 5 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated FX obstacles from 0 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's2' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's3' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's1' with pattern ['yellow', 'yellow', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's7' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [33m[hybrid_astar_node] ⚠️  Batch 's8' has no valid pattern (pattern=''), using default pattern 'bbbb'[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's8' with pattern ['blue', 'blue', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated SX obstacles from 5 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's2' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's1' with pattern ['yellow', 'yellow', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's7' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [33m[hybrid_astar_node] ⚠️  Batch 's3' has no valid pattern (pattern=''), using default pattern 'bbbb'[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's3' with pattern ['blue', 'blue', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated SX obstacles from 4 batches | Total obstacles: FX=0, SX=16, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated FX obstacles from 0 batches | Total obstacles: FX=0, SX=16, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated FX obstacles from 0 batches | Total obstacles: FX=0, SX=16, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's2' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's1' with pattern ['yellow', 'yellow', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's8' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's7' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated SX obstacles from 4 batches | Total obstacles: FX=0, SX=16, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated FX obstacles from 0 batches | Total obstacles: FX=0, SX=16, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's2' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's1' with pattern ['yellow', 'yellow', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's8' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's7' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated SX obstacles from 4 batches | Total obstacles: FX=0, SX=16, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated FX obstacles from 0 batches | Total obstacles: FX=0, SX=16, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's2' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's1' with pattern ['yellow', 'yellow', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's8' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's7' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated SX obstacles from 4 batches | Total obstacles: FX=0, SX=16, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated FX obstacles from 0 batches | Total obstacles: FX=0, SX=16, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's2' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's3' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's1' with pattern ['yellow', 'yellow', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's8' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's7' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated SX obstacles from 5 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated FX obstacles from 0 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's2' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's3' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's1' with pattern ['yellow', 'yellow', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's8' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's7' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated SX obstacles from 5 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's3' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's1' with pattern ['yellow', 'yellow', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's8' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's7' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [33m[hybrid_astar_node] ⚠️  Batch 's2' has no valid pattern (pattern=''), using default pattern 'bbbb'[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's2' with pattern ['blue', 'blue', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated SX obstacles from 5 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated FX obstacles from 0 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated FX obstacles from 0 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's3' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's1' with pattern ['yellow', 'yellow', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's7' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [33m[hybrid_astar_node] ⚠️  Batch 's8' has no valid pattern (pattern=''), using default pattern 'bbbb'[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's8' with pattern ['blue', 'blue', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated SX obstacles from 4 batches | Total obstacles: FX=0, SX=16, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated FX obstacles from 0 batches | Total obstacles: FX=0, SX=16, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's2' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's3' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's1' with pattern ['yellow', 'yellow', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's7' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated SX obstacles from 4 batches | Total obstacles: FX=0, SX=16, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated FX obstacles from 0 batches | Total obstacles: FX=0, SX=16, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's2' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's3' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's1' with pattern ['yellow', 'yellow', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's7' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated SX obstacles from 4 batches | Total obstacles: FX=0, SX=16, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated FX obstacles from 0 batches | Total obstacles: FX=0, SX=16, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's3' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's1' with pattern ['yellow', 'yellow', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's7' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [33m[hybrid_astar_node] ⚠️  Batch 's2' has no valid pattern (pattern=''), using default pattern 'bbbb'[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's2' with pattern ['blue', 'blue', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated SX obstacles from 4 batches | Total obstacles: FX=0, SX=16, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated FX obstacles from 0 batches | Total obstacles: FX=0, SX=16, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's3' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's1' with pattern ['yellow', 'yellow', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's8' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's7' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated SX obstacles from 4 batches | Total obstacles: FX=0, SX=16, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated FX obstacles from 0 batches | Total obstacles: FX=0, SX=16, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's2' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's3' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's1' with pattern ['yellow', 'yellow', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's8' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's7' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated SX obstacles from 5 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated FX obstacles from 0 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's2' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's3' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's1' with pattern ['yellow', 'yellow', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's8' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's7' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated SX obstacles from 5 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated FX obstacles from 0 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's2' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's3' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's1' with pattern ['yellow', 'yellow', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's8' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's7' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated SX obstacles from 5 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated FX obstacles from 0 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's2' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's3' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's1' with pattern ['yellow', 'yellow', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's8' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's7' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated SX obstacles from 5 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated FX obstacles from 0 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's2' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's1' with pattern ['yellow', 'yellow', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's8' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's7' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [33m[hybrid_astar_node] ⚠️  Batch 's3' has no valid pattern (pattern=''), using default pattern 'bbbb'[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's3' with pattern ['blue', 'blue', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated SX obstacles from 5 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated FX obstacles from 0 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's2' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's1' with pattern ['yellow', 'yellow', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's7' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's8' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated SX obstacles from 4 batches | Total obstacles: FX=0, SX=16, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated FX obstacles from 0 batches | Total obstacles: FX=0, SX=16, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's2' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's3' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's1' with pattern ['yellow', 'yellow', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's7' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's8' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated SX obstacles from 5 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated FX obstacles from 0 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's2' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's3' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's1' with pattern ['yellow', 'yellow', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's7' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [33m[hybrid_astar_node] ⚠️  Batch 's8' has no valid pattern (pattern=''), using default pattern 'bbbb'[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's8' with pattern ['blue', 'blue', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated SX obstacles from 5 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated FX obstacles from 0 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's2' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's3' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's1' with pattern ['yellow', 'yellow', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's7' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated SX obstacles from 4 batches | Total obstacles: FX=0, SX=16, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated FX obstacles from 0 batches | Total obstacles: FX=0, SX=16, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's2' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's3' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's1' with pattern ['yellow', 'yellow', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's8' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's7' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated SX obstacles from 5 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's2' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's3' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's1' with pattern ['yellow', 'yellow', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's8' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's7' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated SX obstacles from 5 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated FX obstacles from 0 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated FX obstacles from 0 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's2' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's3' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's1' with pattern ['yellow', 'yellow', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's8' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's7' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated SX obstacles from 5 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated FX obstacles from 0 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's3' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's1' with pattern ['yellow', 'yellow', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's8' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's7' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [33m[hybrid_astar_node] ⚠️  Batch 's2' has no valid pattern (pattern=''), using default pattern 'bbbb'[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's2' with pattern ['blue', 'blue', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated SX obstacles from 5 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated FX obstacles from 0 batches | Total obstacles: FX=0, SX=20, Enemy=0[0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's3' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's1' with pattern ['yellow', 'yellow', 'blue', 'blue'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's8' with pattern ['blue', 'yellow', 'blue', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] ✅ Creating 4 obstacles for batch 's7' with pattern ['blue', 'blue', 'yellow', 'yellow'][0m
+[hybrid_astar_node.py-1] [0m[hybrid_astar_node] 📦 Updated SX obstacles from 4 batches | Total obstacles: FX=0, SX=16, Enemy=0[0m

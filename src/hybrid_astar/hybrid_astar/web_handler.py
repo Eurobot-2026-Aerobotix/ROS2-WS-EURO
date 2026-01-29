@@ -240,8 +240,6 @@ class WebHandlerNode(Node):
                 self.get_logger().warn("⚠️  No batches provided")
                 return
             
-            self.get_logger().info(f"📦 Received {len(web_batches)} batches from web")
-            
             # Convert to ROS2 message
             aruco_msg = ArucoMapperState()
             aruco_msg.stamp = self.get_clock().now().to_msg()
@@ -270,10 +268,6 @@ class WebHandlerNode(Node):
             
             # Publish to /aruco_mapper_state
             self.aruco_state_pub.publish(aruco_msg)
-            
-            self.get_logger().info(
-                f"📤 Sent {len(web_batches)} batches to /aruco_mapper_state"
-            )
             
         except Exception as e:
             self.get_logger().error(f"❌ Error handling batches: {e}")
