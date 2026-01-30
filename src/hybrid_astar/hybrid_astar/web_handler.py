@@ -22,12 +22,14 @@ import rclpy
 from rclpy.node import Node
 import math
 import json
+import requests
 from typing import List, Dict, Optional
 
 # ROS2 messages
 from std_msgs.msg import String
 from geometry_msgs.msg import PoseStamped, Quaternion, Point
 from aruco_mapper_msgs.msg import ArucoMapperState, Batch, BatchMember
+from aruco_mapper_msgs.srv import GetStableBatches
 from hybrid_astar.srv import ComputePath, GetBatchColorPattern
 
 
@@ -132,6 +134,16 @@ class WebHandlerNode(Node):
             '/get_batch_color_pattern'
         )
         
+        # Service servers
+        self.get_stable_batches_server = self.create_service(
+            GetStableBatches,
+            '/aruco_mapper/get_stable_batches_web',
+            self.handle_get_stable_batches_web
+        )
+        
+        # Web server URL for fetching batches
+        self.web_server_url = 'http://localhost:8000'
+        
         # Wait for services
         self.get_logger().info("⏳ Waiting for /compute_path service...")
         if not self.path_service_client.wait_for_service(timeout_sec=5.0):
@@ -160,6 +172,8 @@ class WebHandlerNode(Node):
         self.get_logger().info("   - /web/goal_pose")
         self.get_logger().info("   - /web/enemy_pose → /obstacle_relative")
         self.get_logger().info("   - /web/compute_path")
+        self.get_logger().info("   Services:")
+        self.get_logger().info("   - /aruco_mapper/get_stable_batches_web (provides batches to map)")
         self.get_logger().info("=" * 60)
     
     # ========================================================================
@@ -398,6 +412,119 @@ class WebHandlerNode(Node):
     # ========================================================================
     # Service Calls
     # ========================================================================
+    
+    def handle_get_stable_batches_web(self, request: GetStableBatches.Request, response: GetStableBatches.Response) -> GetStableBatches.Response:
+        """
+        Service handler for /aruco_mapper/get_stable_batches_web
+        Fetches batches from the web server (server.py) and returns them as ArucoMapperState
+        """
+        self.get_logger().info(f"🔍 GetStableBatches WEB service called (filter: '{request.batch_types_filter}')")
+        
+        try:
+            # Fetch batches from web server
+            web_response = requests.get(f"{self.web_server_url}/web_batches", timeout=5.0)
+            
+            if web_response.status_code != 200:
+                self.get_logger().error(f"❌ Failed to fetch batches from web server: HTTP {web_response.status_code}")
+                self.get_logger().error(f"   Response text: {web_response.text[:200]}")
+                response.stable_state = ArucoMapperState()
+                response.stable_state.stamp = self.get_clock().now().to_msg()
+                response.stable_state.initialized = False
+                return response
+            
+            web_data = web_response.json()
+            web_batches = web_data.get('batches', [])
+            
+            self.get_logger().info(f"📦 Retrieved {len(web_batches)} batches from web server")
+            
+            # Convert web batches to ArucoMapperState
+            aruco_state = ArucoMapperState()
+            aruco_state.stamp = self.get_clock().now().to_msg()
+            aruco_state.initialized = True
+            
+            for web_batch in web_batches:
+                # Filter by known_id if specified
+                if request.specific_known_id and web_batch.get('known_id') != request.specific_known_id:
+                    continue
+                
+                # NOTE: Skip batch_types_filter for web batches since they're manually selected
+                # Web batches can have any known_id format, not just 's', 'f', 'g' prefixes
+                
+                # Create Batch message
+                batch = Batch()
+                batch.batch_id = web_batch.get('batch_id', 0)
+                batch.known_id = web_batch.get('known_id', '')
+                batch.direction = web_batch.get('direction', 'horizontal')
+                batch.count = web_batch.get('count', 4)
+                batch.state = 'STABLE_VALID'  # Always set as STABLE_VALID for web batches
+                
+                # Calculate pattern from members
+                members_data = web_batch.get('members', [])
+                pattern_chars = []
+                for member in members_data:
+                    color = member.get('color', 'yellow')
+                    pattern_chars.append('y' if color == 'yellow' else 'b')
+                batch.pattern = ''.join(pattern_chars)
+                
+                # Set batch center (average of member positions or from batch data)
+                if members_data:
+                    avg_x = sum(m.get('position', {}).get('x', 0) for m in members_data) / len(members_data)
+                    avg_y = sum(m.get('position', {}).get('y', 0) for m in members_data) / len(members_data)
+                    batch.center = Point()
+                    batch.center.x = self.mm_to_m(avg_x)
+                    batch.center.y = self.mm_to_m(avg_y)
+                    batch.center.z = 0.0
+                
+                # Add members
+                for member_data in members_data:
+                    member = BatchMember()
+                    member.aruco_id = member_data.get('aruco_id', 0)
+                    member.color = member_data.get('color', 'yellow')
+                    
+                    # Position (convert from mm to m)
+                    position = member_data.get('position', {})
+                    member.map_pos = Point()
+                    member.map_pos.x = self.mm_to_m(position.get('x', 0))
+                    member.map_pos.y = self.mm_to_m(position.get('y', 0))
+                    member.map_pos.z = 0.0
+                    
+                    batch.members.append(member)
+                
+                aruco_state.batches.append(batch)
+            
+            response.stable_state = aruco_state
+            self.get_logger().info(f"✅ Returning {len(aruco_state.batches)} batches to caller")
+            return response
+            
+        except requests.RequestException as e:
+            self.get_logger().error(f"❌ Error fetching batches from web server: {e}")
+            self.get_logger().error("   Is the Flask server running on port 8000?")
+            response.stable_state = ArucoMapperState()
+            response.stable_state.stamp = self.get_clock().now().to_msg()
+            response.stable_state.initialized = False
+            return response
+        except Exception as e:
+            self.get_logger().error(f"❌ Error processing batches: {e}")
+            import traceback
+            self.get_logger().error(traceback.format_exc())
+            response.stable_state = aruco_state
+            self.get_logger().info(f"✅ Returning {len(aruco_state.batches)} batches to caller")
+            return response
+            
+        except requests.RequestException as e:
+            self.get_logger().error(f"❌ Error fetching batches from web server: {e}")
+            response.stable_state = ArucoMapperState()
+            response.stable_state.stamp = self.get_clock().now().to_msg()
+            response.stable_state.initialized = False
+            return response
+        except Exception as e:
+            self.get_logger().error(f"❌ Error processing batches: {e}")
+            import traceback
+            self.get_logger().error(traceback.format_exc())
+            response.stable_state = ArucoMapperState()
+            response.stable_state.stamp = self.get_clock().now().to_msg()
+            response.stable_state.initialized = False
+            return response
     
     def compute_path_async(self):
         """Call /compute_path service asynchronously"""

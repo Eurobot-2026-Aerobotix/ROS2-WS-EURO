@@ -34,7 +34,17 @@ def generate_launch_description():
         emulate_tty=True,
     )
     
+    # Web Handler Node (bridge between web dashboard and ROS2)
+    web_handler_node = Node(
+        package='hybrid_astar',
+        executable='web_handler.py',
+        name='web_handler_node',
+        output='screen',
+        emulate_tty=True,
+    )
+    
     return LaunchDescription([
         params_file_arg,
-        hybrid_astar_node
+        hybrid_astar_node,
+        web_handler_node
     ])

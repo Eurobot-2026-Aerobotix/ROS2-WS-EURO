@@ -35,7 +35,7 @@ class MapManager:
     - Provide obstacle visualization markers
     """
     
-    def __init__(self, node: Node, params: dict, get_stable_batches_client):
+    def __init__(self, node: Node, params: dict, get_stable_batches_client, get_stable_batches_client_web=None):
         """
         Initialize the map manager
         
@@ -43,10 +43,12 @@ class MapManager:
             node: ROS2 node instance (for logging, time, etc)
             params: Parameter dictionary containing robot, map, and obstacle configs
             get_stable_batches_client: Service client for /aruco_mapper/get_stable_batches
+            get_stable_batches_client_web: Optional service client for /aruco_mapper/get_stable_batches_web
         """
         self.node = node
         self.params = params
         self.get_stable_batches_client = get_stable_batches_client
+        self.get_stable_batches_client_web = get_stable_batches_client_web
         
         # Predefined batch positions (in meters) for SX batches
         self.predefined_batch_positions = {
@@ -280,17 +282,30 @@ class MapManager:
     
     def handle_update_map(self, request: Trigger.Request, response: Trigger.Response) -> Trigger.Response:
         """
-        Service handler: Update map by requesting stable batches from ArUco mapper
+        Service handler: Update map by requesting stable batches from ArUco mapper or web handler
         Calls /get_stable_batches service and processes the returned batches
         Uses 'sfg' filter to get all stable batches
+        
+        Priority: Try web service first (for simulation), then fall back to aruco_mapper (for real robot)
         """
         self.node.get_logger().info("🗺️  Update map service called")
         
-        # Check if GetStableBatches service is available
-        if not self.get_stable_batches_client.service_is_ready():
-            self.node.get_logger().error("❌ /aruco_mapper/get_stable_batches service not available")
+        # Try web service first if available
+        client_to_use = None
+        service_name = ""
+        
+        if self.get_stable_batches_client_web and self.get_stable_batches_client_web.service_is_ready():
+            client_to_use = self.get_stable_batches_client_web
+            service_name = "/aruco_mapper/get_stable_batches_web"
+            self.node.get_logger().info("📡 Using web handler service (simulation mode)")
+        elif self.get_stable_batches_client.service_is_ready():
+            client_to_use = self.get_stable_batches_client
+            service_name = "/aruco_mapper/get_stable_batches"
+            self.node.get_logger().info("📡 Using aruco_mapper service (real robot mode)")
+        else:
+            self.node.get_logger().error("❌ No GetStableBatches service available")
             response.success = False
-            response.message = "ArUco mapper service not available"
+            response.message = "No batch service available"
             return response
         
         # Create request for GetStableBatches with 'sfg' filter (all batches)
@@ -299,15 +314,15 @@ class MapManager:
         stable_request.specific_known_id = ""  # Get all batches matching the filter
         
         # Call service asynchronously and register callback with response object
-        self.node.get_logger().info(f"📡 Calling /aruco_mapper/get_stable_batches service...")
-        future = self.get_stable_batches_client.call_async(stable_request)
+        self.node.get_logger().info(f"📡 Calling {service_name} service...")
+        future = client_to_use.call_async(stable_request)
         future.add_done_callback(lambda f: self._handle_get_stable_batches_response(f, response))
         
         # Return immediately - response will be populated by callback
         # Note: This is a limitation - service returns before processing completes
         # But it avoids the deadlock issue
         response.success = True
-        response.message = "Map update triggered (processing asynchronously)"
+        response.message = f"Map update triggered from {service_name} (processing asynchronously)"
         return response
     
     def _handle_get_stable_batches_response(self, future, trigger_response=None):
@@ -338,14 +353,6 @@ class MapManager:
                 state = batch.state.upper()
                 if state in ['STABLE_VALID', 'OBSTRUCTED',"UNSTABLE"]:
                     filtered_batches.append(batch)
-                    self.node.get_logger().info(
-                        f"  ✅ Accepting batch '{batch.known_id}' with state: {state}"
-                    )
-                else:
-                    self.node.get_logger().info(
-                        f"  ⏭️  Skipping batch '{batch.known_id}' with state: {state} pattern='{batch.pattern}'  "
-                        f"(only STABLE_VALID and OBSTRUCTED are processed)"
-                    )
 
             self.node.get_logger().info(
                 f"📊 Filtered {len(filtered_batches)}/{num_batches} batches "
@@ -357,6 +364,12 @@ class MapManager:
             sx_batches = [b for b in filtered_batches if b.known_id.startswith('s')]
             fx_batches = [b for b in filtered_batches if b.known_id.startswith('f')]
             gx_batches = [b for b in filtered_batches if b.known_id.startswith('g')]
+            
+            # All other batches (web batches with custom names) should be treated as FX
+            other_batches = [b for b in filtered_batches if not (b.known_id.startswith('s') or b.known_id.startswith('f') or b.known_id.startswith('g'))]
+            if other_batches:
+                self.node.get_logger().info(f"🌐 Found {len(other_batches)} web batches with custom names, treating as FX")
+                fx_batches.extend(other_batches)
             
             obstacles_before = len(self.obstacles)
             
@@ -551,9 +564,6 @@ class MapManager:
                     pattern_str = batch.pattern if batch.pattern else ""
                     pattern_colors = self.parse_pattern_colors(pattern_str)
                     
-                    if pattern_colors:
-                        self.node.get_logger().info(f"✅ Parsed pattern '{pattern_str}' for FX batch: {pattern_colors}")
-                    
                     for idx, member in enumerate(batch.members):
                         # Create obstacle from batch member
                         obs = Obstacle()
@@ -592,6 +602,7 @@ class MapManager:
 
                         obs.detected_at = msg.stamp
 
+                        self.node.get_logger().info(f"  ✅ Created obstacle '{obs.id}' at ({center_x_mm:.0f}, {center_y_mm:.0f}) mm, color={obs.color}")
                         # Add to obstacles list and track source
                         self.obstacles.append(obs)
                         self.obstacle_sources[obs.id] = source
@@ -600,7 +611,6 @@ class MapManager:
             fx_count = sum(1 for v in self.obstacle_sources.values() if v == 'fx')
             sx_count = sum(1 for v in self.obstacle_sources.values() if v == 'sx')
             enemy_count = sum(1 for v in self.obstacle_sources.values() if v == 'enemy')
-            
             self.node.get_logger().info(
                 f"📦 Updated {source.upper()} obstacles from {len(msg.batches)} batches | "
                 f"Total obstacles: FX={fx_count}, SX={sx_count}, Enemy={enemy_count}")

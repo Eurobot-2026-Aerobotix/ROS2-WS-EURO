@@ -72,12 +72,22 @@ class HybridAStarNode(Node):
         # Load all parameters
         self.load_parameters()
         
-        # Create client for GetStableBatches service FIRST (needed by MapManager)
+        # Create clients for GetStableBatches service
+        # 1. Web handler service (for pathfinding simulation batches)
+        self.get_stable_batches_client_web = self.create_client(
+            GetStableBatches, '/aruco_mapper/get_stable_batches_web')
+        
+        # 2. ArUco mapper service (for real robot batches)
         self.get_stable_batches_client = self.create_client(
             GetStableBatches, '/aruco_mapper/get_stable_batches')
         
         # Initialize map manager (handles obstacles, batches, and topics)
-        self.map_manager = MapManager(self, self.params, self.get_stable_batches_client)
+        # Pass both clients - web client has priority
+        self.map_manager = MapManager(
+            self, self.params, 
+            self.get_stable_batches_client,
+            self.get_stable_batches_client_web
+        )
         
         # Create services
         self.path_service = self.create_service(
