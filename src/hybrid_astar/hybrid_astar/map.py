@@ -294,14 +294,15 @@ class MapManager:
         client_to_use = None
         service_name = ""
         
-        if self.get_stable_batches_client_web and self.get_stable_batches_client_web.service_is_ready():
-            client_to_use = self.get_stable_batches_client_web
-            service_name = "/aruco_mapper/get_stable_batches_web"
-            self.node.get_logger().info("📡 Using web handler service (simulation mode)")
-        elif self.get_stable_batches_client.service_is_ready():
+        
+        if self.get_stable_batches_client.service_is_ready():
             client_to_use = self.get_stable_batches_client
             service_name = "/aruco_mapper/get_stable_batches"
             self.node.get_logger().info("📡 Using aruco_mapper service (real robot mode)")
+        elif self.get_stable_batches_client_web and self.get_stable_batches_client_web.service_is_ready():
+            client_to_use = self.get_stable_batches_client_web
+            service_name = "/aruco_mapper/get_stable_batches_web"
+            self.node.get_logger().info("📡 Using web handler service (simulation mode)")
         else:
             self.node.get_logger().error("❌ No GetStableBatches service available")
             response.success = False
@@ -351,12 +352,12 @@ class MapManager:
             filtered_batches = []
             for batch in aruco_state.batches:
                 state = batch.state.upper()
-                if state in ['STABLE_VALID', 'OBSTRUCTED',"UNSTABLE"]:
+                if state in ['TRACKING', '"DEGRADED"',]:
                     filtered_batches.append(batch)
 
             self.node.get_logger().info(
                 f"📊 Filtered {len(filtered_batches)}/{num_batches} batches "
-                f"(STABLE_VALID or OBSTRUCTED only)"
+                f"(TRACKING or \"DEGRADED\" only)"
             )
             
             # Determine source - for 'sfg' we process both SX and FX
@@ -567,7 +568,7 @@ class MapManager:
                     for idx, member in enumerate(batch.members):
                         # Create obstacle from batch member
                         obs = Obstacle()
-                        obs.id = f"aruco_{member.aruco_id}"
+                        obs.id = f"{source}_{batch.known_id}_member{idx}"  # Use known_id for unique IDs
                         obs.type = 'crate'
                         
                         # Use color from pattern if available, otherwise from member

@@ -194,9 +194,7 @@ class StrategyManager(Node):
                         if executor_module.IDLE_FOR_SYSTEMS and not executor_module.IDLE:
                             executor_module.SYSTEMS_IDLE_COUNT=1
                         while executor_module.SYSTEMS_IDLE_COUNT !=n :
-                            self.get_logger().info(f"idle count : {executor_module.SYSTEMS_IDLE_COUNT} n: {n}")
                             time.sleep(0.1)
-                        self.get_logger().info(f"idle count : {executor_module.SYSTEMS_IDLE_COUNT} n: {n}")
                 if device =="STM" and command =="set_position":
                     self.queues["RASP_PI"].append(cmd)
                 else:

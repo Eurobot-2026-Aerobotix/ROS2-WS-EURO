@@ -142,8 +142,10 @@ def handle_color_pattner(strategy):
     strategy.get_logger().info(f"robot position : x={x} , y={y}")
     pos.z = 0.0
     known_id = ''
+
     color_pattern, success, direction, batch_center = strategy.pathfinder.get_batch_color(known_id, pos)
-    
+    strategy.get_logger().info(f"pattern received fro beacon: {color_pattern} ")
+
     if success and batch_center:
         if (direction == "horizontal" and y < batch_center.y) or (direction == "vertical" and x > batch_center.x):
             # Reverse the color pattern
