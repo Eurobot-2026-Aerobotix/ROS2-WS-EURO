@@ -264,6 +264,7 @@ class WebHandlerNode(Node):
                 batch.known_id = web_batch['known_id']
                 batch.direction = web_batch['direction']
                 batch.count = web_batch['count']
+                batch.state = 'TRACKING'  # Set status to TRACKING for web-sent batches
                 
                 for web_member in web_batch['members']:
                     member = BatchMember()
@@ -456,7 +457,7 @@ class WebHandlerNode(Node):
                 batch.known_id = web_batch.get('known_id', '')
                 batch.direction = web_batch.get('direction', 'horizontal')
                 batch.count = web_batch.get('count', 4)
-                batch.state = 'STABLE_VALID'  # Always set as STABLE_VALID for web batches
+                batch.state = 'TRACKING'  # Set as TRACKING for web batches
                 
                 # Calculate pattern from members
                 members_data = web_batch.get('members', [])
