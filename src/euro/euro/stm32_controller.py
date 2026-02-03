@@ -172,7 +172,7 @@ class STM32Controller(Node):
             self.get_logger().error(f'Orientate service error: {str(e)}')
             return False, f'Service error: {str(e)}'
 
-    def go_to(self, x, y, speed, is_smooth=1.0, timeout=2.0):
+    def go_to(self, x, y, speed, is_smooth=0.0, timeout=2.0):
         """Send a request to go to a specific position (x, y) at given speed"""
         if not self.navi_client.wait_for_service(timeout_sec=2.0):
             self.get_logger().error('NaviStm service not available')
@@ -203,7 +203,7 @@ class STM32Controller(Node):
         except Exception as e:
             self.get_logger().error(f'Go_to service error: {str(e)}')
             return False, f'Service error: {str(e)}'
-    def go_to_backwards(self, x, y, speed,is_smooth=1.0, timeout=2.0):
+    def go_to_backwards(self, x, y, speed,is_smooth=0.0, timeout=2.0):
         """Send a request to go to backwards a specific position (x, y) at given speed"""
         if not self.navi_client.wait_for_service(timeout_sec=2.0):
             self.get_logger().error('NaviStm service not available')
@@ -234,7 +234,7 @@ class STM32Controller(Node):
         except Exception as e:
             self.get_logger().error(f'Go_to_backwards service error: {str(e)}')
             return False, f'Service error: {str(e)}'
-    def bezier_curve(self, x1, y1, x2, y2, x3, y3, speed,  is_smooth=0.0,timeout=2.0):
+    def bezier_curve(self, x1, y1, x2, y2, x3, y3, speed, is_smooth=0.0,timeout=2.0):
         """Send a request to do a bezier curve at given speed"""
         if not self.navi_client.wait_for_service(timeout_sec=2.0):
             self.get_logger().error('NaviStm service not available')
@@ -577,6 +577,38 @@ class STM32Controller(Node):
         except Exception as e:
             self.get_logger().error(f'Stop command error: {str(e)}')
             return False, f'Stop error: {str(e)}'
+
+    def fix_position(self, x, y, timeout=2.0):
+        """Send an fixing position command to the STM32"""
+        if not self.navi_client.wait_for_service(timeout_sec=2.0):
+            self.get_logger().error('NaviStm service not available for stop command')
+            return False, 'NaviStm service not available'
+        
+        request = NaviStm.Request()
+        request.arg1 = 17.0  # Indicates stop command (adjust this value based on your STM32 implementation)
+        request.arg2 = x
+        request.arg3 = y
+        request.arg4 = 0.0
+        request.arg5 = 0.0
+        request.arg6 = 0.0
+        request.arg7 = 0.0
+        request.arg8 = 0.0
+        request.arg9 = 0.0
+        request.arg10 = 0.0
+        self.get_logger().info("Sending FIX POSITION command")
+        
+        try:
+            future = self.navi_client.call_async(request)
+            if not self._wait_for_future(future, timeout):
+                self.get_logger().error('Stop command timeout')
+                return False, 'Stop timeout'
+            
+            response = future.result()
+            self.get_logger().info(f"fix position response: {response.result}")
+            return True, response
+        except Exception as e:
+            self.get_logger().error(f'fix position command error: {str(e)}')
+            return False, f'fix position error: {str(e)}'
 
     def send_navi_command(self, request_msg, timeout=10.0):
         """

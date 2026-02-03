@@ -105,7 +105,10 @@ def stm32_task(strategy, stm32):
                 IDLE = False
                 IDLE_FOR_SYSTEMS=False
             elif command == 'bezier':
-                stm32.bezier_curve(params[0], params[1], params[2], params[3], params[4], params[5], params[6])
+                if len(params) > 9:
+                    stm32.bezier_curve(params[0], params[1], params[2], params[3], params[4], params[5], params[8], params[9])
+                else:
+                    stm32.bezier_curve(params[0], params[1], params[2], params[3], params[4], params[5], params[8])
                 IDLE = False
                 IDLE_FOR_SYSTEMS=False
             
@@ -117,7 +120,10 @@ def stm32_task(strategy, stm32):
                 IDLE = False
                 IDLE_FOR_SYSTEMS=False
             elif command == 'bezier_backwards':
-                stm32.bezier_curve_backwards(params[0], params[1], params[2], params[3], params[4], params[5], params[6])
+                if len(params) > 9:
+                    stm32.bezier_curve_backwards(params[0], params[1], params[2], params[3], params[4], params[5], params[8], params[9])
+                else:
+                    stm32.bezier_curve_backwards(params[0], params[1], params[2], params[3], params[4], params[5], params[8])
                 IDLE = False
                 IDLE_FOR_SYSTEMS=False
             elif command == 'set_position':
