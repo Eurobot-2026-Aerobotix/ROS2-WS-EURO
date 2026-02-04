@@ -352,13 +352,39 @@ class MapManager:
             filtered_batches = []
             for batch in aruco_state.batches:
                 state = batch.state.upper()
-                if state in ['TRACKING', '"DEGRADED"',]:
+                if state in ['TRACKING', 'DEGRADED','OCCLUDED']:
                     filtered_batches.append(batch)
 
             self.node.get_logger().info(
                 f"📊 Filtered {len(filtered_batches)}/{num_batches} batches "
-                f"(TRACKING or \"DEGRADED\" only)"
+                f"(TRACKING or EGRADED or occuluded only)"
             )
+            
+            # Deduplicate batches by known_id - keep the most complete one
+            # The ArUco service may return the same batch multiple times with different data completeness
+            deduplicated_batches = {}
+            for batch in filtered_batches:
+                known_id = batch.known_id
+                if known_id not in deduplicated_batches:
+                    deduplicated_batches[known_id] = batch
+                else:
+                    existing = deduplicated_batches[known_id]
+                    # Keep the batch with more members, or if same, the one with longer pattern
+                    if len(batch.members) > len(existing.members):
+                        deduplicated_batches[known_id] = batch
+                        self.node.get_logger().info(
+                            f"🔄 Batch '{known_id}': replacing {len(existing.members)} members "
+                            f"with {len(batch.members)} members"
+                        )
+                    elif len(batch.members) == len(existing.members) and len(batch.pattern) > len(existing.pattern):
+                        deduplicated_batches[known_id] = batch
+                        self.node.get_logger().info(
+                            f"🔄 Batch '{known_id}': replacing pattern '{existing.pattern}' "
+                            f"with '{batch.pattern}'"
+                        )
+            
+            filtered_batches = list(deduplicated_batches.values())
+            self.node.get_logger().info(f"✅ After deduplication: {len(filtered_batches)} unique batches")
             
             # Determine source - for 'sfg' we process both SX and FX
             # Process SX batches (s prefix)
@@ -407,7 +433,7 @@ class MapManager:
             
             self.node.get_logger().info(
                 f"✅ Map updated: processed {len(filtered_batches)} batches "
-                f"(STABLE_VALID/OBSTRUCTED), created {num_obstacles} obstacles"
+                f"(DEGRADED/TRACKING), created {num_obstacles} obstacles"
             )
             
         except Exception as e:

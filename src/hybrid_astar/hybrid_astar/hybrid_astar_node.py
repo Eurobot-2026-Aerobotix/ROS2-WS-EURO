@@ -745,6 +745,7 @@ class HybridAStarNode(Node):
         """
         Service handler: Get color pattern for a batch by known_id or position
         If known_id is empty, finds closest batch to the provided position
+        Returns the pattern exactly as saved in the batch.
         """
 
         known_id = request.batch_known_id.strip()
@@ -775,15 +776,15 @@ class HybridAStarNode(Node):
             
             for b in all_batches.values():
                 self.get_logger().info(f"batch known_id={b.known_id} and  its center : {b.center}")
-                if not b.members:
-                    continue
                 
-                # Calculate center of batch
-                avg_x =b.center.x
-                avg_y = b.center.y
+                # Use batch center for distance calculation
+                # For SX batches, center is set from predefined positions
+                # For FX/GX batches, center is calculated from members
+                batch_center_x = b.center.x
+                batch_center_y = b.center.y
                 
                 # Calculate distance
-                distance = math.sqrt((avg_x - pos_x)**2 + (avg_y - pos_y)**2)
+                distance = math.sqrt((batch_center_x - pos_x)**2 + (batch_center_y - pos_y)**2)
                 
                 if distance < min_distance:
                     min_distance = distance
@@ -802,7 +803,7 @@ class HybridAStarNode(Node):
             
             batch = closest_batch
             self.get_logger().info(
-                f"📍 Found closest batch '{batch.known_id}' at distance {min_distance:.1f}mm "
+                f"📍 Found closest batch '{batch.known_id}' at distance {min_distance*1000:.0f}mm "
                 f"from position ({pos_x:.1f}, {pos_y:.1f})"
             )
         else:
@@ -823,49 +824,48 @@ class HybridAStarNode(Node):
                 self.get_logger().warn(f"❌ Batch known_id '{known_id}' not found")
                 return response
 
-        # Calculate batch center position
-        if batch.members:
-            center_x = sum(m.map_pos.x for m in batch.members) / len(batch.members)
-            center_y = sum(m.map_pos.y for m in batch.members) / len(batch.members)
-        else:
-            center_x = 0.0
-            center_y = 0.0
-        
-        # Set batch center in response
-        response.batch_center.x = center_x
-        response.batch_center.y = center_y
-        response.batch_center.z = 0.0
+        # Use batch center (already set correctly for both SX and FX batches)
+        response.batch_center.x = batch.center.x
+        response.batch_center.y = batch.center.y
+        response.batch_center.z = batch.center.z
 
         # Direction
         direction = batch.direction.lower()
         response.direction = direction
 
-        # Copy members
-        members = list(batch.members)
+        # ✅ USE SAVED PATTERN DIRECTLY - No sorting, no reconstruction
+        color_pattern = batch.pattern.lower() if batch.pattern else ""
+        color_pattern = color_pattern[::-1]
+        # Validate pattern has content
+        if not color_pattern:
+            # Fallback: reconstruct from members only if pattern is empty
+            self.get_logger().warn(f"⚠️ Batch '{batch.known_id}' has no saved pattern, reconstructing from members")
+            
+            # Copy members
+            members = list(batch.members)
 
-        # Sort members based on direction
-        if direction == "vertical":
-            # bottom → top, right → left
-            members.sort(
-                key=lambda m: (m.map_pos.y, m.map_pos.x),
-                reverse=True
-            )
-        else:  # horizontal
-            # right → left, top → bottom
-            members.sort(
-                key=lambda m: (m.map_pos.x, m.map_pos.y),
-                reverse=True
-            )
+            # Sort members based on direction
+            if direction == "vertical":
+                # bottom → top, left → right
+                members.sort(
+                    key=lambda m: (m.map_pos.y, m.map_pos.x),
+                    reverse=False
+                )
+            else:  # horizontal
+                # left → right, bottom → top
+                members.sort(
+                    key=lambda m: (m.map_pos.x, m.map_pos.y),
+                    reverse=False
+                )
 
-        # Build color pattern
-        color_pattern = ""
-        for member in members:
-            if member.color == "yellow":
-                color_pattern += "y"
-            elif member.color == "blue":
-                color_pattern += "b"
-            else:
-                color_pattern += "?"
+            # Build color pattern from sorted members
+            for member in members:
+                if member.color == "yellow":
+                    color_pattern += "y"
+                elif member.color == "blue":
+                    color_pattern += "b"
+                else:
+                    color_pattern += "?"
 
         response.success = True
         response.color_pattern = color_pattern
@@ -881,8 +881,8 @@ class HybridAStarNode(Node):
 
         self.get_logger().info(
             f"📋 Batch '{batch.known_id}' → pattern='{color_pattern}', "
-            f"direction={direction}, members={len(members)}, "
-            f"center=({center_x:.1f}, {center_y:.1f})"
+            f"direction={direction}, members={len(batch.members)}, "
+            f"center=({batch.center.x:.1f}, {batch.center.y:.1f})"
         )
 
         return response
