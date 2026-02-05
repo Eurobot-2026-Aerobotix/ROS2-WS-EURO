@@ -133,6 +133,26 @@ def stm32_task(strategy, stm32):
             strategy.command_waiting=False
             while not IDLE and not SHUTDOWN_REQUESTED: 
                 time.sleep(0.1)
+            strategy.latest_robot_pose_beacon_count=0
+            if command == 'bezier' or command == 'bezier_backwards':
+                while( strategy.latest_robot_pose_beacon_count<2 and not SHUTDOWN_REQUESTED):
+                    time.sleep(0.1)
+                stm_msg=0.0
+                pos=None
+                if strategy.latest_robot_pose_beacon and len(strategy.latest_robot_pose_beacon.tracks) > 0:
+                    for track in strategy.latest_robot_pose_beacon.tracks:
+                        if track.aruco_id==10:
+                            stm_msg=1.0
+                            pos=track.pose.position
+                            break
+                        elif track.aruco_id==12:
+                            stm_msg=2.0
+                            pos=track.pose.position
+                            break
+                if pos is not None:
+                    stm32.fix_position(stm_msg, pos.x, pos.y)
+                else:
+                    stm32.fix_position(stm_msg, params[6], params[7])
             # Remove command from queue after execution
             strategy.queues['STM'].popleft()
         

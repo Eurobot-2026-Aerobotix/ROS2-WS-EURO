@@ -578,7 +578,7 @@ class STM32Controller(Node):
             self.get_logger().error(f'Stop command error: {str(e)}')
             return False, f'Stop error: {str(e)}'
 
-    def fix_position(self, x, y, timeout=2.0):
+    def fix_position(self, front1_back2, x, y, timeout=2.0):
         """Send an fixing position command to the STM32"""
         if not self.navi_client.wait_for_service(timeout_sec=2.0):
             self.get_logger().error('NaviStm service not available for stop command')

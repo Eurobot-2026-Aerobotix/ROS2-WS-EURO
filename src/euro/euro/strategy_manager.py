@@ -52,6 +52,7 @@ class StrategyManager(Node):
         self.global_pos_angle = None
         self.latest_robot_pose = None
         self.latest_robot_pose_beacon = None
+        self.latest_robot_pose_beacon_count = 0
         self.create_subscription(
             Vector3,
             '/robot_pose_raw',
@@ -71,11 +72,9 @@ class StrategyManager(Node):
         self.latest_robot_pose = msg
     
     def aruco_mapper_callback(self, msg):
-        """Callback for aruco mapper state - extract map_pos from tracks"""
-        if msg.tracks and len(msg.tracks) > 0:
-            # Store the map_pos from the first track
-            self.latest_robot_pose_beacon = msg.tracks[0].map_pos
-    
+        """Callback for aruco mapper state - store entire message"""
+        self.latest_robot_pose_beacon = msg
+        self.latest_robot_pose_beacon_count += 1
     def path(self, x_goal, y_goal, theta_goal):
         print("Path function called")
         """Create start and goal PoseStamped from current pose and goal"""
