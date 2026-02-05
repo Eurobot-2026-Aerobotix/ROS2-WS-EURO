@@ -586,9 +586,9 @@ class STM32Controller(Node):
         
         request = NaviStm.Request()
         request.arg1 = 17.0  # Indicates stop command (adjust this value based on your STM32 implementation)
-        request.arg2 = x
-        request.arg3 = y
-        request.arg4 = 0.0
+        request.arg2 = front1_back2
+        request.arg3 = x
+        request.arg4 = y
         request.arg5 = 0.0
         request.arg6 = 0.0
         request.arg7 = 0.0

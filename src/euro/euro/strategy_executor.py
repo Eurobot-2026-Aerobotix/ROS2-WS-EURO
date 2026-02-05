@@ -133,23 +133,29 @@ def stm32_task(strategy, stm32):
             strategy.command_waiting=False
             while not IDLE and not SHUTDOWN_REQUESTED: 
                 time.sleep(0.1)
+            time.sleep(1)
             strategy.latest_robot_pose_beacon_count=0
             if command == 'bezier' or command == 'bezier_backwards':
                 while( strategy.latest_robot_pose_beacon_count<2 and not SHUTDOWN_REQUESTED):
                     time.sleep(0.1)
+                    strategy.get_logger().info(f"waitin two positions from nbeacon")
                 stm_msg=0.0
                 pos=None
+                strategy.get_logger().info(f"len(strategy.latest_robot_pose_beacon.tracks):{len(strategy.latest_robot_pose_beacon.tracks)}")
                 if strategy.latest_robot_pose_beacon and len(strategy.latest_robot_pose_beacon.tracks) > 0:
                     for track in strategy.latest_robot_pose_beacon.tracks:
                         if track.aruco_id==10:
                             stm_msg=1.0
-                            pos=track.pose.position
+                            pos=track.map_pos
+                            strategy.get_logger().info(f"track.pos: {track.map_pos}")
                             break
-                        elif track.aruco_id==12:
+                        elif track.aruco_id==6:
                             stm_msg=2.0
-                            pos=track.pose.position
+                            pos=track.map_pos
+                            strategy.get_logger().info(f"track.pos: {track.map_pos}")
                             break
                 if pos is not None:
+                    strategy.get_logger().info(f"recevied pos from beacon : x{pos.x} , y : {pos.y}")
                     stm32.fix_position(stm_msg, pos.x, pos.y)
                 else:
                     stm32.fix_position(stm_msg, params[6], params[7])
