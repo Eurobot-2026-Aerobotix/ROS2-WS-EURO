@@ -84,7 +84,7 @@ def to_float_list(params):
         return [float(p) for p in params]
     except (TypeError, ValueError) as e:
         raise ValueError(f"Invalid STM32 params: {params}") from e
-def stm32_task(strategy, stm32):
+def stm32_task(strategy, stm32,lidar):
     """Runs every 100ms to process STM32 queue"""
     global IDLE
     global SHUTDOWN_REQUESTED
@@ -111,6 +111,7 @@ def stm32_task(strategy, stm32):
                 IDLE = False
                 IDLE_FOR_SYSTEMS=False
             elif command == 'go_to':
+                lidar.set_goto_target(params[0]/1000, params[1]/1000)  # Convert mm to meters for lidar
                 IDLE_FOR_SYSTEMS=False
                 # Publish target position for collision detection
                 target_msg = Vector3()
@@ -140,6 +141,7 @@ def stm32_task(strategy, stm32):
             
             elif command == 'go_to_backwards':
                 # Publish target position for collision detection
+                lidar.set_goto_target(params[0]/1000, params[1]/1000)  # Convert mm to meters for lidar
                 target_msg = Vector3()
                 target_msg.x = params[0]
                 target_msg.y = params[1]
@@ -204,6 +206,7 @@ def stm32_task(strategy, stm32):
                 strategy.get_logger().info('Cleared target position after movement completion')
             
             # Remove command from queue after execution
+            lidar.clear_goto_target()
             strategy.queues['STM'].popleft()
         
         time.sleep(0.1)  # 100ms
