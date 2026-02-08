@@ -89,6 +89,10 @@ def stm32_task(strategy, stm32):
     global IDLE
     global SHUTDOWN_REQUESTED
     global IDLE_FOR_SYSTEMS
+    
+    # Import Vector3 for publishing target position
+    from geometry_msgs.msg import Vector3
+    
     while rclpy.ok() and not SHUTDOWN_REQUESTED:
         # Check if there are commands in the queue and robot is idle
         if len(strategy.queues['STM']) > 0 and IDLE:
@@ -108,6 +112,14 @@ def stm32_task(strategy, stm32):
                 IDLE_FOR_SYSTEMS=False
             elif command == 'go_to':
                 IDLE_FOR_SYSTEMS=False
+                # Publish target position for collision detection
+                target_msg = Vector3()
+                target_msg.x = params[0]
+                target_msg.y = params[1]
+                target_msg.z = 0.0
+                strategy.target_position_pub.publish(target_msg)
+                strategy.get_logger().info(f'Published target position: ({params[0]:.3f}, {params[1]:.3f})')
+                
                 if len(params) > 3:
                     stm32.go_to(params[0], params[1], params[2], params[3])
                 else:
@@ -127,6 +139,14 @@ def stm32_task(strategy, stm32):
                 IDLE_FOR_SYSTEMS=False
             
             elif command == 'go_to_backwards':
+                # Publish target position for collision detection
+                target_msg = Vector3()
+                target_msg.x = params[0]
+                target_msg.y = params[1]
+                target_msg.z = 0.0
+                strategy.target_position_pub.publish(target_msg)
+                strategy.get_logger().info(f'Published target position (backwards): ({params[0]:.3f}, {params[1]:.3f})')
+                
                 if len(params) > 3:
                     stm32.go_to_backwards(params[0], params[1], params[2], params[3])
                 else:
@@ -173,6 +193,16 @@ def stm32_task(strategy, stm32):
                     stm32.fix_position(stm_msg, pos.x, pos.y)
                 else:
                     stm32.fix_position(stm_msg, params[6], params[7])
+            
+            # Clear target position after movement completes
+            if command in ['go_to', 'go_to_backwards']:
+                clear_msg = Vector3()
+                clear_msg.x = -999.0  # Use sentinel value to indicate no target
+                clear_msg.y = -999.0
+                clear_msg.z = 0.0
+                strategy.target_position_pub.publish(clear_msg)
+                strategy.get_logger().info('Cleared target position after movement completion')
+            
             # Remove command from queue after execution
             strategy.queues['STM'].popleft()
         

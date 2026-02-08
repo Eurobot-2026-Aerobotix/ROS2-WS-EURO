@@ -65,6 +65,14 @@ class StrategyManager(Node):
             self.aruco_mapper_callback,
             10
         )
+        
+        # Publisher for target position (for collision detection)
+        self.target_position_pub = self.create_publisher(
+            Vector3,
+            '/target_position',
+            10
+        )
+        
         self.pathfinder = PathfinderClient()
         self.goal = (0.2, 2.7, 1.57079632679)
         self.path_called = False
