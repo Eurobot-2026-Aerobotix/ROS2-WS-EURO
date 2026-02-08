@@ -13,7 +13,7 @@ from aruco_mapper_msgs.msg import ArucoMapperState
 from euro.yaml_loader import load_tasks_from_yaml
 import math
 from euro.pathfinder_controller import PathfinderClient
-from euro.strategy_executor import robot_status, stm32_task, front_task, back_task,rasp_pi_task, IDLE, EMERGENCY_STOP
+from euro.strategy_executor import robot_status, lidar_status, stm32_task, front_task, back_task,rasp_pi_task, IDLE, EMERGENCY_STOP
 import euro.strategy_executor as executor_module  # Import module to access SHUTDOWN_REQUESTED and other globals
 
 # Global variable to store team color
@@ -338,6 +338,13 @@ def main(args=None):
         daemon=True
     )
     status_thread.start()
+    
+    lidar_thread = threading.Thread(
+        target=lidar_status,
+        args=(strategy, stm32, lidar),
+        daemon=True
+    )
+    lidar_thread.start()
     
     stm32_thread = threading.Thread(
         target=stm32_task,

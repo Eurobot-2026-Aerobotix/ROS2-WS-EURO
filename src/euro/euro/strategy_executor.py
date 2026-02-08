@@ -31,10 +31,7 @@ def robot_status(strategy, stm32, lidar):
     global IDLE_FOR_SYSTEMS
     global PREVIOUS_IDLE_FOR_SYSTEMS
     global SYSTEMS_IDLE_COUNT
-    while rclpy.ok() and not SHUTDOWN_REQUESTED:
-        # Check emergency stop from lidar
-        # EMERGENCY_STOP = lidar.getstatus()
-        
+    while rclpy.ok() and not SHUTDOWN_REQUESTED:        
         # Only check if robot is idle when we think it's busy
         if not IDLE:
             if not IDLE_FOR_SYSTEMS :
@@ -56,11 +53,28 @@ def robot_status(strategy, stm32, lidar):
             if  IDLE_FOR_SYSTEMS ==True and PREVIOUS_IDLE_FOR_SYSTEMS==False:
                 SYSTEMS_IDLE_COUNT+=1
             PREVIOUS_IDLE_FOR_SYSTEMS=IDLE_FOR_SYSTEMS
+        
+        time.sleep(0.1)  # 100ms
+
+def lidar_status(strategy, stm32, lidar):
+    """Runs every 100ms to check lidar status and handle emergency stops"""
+    global EMERGENCY_STOP
+    global SHUTDOWN_REQUESTED
+    first_emergency = True
+    
+    while rclpy.ok() and not SHUTDOWN_REQUESTED:
+        # Check emergency stop from lidar
+        EMERGENCY_STOP = lidar.getstatus()
+        
         # Handle emergency stop
         if EMERGENCY_STOP and first_emergency:
             strategy.get_logger().warning("🚨 Emergency stop activated!")
             success, response = stm32.stop()
             first_emergency = False
+        
+        # Reset flag when emergency is cleared
+        if not EMERGENCY_STOP:
+            first_emergency = True
         
         time.sleep(0.1)  # 100ms
 
