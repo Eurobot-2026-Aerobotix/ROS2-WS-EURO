@@ -69,7 +69,7 @@ def lidar_status(strategy, stm32, lidar):
         # Handle emergency stop
         if EMERGENCY_STOP and first_emergency:
             strategy.get_logger().warning("🚨 Emergency stop activated!")
-            success, response = stm32.stop()
+            #success, response = stm32.stop()
             first_emergency = False
         
         # Reset flag when emergency is cleared
@@ -89,9 +89,15 @@ def stm32_task(strategy, stm32,lidar):
     global IDLE
     global SHUTDOWN_REQUESTED
     global IDLE_FOR_SYSTEMS
+    global EMERGENCY_STOP
     
     # Import Vector3 for publishing target position
     from geometry_msgs.msg import Vector3
+    
+    # Variables to save last command for resuming after emergency
+    last_command = None
+    last_params = None
+    was_in_emergency = False
     
     while rclpy.ok() and not SHUTDOWN_REQUESTED:
         # Check if there are commands in the queue and robot is idle
@@ -101,6 +107,11 @@ def stm32_task(strategy, stm32,lidar):
             params = cmd.get('params', {})
             wait = cmd.get('wait', False)
             params = to_float_list(params)
+            
+            # Save command for potential resume after emergency
+            last_command = command
+            last_params = params
+            
             # Execute command based on type
             if command == 'move_forward':
                 stm32.move_forward(params[0], params[1], params[2] if len(params) > 2 else 0.0)
@@ -154,8 +165,54 @@ def stm32_task(strategy, stm32,lidar):
             else:
                 strategy.get_logger().warn(f"Unknown STM32 command: {command}")
             strategy.command_waiting=False
-            while not IDLE and not SHUTDOWN_REQUESTED: 
+            
+            # Wait for command completion with emergency handling
+            while not IDLE and not SHUTDOWN_REQUESTED:
+                # Check for emergency stop
+                if EMERGENCY_STOP and not was_in_emergency:
+                    strategy.get_logger().warning("🚨 Emergency detected during movement - stopping STM32")
+                    stm32.stop()
+                    was_in_emergency = True
+                    IDLE = True  # Mark as idle to prevent status checks
+                
+                # Check if emergency cleared
+                elif not EMERGENCY_STOP and was_in_emergency:
+                    strategy.get_logger().info("✅ Emergency cleared - resuming command")
+                    # Resend the last command
+                    if last_command == 'move_forward':
+                        stm32.move_forward(last_params[0], last_params[1], last_params[2] if len(last_params) > 2 else 0.0)
+                    elif last_command == 'rotate':
+                        stm32.rotate(last_params[0], last_params[1] if len(last_params) > 1 else 0.0)
+                    elif last_command == 'go_to':
+                        if len(last_params) > 3:
+                            stm32.go_to(last_params[0], last_params[1], last_params[2], last_params[3])
+                        else:
+                            stm32.go_to(last_params[0], last_params[1], last_params[2])
+                    elif last_command == 'orientate':
+                        stm32.orientate(last_params[0], last_params[1] if len(last_params) > 1 else 0.0)
+                    elif last_command == 'bezier':
+                        if len(last_params) > 9:
+                            stm32.bezier_curve(last_params[0], last_params[1], last_params[2], last_params[3], last_params[4], last_params[5], last_params[8], last_params[9])
+                        else:
+                            stm32.bezier_curve(last_params[0], last_params[1], last_params[2], last_params[3], last_params[4], last_params[5], last_params[8])
+                    elif last_command == 'go_to_backwards':
+                        if len(last_params) > 3:
+                            stm32.go_to_backwards(last_params[0], last_params[1], last_params[2], last_params[3])
+                        else:
+                            stm32.go_to_backwards(last_params[0], last_params[1], last_params[2])
+                    elif last_command == 'bezier_backwards':
+                        if len(last_params) > 9:
+                            stm32.bezier_curve_backwards(last_params[0], last_params[1], last_params[2], last_params[3], last_params[4], last_params[5], last_params[8], last_params[9])
+                        else:
+                            stm32.bezier_curve_backwards(last_params[0], last_params[1], last_params[2], last_params[3], last_params[4], last_params[5], last_params[8])
+                    
+                    was_in_emergency = False
+                    IDLE = False  # Back to moving
+                
                 time.sleep(0.1)
+            
+            # Reset emergency flag when command completes normally
+            was_in_emergency = False
             time.sleep(1)
             strategy.latest_robot_pose_beacon_count=0
             if command == 'bezier' or command == 'bezier_backwards':
