@@ -82,7 +82,7 @@ class Lidar(Node):
             )
             
             # Adjust travel distance for obstacle radius (obstacle center to edge)
-            effective_collision_distance = self.travel_distance - self.obstacle_radius
+            effective_collision_distance = abs(self.travel_distance - self.obstacle_radius)
             
             # If target is closer than the obstacle, don't trigger emergency stop
             if distance_to_target < effective_collision_distance:

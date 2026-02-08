@@ -113,13 +113,6 @@ def stm32_task(strategy, stm32,lidar):
             elif command == 'go_to':
                 lidar.set_goto_target(params[0]/1000, params[1]/1000)  # Convert mm to meters for lidar
                 IDLE_FOR_SYSTEMS=False
-                # Publish target position for collision detection
-                target_msg = Vector3()
-                target_msg.x = params[0]
-                target_msg.y = params[1]
-                target_msg.z = 0.0
-                strategy.target_position_pub.publish(target_msg)
-                strategy.get_logger().info(f'Published target position: ({params[0]:.3f}, {params[1]:.3f})')
                 
                 if len(params) > 3:
                     stm32.go_to(params[0], params[1], params[2], params[3])
@@ -142,12 +135,6 @@ def stm32_task(strategy, stm32,lidar):
             elif command == 'go_to_backwards':
                 # Publish target position for collision detection
                 lidar.set_goto_target(params[0]/1000, params[1]/1000)  # Convert mm to meters for lidar
-                target_msg = Vector3()
-                target_msg.x = params[0]
-                target_msg.y = params[1]
-                target_msg.z = 0.0
-                strategy.target_position_pub.publish(target_msg)
-                strategy.get_logger().info(f'Published target position (backwards): ({params[0]:.3f}, {params[1]:.3f})')
                 
                 if len(params) > 3:
                     stm32.go_to_backwards(params[0], params[1], params[2], params[3])
@@ -195,16 +182,6 @@ def stm32_task(strategy, stm32,lidar):
                     stm32.fix_position(stm_msg, pos.x, pos.y)
                 else:
                     stm32.fix_position(stm_msg, params[6], params[7])
-            
-            # Clear target position after movement completes
-            if command in ['go_to', 'go_to_backwards']:
-                clear_msg = Vector3()
-                clear_msg.x = -999.0  # Use sentinel value to indicate no target
-                clear_msg.y = -999.0
-                clear_msg.z = 0.0
-                strategy.target_position_pub.publish(clear_msg)
-                strategy.get_logger().info('Cleared target position after movement completion')
-            
             # Remove command from queue after execution
             lidar.clear_goto_target()
             strategy.queues['STM'].popleft()
