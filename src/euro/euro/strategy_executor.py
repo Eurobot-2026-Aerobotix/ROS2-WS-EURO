@@ -33,7 +33,7 @@ def robot_status(strategy, stm32, lidar):
     global SYSTEMS_IDLE_COUNT
     while rclpy.ok() and not SHUTDOWN_REQUESTED:        
         # Only check if robot is idle when we think it's busy
-        if not IDLE:
+        if not IDLE and not EMERGENCY_STOP:
             if not IDLE_FOR_SYSTEMS :
 
                 success, is_completed, _ = stm32.IDLE_FOR_SYSTEMS(1.0)
@@ -173,7 +173,7 @@ def stm32_task(strategy, stm32,lidar):
                     strategy.get_logger().warning("🚨 Emergency detected during movement - stopping STM32")
                     stm32.stop()
                     was_in_emergency = True
-                    IDLE = True  # Mark as idle to prevent status checks
+                    #IDLE = True  # Mark as idle to prevent status checks
                 
                 # Check if emergency cleared
                 elif not EMERGENCY_STOP and was_in_emergency:

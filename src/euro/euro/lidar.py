@@ -24,7 +24,7 @@ class Lidar(Node):
         self.target_y = None
         self.current_x = 0.0
         self.current_y = 0.0
-        
+        self.cleared_emergency_count = 0
         # Obstacle parameters
         self.obstacle_radius = 0.25  # meters
         
@@ -76,6 +76,7 @@ class Lidar(Node):
         # If we have an emergency and a go_to target is set
         if msg.emergency_triggered == 1 and self.target_x is not None and self.target_y is not None:
             # Calculate distance to target
+            
             distance_to_target = math.sqrt(
                 (self.target_x - self.current_x)**2 + 
                 (self.target_y - self.current_y)**2
@@ -86,18 +87,22 @@ class Lidar(Node):
             
             # If target is closer than the obstacle, don't trigger emergency stop
             if distance_to_target < effective_collision_distance:
-                self.emergency_status = 0
+                self.cleared_emergency_count+=1
+                if(self.cleared_emergency_count>5):
+                    self.emergency_status=0
                 self.get_logger().info(
                     f"✅ Target ({distance_to_target*1000:.0f}mm) is closer than obstacle "
                     f"({effective_collision_distance*1000:.0f}mm) - continuing to target"
                 )
             else:
+                self.cleared_emergency_count=0
                 self.emergency_status = 1
                 self.get_logger().warning(
                     f"🚨 Emergency Stop! Obstacle ({effective_collision_distance*1000:.0f}mm) "
                     f"is before target ({distance_to_target*1000:.0f}mm)"
                 )
         elif msg.emergency_triggered == 1:
+            self.cleared_emergency_count=0
             # No target set, trigger emergency normally
             self.emergency_status = 1
             self.get_logger().warning(
@@ -105,8 +110,10 @@ class Lidar(Node):
             )
         else:
             # Emergency cleared
-            self.emergency_status = 0
-            self.get_logger().info("✅ Emergency cleared")
+            self.cleared_emergency_count += 1
+            if self.cleared_emergency_count > 5:
+                self.emergency_status = 0
+                self.get_logger().info("✅ Emergency cleared")
     
     def getstatus(self):
         """
