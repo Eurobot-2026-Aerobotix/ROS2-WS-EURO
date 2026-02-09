@@ -82,8 +82,7 @@ class Lidar(Node):
                 (self.target_y - self.current_y)**2
             )
             
-            # Adjust travel distance for obstacle radius (obstacle center to edge)
-            effective_collision_distance = abs(self.travel_distance - self.obstacle_radius)
+            effective_collision_distance = abs(self.travel_distance)
             
             # If target is closer than the obstacle, don't trigger emergency stop
             if distance_to_target < effective_collision_distance:
@@ -100,14 +99,15 @@ class Lidar(Node):
                 self.get_logger().warning(
                     f"🚨 Emergency Stop! Obstacle ({effective_collision_distance*1000:.0f}mm) "
                     f"is before target ({distance_to_target*1000:.0f}mm)"
+                    f"robot position : ({self.current_x:.3f}, {self.current_y:.3f})"
                 )
         elif msg.emergency_triggered == 1:
             self.cleared_emergency_count=0
             # No target set, trigger emergency normally
             self.emergency_status = 1
             self.get_logger().warning(
-                f"🚨 Emergency Stop! Travel distance: {self.travel_distance*1000:.1f}mm"
-            )
+                    f"🚨 Emergency Stop! "
+                    f"robot position : ({self.current_x:.3f}, {self.current_y:.3f})")
         else:
             # Emergency cleared
             self.cleared_emergency_count += 1

@@ -76,7 +76,7 @@ def lidar_status(strategy, stm32, lidar):
         if not EMERGENCY_STOP:
             first_emergency = True
         
-        time.sleep(0.1)  # 100ms
+        time.sleep(0.01)  # 10ms
 
 def to_float_list(params):
     """Convert all params to float"""

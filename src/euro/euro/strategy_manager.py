@@ -401,7 +401,7 @@ def main(args=None):
             from euro.pami_controller import PamiController
             pami_ctrl = PamiController(strategy.strategy_name, pami_folder, 'pami_controller_internal')
         
-        reset_systems(pneumatic,front,back,stm32,strategy,True,False)
+        reset_systems(pneumatic,front,back,None,strategy,True,False)
         time.sleep(2)
         # Execute tasks sequentially
         # Start a thread to execute tasks one by one
