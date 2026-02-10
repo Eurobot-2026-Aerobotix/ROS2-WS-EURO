@@ -113,7 +113,7 @@ class Lidar(Node):
             self.cleared_emergency_count += 1
             if self.cleared_emergency_count > 5:
                 self.emergency_status = 0
-                self.get_logger().info("✅ Emergency cleared")
+                #self.get_logger().info("✅ Emergency cleared")
     
     def getstatus(self):
         """
