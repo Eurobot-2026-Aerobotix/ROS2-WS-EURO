@@ -21,7 +21,7 @@ color_pt_back=None
 color_pt=None
 SHUTDOWN_REQUESTED = False  # Global shutdown flag
 WAITING_TIRETTE=False
-
+last_stm_command=""
 def robot_status(strategy, stm32, lidar):
     """Runs every 100ms to check STM32 movement status and lidar obstacles"""
     global IDLE
@@ -31,14 +31,15 @@ def robot_status(strategy, stm32, lidar):
     global IDLE_FOR_SYSTEMS
     global PREVIOUS_IDLE_FOR_SYSTEMS
     global SYSTEMS_IDLE_COUNT
+    global last_stm_command
     while rclpy.ok() and not SHUTDOWN_REQUESTED:        
         # Only check if robot is idle when we think it's busy
         if not IDLE:
             if not IDLE_FOR_SYSTEMS :
-                if not EMERGENCY_STOP:
-                    success, is_completed, _ = stm32.IDLE_FOR_SYSTEMS(1.0)
+                success, is_completed, _ = stm32.IDLE_FOR_SYSTEMS(1.0)
             else:
                 success, is_completed, _ = stm32.IDLE(1.0)
+                strategy.get_logger().info(f"idle : {is_completed}")
                 
             if not success:
                 strategy.get_logger().warning("⚠️ Failed to check robot status")
@@ -48,7 +49,7 @@ def robot_status(strategy, stm32, lidar):
                     IDLE_FOR_SYSTEMS = is_completed
                 else:
                     IDLE = is_completed
-            if  IDLE_FOR_SYSTEMS ==True and PREVIOUS_IDLE_FOR_SYSTEMS==False:
+            if  IDLE_FOR_SYSTEMS ==True and PREVIOUS_IDLE_FOR_SYSTEMS==False and last_stm_command=="navigation":
                 SYSTEMS_IDLE_COUNT+=1
             PREVIOUS_IDLE_FOR_SYSTEMS=IDLE_FOR_SYSTEMS
         
@@ -88,7 +89,7 @@ def stm32_task(strategy, stm32,lidar):
     global SHUTDOWN_REQUESTED
     global IDLE_FOR_SYSTEMS
     global EMERGENCY_STOP
-    
+    global last_stm_command
     # Import Vector3 for publishing target position
     from geometry_msgs.msg import Vector3
     
@@ -96,7 +97,6 @@ def stm32_task(strategy, stm32,lidar):
     last_command = None
     last_params = None
     was_in_emergency = False
-    
     while rclpy.ok() and not SHUTDOWN_REQUESTED:
         # Check if there are commands in the queue and robot is idle
         if len(strategy.queues['STM']) > 0 and IDLE:
@@ -109,7 +109,7 @@ def stm32_task(strategy, stm32,lidar):
             # Save command for potential resume after emergency
             last_command = command
             last_params = params
-            
+            last_stm_command=""
             # Execute command based on type
             if command == 'move_forward':
                 stm32.move_forward(params[0], params[1], params[2] if len(params) > 2 else 0.0)
@@ -163,21 +163,26 @@ def stm32_task(strategy, stm32,lidar):
             else:
                 strategy.get_logger().warn(f"Unknown STM32 command: {command}")
             strategy.command_waiting=False
-            
+            if command !="set_position":
+                last_stm_command="navigation"
             # Wait for command completion with emergency handling
-            while (not IDLE and not SHUTDOWN_REQUESTED) or  (EMERGENCY_STOP):
+            while (not IDLE and not SHUTDOWN_REQUESTED) or  (EMERGENCY_STOP) or last_stm_command=="emergency":
                 # Check for emergency stop
+               
                 if EMERGENCY_STOP and not was_in_emergency:
                     strategy.get_logger().warning("🚨 Emergency detected during movement - stopping STM32")
                     stm32.stop()
+                    last_stm_command="emergency"
                     IDLE=False
+                    IDLE_FOR_SYSTEMS=False
                     was_in_emergency = True
                     while(not IDLE and not SHUTDOWN_REQUESTED):
+                        strategy.get_logger().info(f"IDLE: {IDLE}")
                         time.sleep(0.1)  # Wait until STM32 reports idle after stop
                     #IDLE = True  # Mark as idle to prevent status checks
                 
                 # Check if emergency cleared
-                elif not EMERGENCY_STOP and was_in_emergency:
+                elif not EMERGENCY_STOP and was_in_emergency :
                     strategy.get_logger().info("✅ Emergency cleared - resuming command")
                     # Resend the last command
                     if last_command == 'move_forward':
@@ -206,15 +211,16 @@ def stm32_task(strategy, stm32,lidar):
                             stm32.bezier_curve_backwards(last_params[0], last_params[1], last_params[2], last_params[3], last_params[4], last_params[5], last_params[8], last_params[9])
                         else:
                             stm32.bezier_curve_backwards(last_params[0], last_params[1], last_params[2], last_params[3], last_params[4], last_params[5], last_params[8])
-                    
+                    last_stm_command="navigation"
                     was_in_emergency = False
                     IDLE = False  # Back to moving
+                    IDLE_FOR_SYSTEMS=False
                 
                 time.sleep(0.1)
-            
+            strategy.get_logger().info(f"idle : {IDLE} :  EMERGENCY_STOP : {EMERGENCY_STOP}"  )
+            strategy.get_logger().info( last_stm_command  )
             # Reset emergency flag when command completes normally
             was_in_emergency = False
-            time.sleep(1)
             strategy.latest_robot_pose_beacon_count=0
             if command == 'bezier' or command == 'bezier_backwards':
                 while( strategy.latest_robot_pose_beacon_count<2 and not SHUTDOWN_REQUESTED):
