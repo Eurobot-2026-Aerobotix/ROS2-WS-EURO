@@ -37,6 +37,7 @@ def robot_status(strategy, stm32, lidar):
         if not IDLE:
             if not IDLE_FOR_SYSTEMS :
                 success, is_completed, _ = stm32.IDLE_FOR_SYSTEMS(1.0)
+                strategy.get_logger().info(f"idle for systems  : {is_completed}")
             else:
                 success, is_completed, _ = stm32.IDLE(1.0)
                 strategy.get_logger().info(f"idle : {is_completed}")
@@ -185,6 +186,7 @@ def stm32_task(strategy, stm32,lidar):
                 elif not EMERGENCY_STOP and was_in_emergency :
                     strategy.get_logger().info("✅ Emergency cleared - resuming command")
                     # Resend the last command
+                    #time.sleep(1)
                     if last_command == 'move_forward':
                         stm32.move_forward(last_params[0], last_params[1], last_params[2] if len(last_params) > 2 else 0.0)
                     elif last_command == 'rotate':
@@ -217,8 +219,23 @@ def stm32_task(strategy, stm32,lidar):
                     IDLE_FOR_SYSTEMS=False
                 
                 time.sleep(0.1)
+                # if IDLE and last_stm_command=="navigation":
+                #     x1=strategy.latest_robot_pose.x
+                #     y1=strategy.latest_robot_pose.y
+                #     x2=last_params[0]
+                #     y2=last_params[1]
+                #     if(abs(x1-x2)>0.03 or abs(y1-y2)>0.03):
+                #         if len(last_params) > 3:
+                #             stm32.go_to(last_params[0], last_params[1], last_params[2], last_params[3])
+                #         else:
+                #             stm32.go_to(last_params[0], last_params[1], last_params[2])
+                #         IDLE = False  # Back to moving
+                #         IDLE_FOR_SYSTEMS=False
+                        #time.sleep(0.1)
             strategy.get_logger().info(f"idle : {IDLE} :  EMERGENCY_STOP : {EMERGENCY_STOP}"  )
             strategy.get_logger().info( last_stm_command  )
+            #stm32.fix_position(0.0,last_params[0],last_params[1])
+            #time.sleep(0.1)
             # Reset emergency flag when command completes normally
             was_in_emergency = False
             strategy.latest_robot_pose_beacon_count=0
