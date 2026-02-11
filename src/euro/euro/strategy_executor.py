@@ -8,6 +8,22 @@ import rclpy
 import time
 from geometry_msgs.msg import Point
 
+class Round:
+    """Timer class to track game round time"""
+    
+    def __init__(self):
+        self._start_time = None
+    
+    def start_game(self):
+        """Start the game timer"""
+        self._start_time = time.time()
+    
+    def time(self):
+        """Return elapsed seconds since start_game() was called"""
+        if self._start_time is None:
+            return 0.0
+        return time.time() - self._start_time
+
 # Global state variables
 IDLE = True
 IDLE_FOR_SYSTEMS=True
@@ -180,6 +196,7 @@ def stm32_task(strategy, stm32,lidar):
                     while(not IDLE and not SHUTDOWN_REQUESTED):
                         strategy.get_logger().info(f"IDLE: {IDLE}")
                         time.sleep(0.1)  # Wait until STM32 reports idle after stop
+                    lidar.start_waiting()  # Start waiting period before rechecking obstacle
                     #IDLE = True  # Mark as idle to prevent status checks
                 
                 # Check if emergency cleared
@@ -219,23 +236,8 @@ def stm32_task(strategy, stm32,lidar):
                     IDLE_FOR_SYSTEMS=False
                 
                 time.sleep(0.1)
-                # if IDLE and last_stm_command=="navigation":
-                #     x1=strategy.latest_robot_pose.x
-                #     y1=strategy.latest_robot_pose.y
-                #     x2=last_params[0]
-                #     y2=last_params[1]
-                #     if(abs(x1-x2)>0.03 or abs(y1-y2)>0.03):
-                #         if len(last_params) > 3:
-                #             stm32.go_to(last_params[0], last_params[1], last_params[2], last_params[3])
-                #         else:
-                #             stm32.go_to(last_params[0], last_params[1], last_params[2])
-                #         IDLE = False  # Back to moving
-                #         IDLE_FOR_SYSTEMS=False
-                        #time.sleep(0.1)
             strategy.get_logger().info(f"idle : {IDLE} :  EMERGENCY_STOP : {EMERGENCY_STOP}"  )
             strategy.get_logger().info( last_stm_command  )
-            #stm32.fix_position(0.0,last_params[0],last_params[1])
-            #time.sleep(0.1)
             # Reset emergency flag when command completes normally
             was_in_emergency = False
             strategy.latest_robot_pose_beacon_count=0
@@ -508,7 +510,7 @@ def back_task(strategy, back_controller=None,pneumatic_controller=None):
             strategy.queues['ESP_back'].popleft()
         
         time.sleep(0.1)  # 100ms
-def rasp_pi_task(strategy, rpi_controller=None, stm32_controller=None, front_controller=None, back_controller=None, pneumatic_controller=None):
+def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=None, front_controller=None, back_controller=None, pneumatic_controller=None):
     """Runs every 100ms to process RASP_PI queue"""
     global SHUTDOWN_REQUESTED
     global WAITING_TIRETTE
@@ -531,6 +533,8 @@ def rasp_pi_task(strategy, rpi_controller=None, stm32_controller=None, front_con
                     stm32_controller.reset()
                     WAITING_TIRETTE=False
                     strategy.get_logger().info(f"✅ Tirette tjebdet  STRATEGY GOOOOOOOOO !!!!")
+                    round_timer.start_game()
+                    strategy.get_logger().info(f"⏱️  Game timer started!")
                 else:
                     strategy.get_logger().warning("RPI controller not available - skipping wait_start")
             elif command == 'RESET':

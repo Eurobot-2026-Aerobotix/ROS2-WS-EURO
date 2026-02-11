@@ -53,6 +53,11 @@ class StrategyManager(Node):
         self.latest_robot_pose = None
         self.latest_robot_pose_beacon = None
         self.latest_robot_pose_beacon_count = 0
+        
+        # Create Round timer instance
+        from euro.strategy_executor import Round
+        self.round = Round()
+        
         self.create_subscription(
             Vector3,
             '/robot_pose_raw',
@@ -370,7 +375,7 @@ def main(args=None):
     
     rasp_pi_thread = threading.Thread(
         target=rasp_pi_task,
-        args=(strategy, rpi, stm32, front, back, pneumatic),
+        args=(strategy, strategy.round, rpi, stm32, front, back, pneumatic),
         daemon=True
     )
     rasp_pi_thread.start()
