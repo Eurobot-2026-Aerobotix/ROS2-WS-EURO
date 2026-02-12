@@ -131,14 +131,16 @@ class MapManager:
             obs.type = 'enemy'
             obs.color = 'enemy'
             
-            # Use default enemy obstacle size (can be parameterized if needed)
-            # Assuming enemy robot is similar size to our robot
-            obs.width_mm = self.params['robot']['width_mm']
-            obs.height_mm = self.params['robot']['length_mm']
+            # Enemy robot represented as a circle with radius 0.35m (350mm)
+            enemy_radius_mm = 350.0
+            # For collision checking, represent circle as a square with side = diameter
+            enemy_diameter_mm = enemy_radius_mm * 2.0
+            obs.width_mm = enemy_diameter_mm
+            obs.height_mm = enemy_diameter_mm
             
             # Convert to top-left corner (what the planner expects)
-            obs.pose.x = center_x_mm - (obs.width_mm / 2.0)
-            obs.pose.y = center_y_mm - (obs.height_mm / 2.0)
+            obs.pose.x = center_x_mm - enemy_radius_mm
+            obs.pose.y = center_y_mm - enemy_radius_mm
             obs.pose.theta = self.quaternion_to_yaw(msg.pose.orientation)
             
             obs.detected_at = msg.header.stamp
@@ -151,7 +153,7 @@ class MapManager:
         self._publish_enemy_marker(center_x_mm, center_y_mm, obs)
     
     def _publish_enemy_marker(self, center_x_mm: float, center_y_mm: float, obs: Obstacle):
-        """Publish enemy robot visualization marker"""
+        """Publish enemy robot visualization marker as a cylinder (circle)"""
         marker_array = MarkerArray()
         
         enemy_marker = Marker()
@@ -159,18 +161,18 @@ class MapManager:
         enemy_marker.header.stamp = self.node.get_clock().now().to_msg()
         enemy_marker.ns = "enemy"
         enemy_marker.id = 0
-        enemy_marker.type = Marker.CUBE
+        enemy_marker.type = Marker.CYLINDER  # Cylinder to represent circular robot
         enemy_marker.action = Marker.ADD
         
         # Position (center of enemy robot)
         enemy_marker.pose.position.x = center_x_mm / 1000.0
         enemy_marker.pose.position.y = center_y_mm / 1000.0
         enemy_marker.pose.position.z = 0.15  # 150mm high (half of 300mm)
-        enemy_marker.pose.orientation = self.yaw_to_quaternion(obs.pose.theta)
+        enemy_marker.pose.orientation = self.yaw_to_quaternion(0.0)  # Cylinders don't need rotation
         
-        # Size
-        enemy_marker.scale.x = obs.width_mm / 1000.0
-        enemy_marker.scale.y = obs.height_mm / 1000.0
+        # Size: radius 0.35m (diameter 0.7m)
+        enemy_marker.scale.x = 0.7  # Diameter in X
+        enemy_marker.scale.y = 0.7  # Diameter in Y
         enemy_marker.scale.z = 0.30  # 300mm tall robot
         
         # Dark red/magenta for enemy
