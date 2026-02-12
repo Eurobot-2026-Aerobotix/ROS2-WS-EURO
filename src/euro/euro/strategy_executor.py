@@ -171,6 +171,48 @@ def handle_stm32_command(command, params, stm32, lidar, strategy):
         strategy.get_logger().warn(f"Unknown STM32 command: {command}")
     strategy.command_waiting = False
 
+def correct_bezier(strategy, stm32, params):
+    """Correct robot position using beacon after bezier curve execution
+    
+    Args:
+        strategy: Strategy manager instance with beacon data
+        stm32: STM32 controller instance
+        params: Command parameters with fallback positions at indices 6 and 7
+    """
+    global SHUTDOWN_REQUESTED
+    
+    # Wait for at least 2 position updates from beacon
+    while strategy.latest_robot_pose_beacon_count < 2 and not SHUTDOWN_REQUESTED:
+        time.sleep(0.1)
+        strategy.get_logger().info(f"Waiting for two positions from beacon")
+    
+    stm_msg = 0.0
+    pos = None
+    
+    strategy.get_logger().info(f"len(strategy.latest_robot_pose_beacon.tracks): {len(strategy.latest_robot_pose_beacon.tracks)}")
+    
+    # Search for ArUco markers 10 or 6 in beacon tracks
+    if strategy.latest_robot_pose_beacon and len(strategy.latest_robot_pose_beacon.tracks) > 0:
+        for track in strategy.latest_robot_pose_beacon.tracks:
+            if track.aruco_id == 10:
+                stm_msg = 1.0
+                pos = track.map_pos
+                strategy.get_logger().info(f"track.pos: {track.map_pos}")
+                break
+            elif track.aruco_id == 6:
+                stm_msg = 2.0
+                pos = track.map_pos
+                strategy.get_logger().info(f"track.pos: {track.map_pos}")
+                break
+    
+    # Apply position correction
+    if pos is not None:
+        strategy.get_logger().info(f"Received pos from beacon: x={pos.x}, y={pos.y}")
+        stm32.fix_position(stm_msg, pos.x, pos.y)
+    else:
+        strategy.get_logger().info(f"Using fallback position: x={params[6]}, y={params[7]}")
+        stm32.fix_position(stm_msg, params[6], params[7])
+
 def stm32_task(strategy, stm32,lidar):
     """Runs every 100ms to process STM32 queue"""
     global IDLE
@@ -209,7 +251,6 @@ def stm32_task(strategy, stm32,lidar):
             # Wait for command completion with emergency handling
             while (not IDLE and not SHUTDOWN_REQUESTED) or  (EMERGENCY_STOP) or last_stm_command=="emergency" or last_command=="path_finding":
                 # Check for emergency stop
-               
                 if EMERGENCY_STOP and not was_in_emergency and not replanning :
                     strategy.get_logger().warning("🚨 Emergency detected during movement - stopping STM32")
                     stm32.stop()
@@ -241,38 +282,18 @@ def stm32_task(strategy, stm32,lidar):
                     SYSTEMS_IDLE_COUNT=0
                     IDLE=True
                     IDLE_FOR_SYSTEMS=True
-                    time.sleep(4)
                 time.sleep(0.1)
             if not replanning:
                 strategy.get_logger().info(f"idle : {IDLE} :  EMERGENCY_STOP : {EMERGENCY_STOP}"  )
                 strategy.get_logger().info( last_stm_command  )
                 # Reset emergency flag when command completes normally
                 was_in_emergency = False
-                strategy.latest_robot_pose_beacon_count=0
+                strategy.latest_robot_pose_beacon_count = 0
+                
+                # Correct position using beacon after bezier curves
                 if command == 'bezier' or command == 'bezier_backwards':
-                    while( strategy.latest_robot_pose_beacon_count<2 and not SHUTDOWN_REQUESTED):
-                        time.sleep(0.1)
-                        strategy.get_logger().info(f"waitin two positions from nbeacon")
-                    stm_msg=0.0
-                    pos=None
-                    strategy.get_logger().info(f"len(strategy.latest_robot_pose_beacon.tracks):{len(strategy.latest_robot_pose_beacon.tracks)}")
-                    if strategy.latest_robot_pose_beacon and len(strategy.latest_robot_pose_beacon.tracks) > 0:
-                        for track in strategy.latest_robot_pose_beacon.tracks:
-                            if track.aruco_id==10:
-                                stm_msg=1.0
-                                pos=track.map_pos
-                                strategy.get_logger().info(f"track.pos: {track.map_pos}")
-                                break
-                            elif track.aruco_id==6:
-                                stm_msg=2.0
-                                pos=track.map_pos
-                                strategy.get_logger().info(f"track.pos: {track.map_pos}")
-                                break
-                    if pos is not None:
-                        strategy.get_logger().info(f"recevied pos from beacon : x{pos.x} , y : {pos.y}")
-                        stm32.fix_position(stm_msg, pos.x, pos.y)
-                    else:
-                        stm32.fix_position(stm_msg, params[6], params[7])
+                    correct_bezier(strategy, stm32, params)
+                    
                 # Remove command from queue after execution
             if not replanning:
                 lidar.clear_goto_target()

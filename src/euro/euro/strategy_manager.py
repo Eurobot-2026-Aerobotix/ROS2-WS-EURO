@@ -89,7 +89,7 @@ class StrategyManager(Node):
         
         # Clear the STM32 queue
         self.queues['STM'].clear()
-        
+        executor_module.SYSTEMS_IDLE_COUNT=0
         # Use pathfinder's path method (it uses stored goal and latest robot pose)
         stm32_commands, success = self.pathfinder.path()
         
@@ -112,10 +112,9 @@ class StrategyManager(Node):
                 self.queues['STM'].append({
                     'command': 'go_to',
                     'params': [x, y, 700.0],  # List format: [x, y, speed]
-                    'wait': True
+                    'wait': False
                 })
             last_cmd = cmd
-        
         if success and goal_angle is not None:
             self.queues['STM'].append({
                 'command': 'orientate',
@@ -123,8 +122,8 @@ class StrategyManager(Node):
             })
         
         self.get_logger().info(f"✅ Path planning complete! Added {len(self.queues['STM'])} commands to queue")
-        
         # Resume task execution
+        executor_module.replanning = False
         self.is_replanning = False
         return True
 
