@@ -409,8 +409,10 @@ def main(args=None):
                     strategy.global_pos_x = global_goal.get('x')
                     strategy.global_pos_y = global_goal.get('y')
                     # Support both 'angle' and 'theta' keys
-                    strategy.global_pos_angle = global_goal.get('theta') or global_goal.get('angle')
+                    strategy.global_pos_angle = global_goal.get('theta') 
+                    strategy.get_logger().info(f"global pose x: {strategy.global_pos_x} y{strategy.global_pos_y} tita{strategy.global_pos_angle} ")
                     if strategy.global_pos_x != None and strategy.global_pos_y != None and strategy.global_pos_angle != None :
+                        strategy.get_logger().info("global pose set goal")
                         strategy.pathfinder.set_goal(float(strategy.global_pos_x)/1000, float(strategy.global_pos_y)/1000,float(strategy.global_pos_angle))
                 else:
                     strategy.get_logger().warning(f"⚠️  No global goal found for task: {task['name']}")
