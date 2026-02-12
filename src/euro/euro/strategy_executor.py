@@ -199,7 +199,7 @@ def stm32_task(strategy, stm32,lidar):
                     was_in_emergency = True
                     while(not IDLE and not SHUTDOWN_REQUESTED):
                         strategy.get_logger().info(f"IDLE: {IDLE}")
-                        time.sleep(0.1)  # Wait until STM32 reports idle after stop
+                        time.sleep(0.05)  # Wait until STM32 reports idle after stop
                     lidar.start_waiting()  # Start waiting period before rechecking obstacle
                     #IDLE = True  # Mark as idle to prevent status checks
                 
