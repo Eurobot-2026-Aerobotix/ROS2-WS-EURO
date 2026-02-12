@@ -82,12 +82,8 @@ class StrategyManager(Node):
         self.get_logger().info(f"aruco mapper callback")
         self.latest_robot_pose_beacon_count += 1
     def path(self, x_goal, y_goal, theta_goal):
+        """Plan path from current position to goal and load commands into queue"""
         print("Path function called")
-        """Create start and goal PoseStamped from current pose and goal"""
-        # Start pose from latest robot pose
-        if self.latest_robot_pose is None:
-            self.get_logger().error("No robot pose received yet!")
-            return
         
         # Set flag to prevent task loading during replanning
         self.is_replanning = True
@@ -95,24 +91,14 @@ class StrategyManager(Node):
         # Clear the STM32 queue
         self.queues['STM'].clear()
         
-        start_pose = PoseStamped()
-        start_pose.header.stamp = self.get_clock().now().to_msg()
-        start_pose.header.frame_id = "map"
-        start_pose.pose.position.x = self.latest_robot_pose.x
-        start_pose.pose.position.y = self.latest_robot_pose.y
-        start_pose.pose.position.z = 0.0
-        start_pose.pose.orientation = self.yaw_to_quaternion(self.latest_robot_pose.z)
-
-        # Goal pose from arguments
-        goal_pose = PoseStamped()
-        goal_pose.header.stamp = self.get_clock().now().to_msg()
-        goal_pose.header.frame_id = "map"
-        goal_pose.pose.position.x = x_goal
-        goal_pose.pose.position.y = y_goal
-        goal_pose.pose.position.z = 0.0
-        goal_pose.pose.orientation = self.yaw_to_quaternion(theta_goal)
-        stm32_commands, success = self.pathfinder.get_path(start_pose, goal_pose)
-        last_cmd=None
+        # Set goal in pathfinder
+        self.pathfinder.set_goal(x_goal, y_goal, theta_goal)
+        
+        # Use pathfinder's path method (it uses stored goal and latest robot pose)
+        stm32_commands, success = self.pathfinder.path()
+        
+        # Process commands and add to queue
+        last_cmd = None
         for cmd in stm32_commands:
             values = cmd.replace('go_to(', '').replace(')', '').split(',')
             x = float(values[0].strip())
