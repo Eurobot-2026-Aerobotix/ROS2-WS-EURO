@@ -116,6 +116,7 @@ def stm32_task(strategy, stm32,lidar):
     # Variables to save last command for resuming after emergency
     last_command = None
     last_params = None
+    global SYSTEMS_IDLE_COUNT
     was_in_emergency = False
     while rclpy.ok() and not SHUTDOWN_REQUESTED:
         # Check if there are commands in the queue and robot is idle
@@ -237,7 +238,14 @@ def stm32_task(strategy, stm32,lidar):
                     was_in_emergency = False
                     IDLE = False  # Back to moving
                     IDLE_FOR_SYSTEMS=False
-
+                else:
+                    strategy.pathfinder.set_goal(0.2,0.25,180.0)
+                    strategy.path()
+                    last_stm_command=""
+                    SYSTEMS_IDLE_COUNT=0
+                    IDLE=True
+                    IDLE_FOR_SYSTEMS=True
+                    continue  # Skip rest of command processing and check queue again
                 time.sleep(0.1)
             strategy.get_logger().info(f"idle : {IDLE} :  EMERGENCY_STOP : {EMERGENCY_STOP}"  )
             strategy.get_logger().info( last_stm_command  )
@@ -270,6 +278,7 @@ def stm32_task(strategy, stm32,lidar):
                     stm32.fix_position(stm_msg, params[6], params[7])
             # Remove command from queue after execution
             lidar.clear_goto_target()
+            strategy.pathfinder.clear_goal()
             strategy.queues['STM'].popleft()
         
         time.sleep(0.1)  # 100ms
