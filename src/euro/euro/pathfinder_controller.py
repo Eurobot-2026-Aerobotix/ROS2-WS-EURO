@@ -31,6 +31,54 @@ class PathfinderClient(Node):
         self.path_client.wait_for_service()
         self.batch_color_client.wait_for_service()
 
+        # Goal storage
+        self.goal_x = None
+        self.goal_y = None
+        self.goal_angle = None
+
+        # Enemy/obstacle position storage
+        self.enemy_x = None
+        self.enemy_y = None
+
+        # Subscribe to enemy obstacle position
+        self.enemy_subscription = self.create_subscription(
+            PoseStamped,
+            '/obstacle_relative',
+            self.enemy_callback,
+            10
+        )
+
+    # =========================================================
+    # GOAL MANAGEMENT
+    # =========================================================
+    def set_goal(self, x: float, y: float, angle: float):
+        """
+        Set the goal position
+        
+        Args:
+            x: X coordinate
+            y: Y coordinate
+            angle: Angle in radians
+        """
+        self.goal_x = x
+        self.goal_y = y
+        self.goal_angle = angle
+        self.get_logger().info(f'🎯 Goal set: ({x:.2f}, {y:.2f}, {angle:.2f} rad)')
+
+    def clear_goal(self):
+        """
+        Clear the goal position
+        """
+        self.goal_x = None
+        self.goal_y = None
+        self.goal_angle = None
+        self.get_logger().info('🗑️  Goal cleared')
+
+    def enemy_callback(self, msg):
+        """Update enemy obstacle position from /obstacle_relative topic"""
+        self.enemy_x = msg.pose.position.x
+        self.enemy_y = msg.pose.position.y
+
     # =========================================================
     # 1️⃣ GET PATH
     # =========================================================
