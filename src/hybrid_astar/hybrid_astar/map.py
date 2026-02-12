@@ -146,8 +146,6 @@ class MapManager:
             # Add to obstacles list and track source
             self.obstacles.append(obs)
             self.obstacle_sources[obs.id] = 'enemy'
-            self.node.get_logger().info(
-                f"🎯 Enemy robot at ({center_x_mm:.0f}, {center_y_mm:.0f}) mm")
         
         # Publish enemy marker to separate topic
         self._publish_enemy_marker(center_x_mm, center_y_mm, obs)

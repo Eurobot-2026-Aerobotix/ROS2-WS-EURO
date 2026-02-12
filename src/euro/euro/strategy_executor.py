@@ -53,10 +53,10 @@ def robot_status(strategy, stm32, lidar):
         if not IDLE:
             if not IDLE_FOR_SYSTEMS :
                 success, is_completed, _ = stm32.IDLE_FOR_SYSTEMS(1.0)
-                strategy.get_logger().info(f"idle for systems  : {is_completed}")
+                #strategy.get_logger().info(f"idle for systems  : {is_completed}")
             else:
                 success, is_completed, _ = stm32.IDLE(1.0)
-                strategy.get_logger().info(f"idle : {is_completed}")
+                #strategy.get_logger().info(f"idle : {is_completed}")
                 
             if not success:
                 strategy.get_logger().warning("⚠️ Failed to check robot status")
@@ -110,6 +110,7 @@ def stm32_task(strategy, stm32,lidar):
     global IDLE_FOR_SYSTEMS
     global EMERGENCY_STOP
     global last_stm_command
+    replanning=False
     # Import Vector3 for publishing target position
     from geometry_msgs.msg import Vector3
     
@@ -238,7 +239,9 @@ def stm32_task(strategy, stm32,lidar):
                     was_in_emergency = False
                     IDLE = False  # Back to moving
                     IDLE_FOR_SYSTEMS=False
-                else:
+                elif EMERGENCY_STOP and replanning==False:
+                    replanning=True
+                    strategy.get_logger().info(f"pathfinding after lidar: ")
                     strategy.pathfinder.set_goal(0.2,0.25,180.0)
                     strategy.path()
                     last_stm_command=""

@@ -154,7 +154,6 @@ class Lidar(Node):
         self.travel_distance = msg.distance
         
         # If we have an emergency and a go_to target is set
-        self.get_logger().info(f"target x: {self.target_x} target_y: {self.target_y}")
         if msg.emergency_triggered == 1 and self.target_x is not None and self.target_y is not None:
             # Calculate distance to target
             
