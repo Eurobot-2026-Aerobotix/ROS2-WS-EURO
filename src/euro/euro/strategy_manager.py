@@ -418,7 +418,7 @@ def main(args=None):
                     strategy.global_pos_y = global_goal.get('y')
                     # Support both 'angle' and 'theta' keys
                     strategy.global_pos_angle = global_goal.get('theta') or global_goal.get('angle')
-                    strategy.pathfinder.set_goal(strategy.global_pos_x, strategy.global_pos_y,strategy.global_pos_angle)
+                    strategy.pathfinder.set_goal(strategy.global_pos_x/1000, strategy.global_pos_y/1000,strategy.global_pos_angle)
                 else:
                     strategy.get_logger().warning(f"⚠️  No global goal found for task: {task['name']}")
                 
