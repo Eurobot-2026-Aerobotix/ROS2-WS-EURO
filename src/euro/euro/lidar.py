@@ -37,7 +37,7 @@ class Lidar(Node):
         self.enemy_x = None
         self.enemy_y = None
         self._recheck_timer = None
-        
+        self.clear_on=False
         # Subscribe to /emergency_stop (custom EmergencyStop message)
         self.emergency_stop_subscription = self.create_subscription(
             EmergencyStop,
@@ -187,7 +187,10 @@ class Lidar(Node):
                     self.get_logger().info(
                         f"⏱️  Ignoring obstacle - round time ({self.round_time:.1f}s) < 3s"
                     )
-    
+        else: 
+            if self.clear_on:
+                self.emergency_status=0
+
     def start_waiting(self):
         """Start the timer logic to recheck enemy collision after 1 second"""
         if self._recheck_timer is not None:

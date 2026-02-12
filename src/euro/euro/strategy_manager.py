@@ -53,7 +53,7 @@ class StrategyManager(Node):
         self.latest_robot_pose = None
         self.latest_robot_pose_beacon = None
         self.latest_robot_pose_beacon_count = 0
-        
+        self.end_game=False
         # Create Round timer instance
         from euro.strategy_executor import Round
         self.round = Round()
@@ -223,7 +223,7 @@ class StrategyManager(Node):
     def wait_for_all_queues_empty(self):
         """Wait until all device queues are empty (unless replanning)"""
         
-        while (not (self.are_all_queues_empty() or(  executor_module.ESP_FRONT_IDLE==True and executor_module.ESP_BACK_IDLE==True ))) or (not executor_module.IDLE) or executor_module.WAITING_TIRETTE or len(self.queues["STM"])!=0 or len(self.queues["RASP_PI"])!=0 or executor_module.replanning :
+        while (not (self.are_all_queues_empty() or(  executor_module.ESP_FRONT_IDLE==True and executor_module.ESP_BACK_IDLE==True ))) or (not executor_module.IDLE) or executor_module.WAITING_TIRETTE or len(self.queues["STM"])!=0 or len(self.queues["RASP_PI"])!=0 or executor_module.replanning or self.end_game==True:
             # Check if shutdown is requested
             if executor_module.SHUTDOWN_REQUESTED:
                 self.get_logger().info("Shutdown requested, stopping queue wait")

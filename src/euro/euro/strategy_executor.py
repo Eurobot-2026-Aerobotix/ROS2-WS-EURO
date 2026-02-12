@@ -245,11 +245,11 @@ def stm32_task(strategy, stm32,lidar):
             
             # Execute command using handler function
             handle_stm32_command(command, params, stm32, lidar, strategy)
-            
             if command !="set_position":
                 last_stm_command="navigation"
+            
             # Wait for command completion with emergency handling
-            while (not IDLE and not SHUTDOWN_REQUESTED) or  (EMERGENCY_STOP) or last_stm_command=="emergency" or last_command=="path_finding":
+            while (not IDLE and not SHUTDOWN_REQUESTED) or  (EMERGENCY_STOP) or last_stm_command=="emergency" :
                 # Check for emergency stop
                 if EMERGENCY_STOP and not was_in_emergency and not replanning :
                     strategy.get_logger().warning("🚨 Emergency detected during movement - stopping STM32")
@@ -273,7 +273,7 @@ def stm32_task(strategy, stm32,lidar):
                     was_in_emergency = False
                     IDLE = False  # Back to moving
                     IDLE_FOR_SYSTEMS = False
-                elif EMERGENCY_STOP and replanning==False:
+                elif EMERGENCY_STOP and replanning==False :
                     replanning=True
                     time.sleep(3.0)  # Wait for 3 seconds before attempting to replan
                     strategy.get_logger().info(f"pathfinding after lidar: ")
@@ -283,8 +283,10 @@ def stm32_task(strategy, stm32,lidar):
                     SYSTEMS_IDLE_COUNT=0
                     IDLE=True
                     IDLE_FOR_SYSTEMS=True
+                    lidar.clear_on=True
+                    strategy.end_game=True
                 time.sleep(0.1)
-            if not replanning:
+            if  last_stm_command!="navigation": 
                 strategy.get_logger().info(f"idle : {IDLE} :  EMERGENCY_STOP : {EMERGENCY_STOP}"  )
                 strategy.get_logger().info( last_stm_command  )
                 # Reset emergency flag when command completes normally
@@ -296,7 +298,7 @@ def stm32_task(strategy, stm32,lidar):
                     correct_bezier(strategy, stm32, params)
                     
                 # Remove command from queue after execution
-            if not replanning:
+            if last_stm_command=="navigation":
                 lidar.clear_goto_target()
                 strategy.pathfinder.clear_goal()
                 strategy.queues['STM'].popleft()
