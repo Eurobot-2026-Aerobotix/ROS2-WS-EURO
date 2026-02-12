@@ -28,8 +28,18 @@ class PathfinderClient(Node):
             '/get_batch_color_pattern'
         )
 
-        self.path_client.wait_for_service()
-        self.batch_color_client.wait_for_service()
+        # Don't block on wait_for_service - it will timeout if service isn't available
+        self.get_logger().info('Waiting for /compute_path service...')
+        if not self.path_client.wait_for_service(timeout_sec=5.0):
+            self.get_logger().warning('⚠️  /compute_path service not available after 5 seconds')
+        else:
+            self.get_logger().info('✅ /compute_path service is ready')
+        
+        self.get_logger().info('Waiting for /get_batch_color_pattern service...')
+        if not self.batch_color_client.wait_for_service(timeout_sec=5.0):
+            self.get_logger().warning('⚠️  /get_batch_color_pattern service not available after 5 seconds')
+        else:
+            self.get_logger().info('✅ /get_batch_color_pattern service is ready')
 
         # Goal storage
         self.goal_x = None
@@ -166,21 +176,38 @@ class PathfinderClient(Node):
             stm32_commands (list[str])
             success (bool)
         """
+        
+        # Check if service is available
+        if not self.path_client.service_is_ready():
+            self.get_logger().error('❌ /compute_path service is not available!')
+            return [], False
+
+        self.get_logger().info(f'📍 Requesting path from ({start_pose.pose.position.x:.2f}, {start_pose.pose.position.y:.2f}) to ({goal_pose.pose.position.x:.2f}, {goal_pose.pose.position.y:.2f})')
 
         request = ComputePath.Request()
         request.start_pose = start_pose
         request.goal_pose = goal_pose
 
         future = self.path_client.call_async(request)
-        rclpy.spin_until_future_complete(self, future)
+        
+        # Wait for future to complete (node is already being spun by executor)
+        import time
+        timeout = 30.0
+        start_time = time.time()
+        while not future.done():
+            if time.time() - start_time > timeout:
+                self.get_logger().error('❌ Path service call timed out after 30s')
+                return [], False
+            time.sleep(0.01)
 
         if not future.result():
-            self.get_logger().error('❌ Path service call failed')
+            self.get_logger().error('❌ Path service call failed - no response received')
             return [], False
 
         response = future.result()
 
         if response.success:
+            self.get_logger().info(f'✅ Path found with {len(response.stm32_commands)} commands')
             return response.stm32_commands, True
         else:
             self.get_logger().warning(f'⚠ Path failed: {response.message}')
@@ -205,7 +232,16 @@ class PathfinderClient(Node):
         request.pos = pos
 
         future = self.batch_color_client.call_async(request)
-        rclpy.spin_until_future_complete(self, future)
+        
+        # Wait for future to complete (node is already being spun by executor)
+        import time
+        timeout = 10.0
+        start_time = time.time()
+        while not future.done():
+            if time.time() - start_time > timeout:
+                self.get_logger().error('❌ Batch color service call timed out after 10s')
+                return "", False, "", Point()
+            time.sleep(0.01)
 
         if not future.result():
             self.get_logger().error('❌ Batch color service call failed')

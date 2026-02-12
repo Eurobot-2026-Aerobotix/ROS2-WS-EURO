@@ -176,7 +176,7 @@ class Lidar(Node):
             else: 
                 self.cleared_emergency_count=0
                 # Only set emergency status if round time is >= 3 seconds
-                if self.round_time >= 3.0:
+                if self.round_time >= 1.0:
                     self.emergency_status = 1
                     self.get_logger().warning(
                         f"🚨 Emergency ! Obstacle ({effective_collision_distance*1000:.0f}mm) "

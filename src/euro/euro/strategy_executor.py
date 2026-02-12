@@ -37,6 +37,7 @@ color_pt_back=None
 color_pt=None
 SHUTDOWN_REQUESTED = False  # Global shutdown flag
 WAITING_TIRETTE=False
+replanning=False
 last_stm_command=""
 def robot_status(strategy, stm32, lidar):
     """Runs every 100ms to check STM32 movement status and lidar obstacles"""
@@ -110,7 +111,7 @@ def stm32_task(strategy, stm32,lidar):
     global IDLE_FOR_SYSTEMS
     global EMERGENCY_STOP
     global last_stm_command
-    replanning=False
+    global replanning
     # Import Vector3 for publishing target position
     from geometry_msgs.msg import Vector3
     
@@ -127,7 +128,7 @@ def stm32_task(strategy, stm32,lidar):
             params = cmd.get('params', {})
             wait = cmd.get('wait', False)
             params = to_float_list(params)
-            
+            strategy.get_logger().info(f"goto : x: {params[0]} y : {params[1]}")
             # Save command for potential resume after emergency
             last_command = command
             last_params = params
@@ -188,10 +189,10 @@ def stm32_task(strategy, stm32,lidar):
             if command !="set_position":
                 last_stm_command="navigation"
             # Wait for command completion with emergency handling
-            while (not IDLE and not SHUTDOWN_REQUESTED) or  (EMERGENCY_STOP) or last_stm_command=="emergency":
+            while (not IDLE and not SHUTDOWN_REQUESTED) or  (EMERGENCY_STOP) or last_stm_command=="emergency" or last_command=="path_finding":
                 # Check for emergency stop
                
-                if EMERGENCY_STOP and not was_in_emergency:
+                if EMERGENCY_STOP and not was_in_emergency and not replanning :
                     strategy.get_logger().warning("🚨 Emergency detected during movement - stopping STM32")
                     stm32.stop()
                     last_stm_command="emergency"
@@ -205,7 +206,7 @@ def stm32_task(strategy, stm32,lidar):
                     #IDLE = True  # Mark as idle to prevent status checks
                 
                 # Check if emergency cleared
-                elif not EMERGENCY_STOP and was_in_emergency :
+                elif not EMERGENCY_STOP and was_in_emergency  :
                     strategy.get_logger().info("✅ Emergency cleared - resuming command")
                     # Resend the last command
                     #time.sleep(1)
@@ -244,45 +245,47 @@ def stm32_task(strategy, stm32,lidar):
                     strategy.get_logger().info(f"pathfinding after lidar: ")
                     strategy.pathfinder.set_goal(0.2,0.25,180.0)
                     strategy.path()
-                    last_stm_command=""
+                    last_stm_command="path_finding"
                     SYSTEMS_IDLE_COUNT=0
                     IDLE=True
                     IDLE_FOR_SYSTEMS=True
-                    continue  # Skip rest of command processing and check queue again
+                    time.sleep(4)
                 time.sleep(0.1)
-            strategy.get_logger().info(f"idle : {IDLE} :  EMERGENCY_STOP : {EMERGENCY_STOP}"  )
-            strategy.get_logger().info( last_stm_command  )
-            # Reset emergency flag when command completes normally
-            was_in_emergency = False
-            strategy.latest_robot_pose_beacon_count=0
-            if command == 'bezier' or command == 'bezier_backwards':
-                while( strategy.latest_robot_pose_beacon_count<2 and not SHUTDOWN_REQUESTED):
-                    time.sleep(0.1)
-                    strategy.get_logger().info(f"waitin two positions from nbeacon")
-                stm_msg=0.0
-                pos=None
-                strategy.get_logger().info(f"len(strategy.latest_robot_pose_beacon.tracks):{len(strategy.latest_robot_pose_beacon.tracks)}")
-                if strategy.latest_robot_pose_beacon and len(strategy.latest_robot_pose_beacon.tracks) > 0:
-                    for track in strategy.latest_robot_pose_beacon.tracks:
-                        if track.aruco_id==10:
-                            stm_msg=1.0
-                            pos=track.map_pos
-                            strategy.get_logger().info(f"track.pos: {track.map_pos}")
-                            break
-                        elif track.aruco_id==6:
-                            stm_msg=2.0
-                            pos=track.map_pos
-                            strategy.get_logger().info(f"track.pos: {track.map_pos}")
-                            break
-                if pos is not None:
-                    strategy.get_logger().info(f"recevied pos from beacon : x{pos.x} , y : {pos.y}")
-                    stm32.fix_position(stm_msg, pos.x, pos.y)
-                else:
-                    stm32.fix_position(stm_msg, params[6], params[7])
-            # Remove command from queue after execution
-            lidar.clear_goto_target()
-            strategy.pathfinder.clear_goal()
-            strategy.queues['STM'].popleft()
+            if not replanning:
+                strategy.get_logger().info(f"idle : {IDLE} :  EMERGENCY_STOP : {EMERGENCY_STOP}"  )
+                strategy.get_logger().info( last_stm_command  )
+                # Reset emergency flag when command completes normally
+                was_in_emergency = False
+                strategy.latest_robot_pose_beacon_count=0
+                if command == 'bezier' or command == 'bezier_backwards':
+                    while( strategy.latest_robot_pose_beacon_count<2 and not SHUTDOWN_REQUESTED):
+                        time.sleep(0.1)
+                        strategy.get_logger().info(f"waitin two positions from nbeacon")
+                    stm_msg=0.0
+                    pos=None
+                    strategy.get_logger().info(f"len(strategy.latest_robot_pose_beacon.tracks):{len(strategy.latest_robot_pose_beacon.tracks)}")
+                    if strategy.latest_robot_pose_beacon and len(strategy.latest_robot_pose_beacon.tracks) > 0:
+                        for track in strategy.latest_robot_pose_beacon.tracks:
+                            if track.aruco_id==10:
+                                stm_msg=1.0
+                                pos=track.map_pos
+                                strategy.get_logger().info(f"track.pos: {track.map_pos}")
+                                break
+                            elif track.aruco_id==6:
+                                stm_msg=2.0
+                                pos=track.map_pos
+                                strategy.get_logger().info(f"track.pos: {track.map_pos}")
+                                break
+                    if pos is not None:
+                        strategy.get_logger().info(f"recevied pos from beacon : x{pos.x} , y : {pos.y}")
+                        stm32.fix_position(stm_msg, pos.x, pos.y)
+                    else:
+                        stm32.fix_position(stm_msg, params[6], params[7])
+                # Remove command from queue after execution
+            if not replanning:
+                lidar.clear_goto_target()
+                strategy.pathfinder.clear_goal()
+                strategy.queues['STM'].popleft()
         
         time.sleep(0.1)  # 100ms
 def handle_color_pattner(strategy):

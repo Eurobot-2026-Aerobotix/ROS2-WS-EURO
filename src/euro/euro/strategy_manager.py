@@ -111,11 +111,7 @@ class StrategyManager(Node):
             if cmd != last_cmd:
                 self.queues['STM'].append({
                     'command': 'go_to',
-                    'params': {
-                        'x': x,
-                        'y': y,
-                        'speed': 700.0
-                    },
+                    'params': [x, y, 700.0],  # List format: [x, y, speed]
                     'wait': True
                 })
             last_cmd = cmd
@@ -123,10 +119,7 @@ class StrategyManager(Node):
         if success and goal_angle is not None:
             self.queues['STM'].append({
                 'command': 'orientate',
-                'params': {
-                    'angle': goal_angle,
-                    'is_radian': 0.0
-                },
+                'params': [goal_angle, 0.0],  # List format: [angle, is_radian]
             })
         
         self.get_logger().info(f"✅ Path planning complete! Added {len(self.queues['STM'])} commands to queue")
@@ -231,7 +224,7 @@ class StrategyManager(Node):
     def wait_for_all_queues_empty(self):
         """Wait until all device queues are empty (unless replanning)"""
         
-        while (not (self.are_all_queues_empty() or(  executor_module.ESP_FRONT_IDLE==True and executor_module.ESP_BACK_IDLE==True ))) or (not executor_module.IDLE) or executor_module.WAITING_TIRETTE or len(self.queues["STM"])!=0 or len(self.queues["RASP_PI"])!=0  :
+        while (not (self.are_all_queues_empty() or(  executor_module.ESP_FRONT_IDLE==True and executor_module.ESP_BACK_IDLE==True ))) or (not executor_module.IDLE) or executor_module.WAITING_TIRETTE or len(self.queues["STM"])!=0 or len(self.queues["RASP_PI"])!=0 or executor_module.replanning :
             # Check if shutdown is requested
             if executor_module.SHUTDOWN_REQUESTED:
                 self.get_logger().info("Shutdown requested, stopping queue wait")
@@ -309,7 +302,7 @@ def main(args=None):
     executor.add_node(back)
     executor.add_node(pneumatic)
     executor.add_node(rpi)
-    
+    executor.add_node(strategy.pathfinder)
     # Reset STM32 and wait for reconnection
     strategy.get_logger().info("Resetting STM32...")
     rpi.reset_stm32()
