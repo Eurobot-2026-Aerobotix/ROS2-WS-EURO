@@ -340,7 +340,7 @@ def main(args=None):
     
     lidar_thread = threading.Thread(
         target=lidar_status,
-        args=(strategy, stm32, lidar),
+        args=(strategy, stm32, lidar, strategy.round),
         daemon=True
     )
     lidar_thread.start()

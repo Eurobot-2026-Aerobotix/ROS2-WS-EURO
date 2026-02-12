@@ -18,6 +18,9 @@ class Lidar(Node):
         self.emergency_status = 0
         self.travel_distance = 0.0
         
+        # Round time tracking
+        self.round_time = 0.0
+        
         # Go-to target tracking
         self.target_x = None
         self.target_y = None
@@ -70,6 +73,15 @@ class Lidar(Node):
         """Update enemy obstacle position"""
         self.enemy_x = msg.pose.position.x
         self.enemy_y = msg.pose.position.y
+    
+    def set_round_time(self, time: float):
+        """
+        Set the current round time
+        
+        Args:
+            time (float): Round time in seconds
+        """
+        self.round_time = time
     
     def set_goto_target(self, x, y):
         """
@@ -163,12 +175,18 @@ class Lidar(Node):
                 )
             else: 
                 self.cleared_emergency_count=0
-                self.emergency_status = 1
-                self.get_logger().warning(
-                    f"🚨 Emergency ! Obstacle ({effective_collision_distance*1000:.0f}mm) "
-                    f"is before target ({distance_to_target*1000:.0f}mm)"
-                    f"robot position : ({self.current_x:.3f}, {self.current_y:.3f})"
-                )
+                # Only set emergency status if round time is >= 3 seconds
+                if self.round_time >= 3.0:
+                    self.emergency_status = 1
+                    self.get_logger().warning(
+                        f"🚨 Emergency ! Obstacle ({effective_collision_distance*1000:.0f}mm) "
+                        f"is before target ({distance_to_target*1000:.0f}mm) "
+                        f"robot position : ({self.current_x:.3f}, {self.current_y:.3f})"
+                    )
+                else:
+                    self.get_logger().info(
+                        f"⏱️  Ignoring obstacle - round time ({self.round_time:.1f}s) < 3s"
+                    )
     
     def start_waiting(self):
         """Start the timer logic to recheck enemy collision after 1 second"""

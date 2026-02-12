@@ -72,13 +72,16 @@ def robot_status(strategy, stm32, lidar):
         
         time.sleep(0.1)  # 100ms
 
-def lidar_status(strategy, stm32, lidar):
+def lidar_status(strategy, stm32, lidar, round_timer):
     """Runs every 100ms to check lidar status and handle emergency stops"""
     global EMERGENCY_STOP
     global SHUTDOWN_REQUESTED
     first_emergency = True
     
     while rclpy.ok() and not SHUTDOWN_REQUESTED:
+        # Update lidar with current round time
+        lidar.set_round_time(round_timer.time())
+        
         # Check emergency stop from lidar
         EMERGENCY_STOP = lidar.getstatus()
         
@@ -234,7 +237,7 @@ def stm32_task(strategy, stm32,lidar):
                     was_in_emergency = False
                     IDLE = False  # Back to moving
                     IDLE_FOR_SYSTEMS=False
-                
+
                 time.sleep(0.1)
             strategy.get_logger().info(f"idle : {IDLE} :  EMERGENCY_STOP : {EMERGENCY_STOP}"  )
             strategy.get_logger().info( last_stm_command  )
