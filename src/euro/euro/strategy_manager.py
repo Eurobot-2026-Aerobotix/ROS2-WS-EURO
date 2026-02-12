@@ -71,7 +71,6 @@ class StrategyManager(Node):
             10
         )
         self.pathfinder = PathfinderClient()
-        self.goal = (0.2, 2.7, 1.57079632679)
         self.path_called = False
     def robot_pose_callback(self, msg):
         self.latest_robot_pose = msg
@@ -81,9 +80,9 @@ class StrategyManager(Node):
         self.latest_robot_pose_beacon = msg
         self.get_logger().info(f"aruco mapper callback")
         self.latest_robot_pose_beacon_count += 1
-    def path(self, x_goal, y_goal, theta_goal):
-        """Plan path from current position to goal and load commands into queue"""
-        print("Path function called")
+    def path(self):
+        """Plan path from current position to stored goal and load commands into queue"""
+        self.get_logger().info(f"🗺️  Planning path to stored goal in pathfinder")
         
         # Set flag to prevent task loading during replanning
         self.is_replanning = True
@@ -91,11 +90,16 @@ class StrategyManager(Node):
         # Clear the STM32 queue
         self.queues['STM'].clear()
         
-        # Set goal in pathfinder
-        self.pathfinder.set_goal(x_goal, y_goal, theta_goal)
-        
         # Use pathfinder's path method (it uses stored goal and latest robot pose)
         stm32_commands, success = self.pathfinder.path()
+        
+        if not success:
+            self.get_logger().error("❌ Path planning failed!")
+            self.is_replanning = False
+            return False
+        
+        # Get goal from pathfinder for orientation command
+        goal_angle = self.pathfinder.goal_angle
         
         # Process commands and add to queue
         last_cmd = None
@@ -104,7 +108,7 @@ class StrategyManager(Node):
             x = float(values[0].strip())
             y = float(values[1].strip())
             speed = int(values[2].strip())
-            if(cmd != last_cmd):
+            if cmd != last_cmd:
                 self.queues['STM'].append({
                     'command': 'go_to',
                     'params': {
@@ -114,18 +118,22 @@ class StrategyManager(Node):
                     },
                     'wait': True
                 })
-            last_cmd=cmd
-        if success :
+            last_cmd = cmd
+        
+        if success and goal_angle is not None:
             self.queues['STM'].append({
                 'command': 'orientate',
                 'params': {
-                    'angle': theta_goal,
+                    'angle': goal_angle,
                     'is_radian': 0.0
                 },
             })
         
+        self.get_logger().info(f"✅ Path planning complete! Added {len(self.queues['STM'])} commands to queue")
+        
         # Resume task execution
         self.is_replanning = False
+        return True
 
     def quaternion_to_yaw(self, quat: Quaternion) -> float:
         """Convert quaternion to yaw angle"""
@@ -408,9 +416,9 @@ def main(args=None):
                 if global_goal:
                     strategy.global_pos_x = global_goal.get('x')
                     strategy.global_pos_y = global_goal.get('y')
-                    
                     # Support both 'angle' and 'theta' keys
                     strategy.global_pos_angle = global_goal.get('theta') or global_goal.get('angle')
+                    strategy.pathfinder.set_goal(strategy.global_pos_x, strategy.global_pos_y,strategy.global_pos_angle)
                 else:
                     strategy.get_logger().warning(f"⚠️  No global goal found for task: {task['name']}")
                 
