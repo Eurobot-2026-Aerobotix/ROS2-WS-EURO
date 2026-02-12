@@ -104,6 +104,73 @@ def to_float_list(params):
         return [float(p) for p in params]
     except (TypeError, ValueError) as e:
         raise ValueError(f"Invalid STM32 params: {params}") from e
+
+def handle_stm32_command(command, params, stm32, lidar, strategy):
+    """Execute STM32 command based on type
+    
+    Args:
+        command: Command name string
+        params: List of command parameters
+        stm32: STM32 controller instance
+        lidar: Lidar instance
+        strategy: Strategy manager instance
+    """
+    global IDLE
+    global IDLE_FOR_SYSTEMS
+    
+    if command == 'move_forward':
+        stm32.move_forward(params[0], params[1], params[2] if len(params) > 2 else 0.0)
+        IDLE = False
+        IDLE_FOR_SYSTEMS = False
+    elif command == 'rotate':
+        stm32.rotate(params[0], params[1] if len(params) > 1 else 0.0)
+        IDLE = False
+        IDLE_FOR_SYSTEMS = False
+    elif command == 'go_to':
+        lidar.set_goto_target(params[0]/1000, params[1]/1000)  # Convert mm to meters for lidar
+        IDLE_FOR_SYSTEMS = False
+        
+        if len(params) > 3:
+            stm32.go_to(params[0], params[1], params[2], params[3])
+        else:
+            stm32.go_to(params[0], params[1], params[2])
+        IDLE = False
+        
+    elif command == 'orientate':
+        stm32.orientate(params[0], params[1] if len(params) > 1 else 0.0)
+        IDLE = False
+        IDLE_FOR_SYSTEMS = False
+    elif command == 'bezier':
+        if len(params) > 9:
+            stm32.bezier_curve(params[0], params[1], params[2], params[3], params[4], params[5], params[8], params[9])
+        else:
+            stm32.bezier_curve(params[0], params[1], params[2], params[3], params[4], params[5], params[8])
+        IDLE = False
+        IDLE_FOR_SYSTEMS = False
+    
+    elif command == 'go_to_backwards':
+        # Publish target position for collision detection
+        lidar.set_goto_target(params[0]/1000, params[1]/1000)  # Convert mm to meters for lidar
+        
+        if len(params) > 3:
+            stm32.go_to_backwards(params[0], params[1], params[2], params[3])
+        else:
+            stm32.go_to_backwards(params[0], params[1], params[2])
+        IDLE = False
+        IDLE_FOR_SYSTEMS = False
+    elif command == 'bezier_backwards':
+        if len(params) > 9:
+            stm32.bezier_curve_backwards(params[0], params[1], params[2], params[3], params[4], params[5], params[8], params[9])
+        else:
+            stm32.bezier_curve_backwards(params[0], params[1], params[2], params[3], params[4], params[5], params[8])
+        IDLE = False
+        IDLE_FOR_SYSTEMS = False
+    elif command == 'set_position':
+        stm32.set_position(params[0], params[1], params[2])
+    else:
+        strategy.get_logger().warn(f"Unknown STM32 command: {command}")
+    strategy.command_waiting = False
+
 def stm32_task(strategy, stm32,lidar):
     """Runs every 100ms to process STM32 queue"""
     global IDLE
@@ -133,59 +200,10 @@ def stm32_task(strategy, stm32,lidar):
             last_command = command
             last_params = params
             last_stm_command=""
-            # Execute command based on type
-            if command == 'move_forward':
-                stm32.move_forward(params[0], params[1], params[2] if len(params) > 2 else 0.0)
-                IDLE = False
-                IDLE_FOR_SYSTEMS=False
-            elif command == 'rotate':
-                stm32.rotate(params[0], params[1] if len(params) > 1 else 0.0)
-                IDLE = False
-                IDLE_FOR_SYSTEMS=False
-            elif command == 'go_to':
-                lidar.set_goto_target(params[0]/1000, params[1]/1000)  # Convert mm to meters for lidar
-                IDLE_FOR_SYSTEMS=False
-                
-                if len(params) > 3:
-                    stm32.go_to(params[0], params[1], params[2], params[3])
-                else:
-                    stm32.go_to(params[0], params[1], params[2])
-                IDLE = False
-                
-            elif command == 'orientate':
-                stm32.orientate(params[0], params[1] if len(params) > 1 else 0.0)
-                IDLE = False
-                IDLE_FOR_SYSTEMS=False
-            elif command == 'bezier':
-                if len(params) > 9:
-                    stm32.bezier_curve(params[0], params[1], params[2], params[3], params[4], params[5], params[8], params[9])
-                else:
-                    stm32.bezier_curve(params[0], params[1], params[2], params[3], params[4], params[5], params[8])
-                IDLE = False
-                IDLE_FOR_SYSTEMS=False
             
-            elif command == 'go_to_backwards':
-                # Publish target position for collision detection
-                lidar.set_goto_target(params[0]/1000, params[1]/1000)  # Convert mm to meters for lidar
-                
-                if len(params) > 3:
-                    stm32.go_to_backwards(params[0], params[1], params[2], params[3])
-                else:
-                    stm32.go_to_backwards(params[0], params[1], params[2])
-                IDLE = False
-                IDLE_FOR_SYSTEMS=False
-            elif command == 'bezier_backwards':
-                if len(params) > 9:
-                    stm32.bezier_curve_backwards(params[0], params[1], params[2], params[3], params[4], params[5], params[8], params[9])
-                else:
-                    stm32.bezier_curve_backwards(params[0], params[1], params[2], params[3], params[4], params[5], params[8])
-                IDLE = False
-                IDLE_FOR_SYSTEMS=False
-            elif command == 'set_position':
-                stm32.set_position(params[0], params[1], params[2])
-            else:
-                strategy.get_logger().warn(f"Unknown STM32 command: {command}")
-            strategy.command_waiting=False
+            # Execute command using handler function
+            handle_stm32_command(command, params, stm32, lidar, strategy)
+            
             if command !="set_position":
                 last_stm_command="navigation"
             # Wait for command completion with emergency handling
@@ -208,38 +226,12 @@ def stm32_task(strategy, stm32,lidar):
                 # Check if emergency cleared
                 elif not EMERGENCY_STOP and was_in_emergency  :
                     strategy.get_logger().info("✅ Emergency cleared - resuming command")
-                    # Resend the last command
-                    #time.sleep(1)
-                    if last_command == 'move_forward':
-                        stm32.move_forward(last_params[0], last_params[1], last_params[2] if len(last_params) > 2 else 0.0)
-                    elif last_command == 'rotate':
-                        stm32.rotate(last_params[0], last_params[1] if len(last_params) > 1 else 0.0)
-                    elif last_command == 'go_to':
-                        if len(last_params) > 3:
-                            stm32.go_to(last_params[0], last_params[1], last_params[2], last_params[3])
-                        else:
-                            stm32.go_to(last_params[0], last_params[1], last_params[2])
-                    elif last_command == 'orientate':
-                        stm32.orientate(last_params[0], last_params[1] if len(last_params) > 1 else 0.0)
-                    elif last_command == 'bezier':
-                        if len(last_params) > 9:
-                            stm32.bezier_curve(last_params[0], last_params[1], last_params[2], last_params[3], last_params[4], last_params[5], last_params[8], last_params[9])
-                        else:
-                            stm32.bezier_curve(last_params[0], last_params[1], last_params[2], last_params[3], last_params[4], last_params[5], last_params[8])
-                    elif last_command == 'go_to_backwards':
-                        if len(last_params) > 3:
-                            stm32.go_to_backwards(last_params[0], last_params[1], last_params[2], last_params[3])
-                        else:
-                            stm32.go_to_backwards(last_params[0], last_params[1], last_params[2])
-                    elif last_command == 'bezier_backwards':
-                        if len(last_params) > 9:
-                            stm32.bezier_curve_backwards(last_params[0], last_params[1], last_params[2], last_params[3], last_params[4], last_params[5], last_params[8], last_params[9])
-                        else:
-                            stm32.bezier_curve_backwards(last_params[0], last_params[1], last_params[2], last_params[3], last_params[4], last_params[5], last_params[8])
+                    # Resend the last command using handler function
+                    handle_stm32_command(last_command, last_params, stm32, lidar, strategy)
                     last_stm_command="navigation"
                     was_in_emergency = False
                     IDLE = False  # Back to moving
-                    IDLE_FOR_SYSTEMS=False
+                    IDLE_FOR_SYSTEMS = False
                 elif EMERGENCY_STOP and replanning==False:
                     replanning=True
                     strategy.get_logger().info(f"pathfinding after lidar: ")
