@@ -569,6 +569,8 @@ def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=No
                     strategy.get_logger().info(f"✅ Tirette tjebdet  STRATEGY GOOOOOOOOO !!!!")
                     round_timer.start_game()
                     strategy.get_logger().info(f"⏱️  Game timer started!")
+                    strategy.get_logger().info("updating map ")
+                    strategy.pathfinder.update_map()
                 else:
                     strategy.get_logger().warning("RPI controller not available - skipping wait_start")
             elif command == 'RESET':

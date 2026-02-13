@@ -7,6 +7,7 @@ from geometry_msgs.msg import PoseStamped, Point,Vector3
 from nav_msgs.msg import Path
 
 from hybrid_astar.srv import ComputePath, GetBatchColorPattern
+from std_srvs.srv import Trigger
 
 class PathfinderClient(Node):
     """
@@ -27,6 +28,11 @@ class PathfinderClient(Node):
             GetBatchColorPattern,
             '/get_batch_color_pattern'
         )
+        
+        self.update_map_client = self.create_client(
+            Trigger,
+            '/update_map'
+        )
 
         # Don't block on wait_for_service - it will timeout if service isn't available
         self.get_logger().info('Waiting for /compute_path service...')
@@ -40,6 +46,12 @@ class PathfinderClient(Node):
             self.get_logger().warning('⚠️  /get_batch_color_pattern service not available after 5 seconds')
         else:
             self.get_logger().info('✅ /get_batch_color_pattern service is ready')
+        
+        self.get_logger().info('Waiting for /update_map service...')
+        if not self.update_map_client.wait_for_service(timeout_sec=5.0):
+            self.get_logger().warning('⚠️  /update_map service not available after 5 seconds')
+        else:
+            self.get_logger().info('✅ /update_map service is ready')
 
         # Goal storage
         self.goal_x = None
@@ -214,7 +226,51 @@ class PathfinderClient(Node):
             return [], False
 
     # =========================================================
-    # 2️⃣ GET BATCH COLOR
+    # 2️⃣ UPDATE MAP
+    # =========================================================
+    def update_map(self):
+        """
+        Trigger map update to fetch latest stable batches from ArUco mapper
+        
+        Returns:
+            success (bool): Whether the update succeeded
+            message (str): Status message
+        """
+        # Check if service is available
+        if not self.update_map_client.service_is_ready():
+            self.get_logger().error('❌ /update_map service is not available!')
+            return False, 'Service not available'
+
+        self.get_logger().info('🔄 Requesting map update...')
+
+        request = Trigger.Request()
+        future = self.update_map_client.call_async(request)
+        
+        # Wait for future to complete
+        import time
+        timeout = 10.0
+        start_time = time.time()
+        while not future.done():
+            if time.time() - start_time > timeout:
+                self.get_logger().error('❌ Map update service call timed out after 10s')
+                return False, 'Timeout'
+            time.sleep(0.01)
+
+        if not future.result():
+            self.get_logger().error('❌ Map update service call failed - no response received')
+            return False, 'No response'
+
+        response = future.result()
+
+        if response.success:
+            self.get_logger().info(f'✅ Map updated: {response.message}')
+            return True, response.message
+        else:
+            self.get_logger().warning(f'⚠️ Map update failed: {response.message}')
+            return False, response.message
+
+    # =========================================================
+    # 3️⃣ GET BATCH COLOR
     # =========================================================
     def get_batch_color(self, known_id: str, pos: Point):
         """
