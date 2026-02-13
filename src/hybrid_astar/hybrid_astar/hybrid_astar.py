@@ -367,7 +367,7 @@ class HybridAStarPathfinder:
     
     def heuristic(self, x: float, y: float, goal_x: float, goal_y: float) -> float:
         """Euclidean distance heuristic (weighted for faster convergence)."""
-        return 1.5 * math.sqrt((x - goal_x)**2 + (y - goal_y)**2)
+        return 2.0 * math.sqrt((x - goal_x)**2 + (y - goal_y)**2)
     
     def discretize_pose(self, x: float, y: float, theta: float, grid_resolution: float) -> Tuple[int, int, int]:
         """Discretize continuous pose for duplicate detection."""
@@ -418,8 +418,8 @@ class HybridAStarPathfinder:
         g_score = {self.discretize_pose(*start_pose, grid_resolution): 0}
         closed_set = set()
         
-        # Goal tolerance (relaxed for speed)
-        goal_tolerance = 20.0  # mm
+        # Goal tolerance (relaxed for speed, refinement phase will get us closer)
+        goal_tolerance = 50.0  # mm
         angle_tolerance = math.radians(20)  # degrees
         
         iterations = 0
@@ -437,7 +437,16 @@ class HybridAStarPathfinder:
             
             if dist_to_goal < goal_tolerance and angle_diff < angle_tolerance:
                 print(f"✅ Path found in {iterations} iterations!")
-                return self._reconstruct_path(came_from, current)
+                path = self._reconstruct_path(came_from, current)
+                
+                # Refinement phase: try to get closer to exact goal
+                if dist_to_goal > 10.0:  # Only refine if further than 10mm
+                    refined = self._refine_final_position(path, goal_pose, grid_resolution)
+                    if refined:
+                        print(f"   🎯 Refined final position: {dist_to_goal:.1f}mm → {math.sqrt((refined[-1][0]-goal_x)**2 + (refined[-1][1]-goal_y)**2):.1f}mm")
+                        return refined
+                
+                return path
             
             if current_discrete in closed_set:
                 continue
@@ -464,6 +473,40 @@ class HybridAStarPathfinder:
                         counter += 1
         
         print(f"✗ No path found after {iterations} iterations")
+        return None
+    
+    def _refine_final_position(self, path: List[Tuple[float, float, float]], 
+                               goal_pose: Tuple[float, float, float],
+                               grid_resolution: float) -> Optional[List[Tuple[float, float, float]]]:
+        """Try to refine the final position to get closer to the exact goal."""
+        if len(path) < 2:
+            return None
+        
+        goal_x, goal_y, goal_theta = goal_pose
+        last_x, last_y, last_theta = path[-1]
+        
+        # Try small steps toward goal
+        for step_size in [5.0, 10.0, 15.0, 20.0]:  # mm
+            dx = goal_x - last_x
+            dy = goal_y - last_y
+            dist = math.sqrt(dx**2 + dy**2)
+            
+            if dist < step_size:
+                # Direct step to goal
+                if not self.is_collision(goal_x, goal_y, goal_theta, grid_resolution):
+                    return path[:-1] + [(goal_x, goal_y, goal_theta)]
+            else:
+                # Intermediate step
+                ratio = step_size / dist
+                new_x = last_x + dx * ratio
+                new_y = last_y + dy * ratio
+                angle_to_goal = math.atan2(dy, dx)
+                
+                if not self.is_collision(new_x, new_y, angle_to_goal, grid_resolution):
+                    # Check if we can then reach goal
+                    if not self.is_collision(goal_x, goal_y, goal_theta, grid_resolution):
+                        return path[:-1] + [(new_x, new_y, angle_to_goal), (goal_x, goal_y, goal_theta)]
+        
         return None
     
     def _reconstruct_path(self, came_from: dict, current: Tuple[float, float, float]) -> List[Tuple[float, float, float]]:
