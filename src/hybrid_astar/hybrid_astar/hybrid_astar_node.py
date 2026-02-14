@@ -115,7 +115,8 @@ class HybridAStarNode(Node):
             grid_width, 
             grid_height,
             effective_width,
-            effective_length
+            effective_length,
+            self.params['grid']['resolution_mm']
         )
         
         # Add permanent obstacle area (0, 600) to (450, 2400)
@@ -317,7 +318,7 @@ class HybridAStarNode(Node):
     path: list,
     grid_resolution: float,
     max_added_distance_mm: float = 0.0,  # your threshold
-    sample_step_mm: float = 50.0
+    sample_step_mm: float = 10.0  # Reduced from 50mm for better collision detection
 ) -> list:
         """
         Simplify a path by replacing 4-point zig-zag segments with their line
@@ -333,16 +334,20 @@ class HybridAStarNode(Node):
         if len(path) < 4:
             return path
 
-        def collision_check_segment(p1, p2, theta):
+        def collision_check_segment(pose1, pose2):
             """
-            Check collision along a straight segment by sampling points
+            Check collision along a straight segment by sampling points with interpolated orientation
+            pose1, pose2: tuples of (x, y, theta)
             """
-            dist = math.hypot(p2[0] - p1[0], p2[1] - p1[1])
-            steps = max(5, int(dist / sample_step_mm))
+            x1, y1, theta1 = pose1
+            x2, y2, theta2 = pose2
+            dist = math.hypot(x2 - x1, y2 - y1)
+            steps = max(10, int(dist / sample_step_mm))  # Increased minimum from 5 to 10
             for i in range(steps + 1):
                 t = i / steps
-                x = p1[0] + t * (p2[0] - p1[0])
-                y = p1[1] + t * (p2[1] - p1[1])
+                x = x1 + t * (x2 - x1)
+                y = y1 + t * (y2 - y1)
+                theta = theta1 + t * (theta2 - theta1)  # Interpolate orientation
                 if self.pathfinder.is_collision(x, y, theta, grid_resolution):
                     return True
             return False
@@ -356,8 +361,8 @@ class HybridAStarNode(Node):
 
         while index <= len(optimized) - 4:
             x1, y1, t1 = optimized[index]
-            x2, y2, _  = optimized[index + 1]
-            x3, y3, _  = optimized[index + 2]
+            x2, y2, t2 = optimized[index + 1]
+            x3, y3, t3 = optimized[index + 2]
             x4, y4, t4 = optimized[index + 3]
 
             # Compute intersection of (p1,p2) with (p3,p4)
@@ -371,20 +376,18 @@ class HybridAStarNode(Node):
             py = ((x1 * y2 - y1 * x2) * (y3 - y4) -
                 (y1 - y2) * (x3 * y4 - y3 * x4)) / den
 
-            intersection = (px, py)
-
             # Orientation from previous to intersection
             new_theta = math.atan2(py - y1, px - x1)
 
-            # Collision checks
+            # Collision checks - now using full poses with orientation
             collision = (
-                collision_check_segment((x1, y1), intersection, new_theta) or
-                collision_check_segment(intersection, (x4, y4), t4)
+                collision_check_segment((x1, y1, t1), (px, py, new_theta)) or
+                collision_check_segment((px, py, new_theta), (x4, y4, t4))
             )
 
             # Calculate distance difference if we replace p2 + p3 with intersection
             old_dist = segment_distance((x1, y1), (x2, y2)) + segment_distance((x2, y2), (x3, y3)) + segment_distance((x3, y3), (x4, y4))
-            new_dist = segment_distance((x1, y1), intersection) + segment_distance(intersection, (x4, y4))
+            new_dist = segment_distance((x1, y1), (px, py)) + segment_distance((px, py), (x4, y4))
             added_distance = new_dist - old_dist
 
             if not collision and added_distance <= max_added_distance_mm:
