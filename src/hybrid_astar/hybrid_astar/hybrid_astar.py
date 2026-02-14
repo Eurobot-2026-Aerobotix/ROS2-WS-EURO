@@ -43,13 +43,13 @@ class HybridAStarPathfinder:
         # Permanent static obstacle areas (always blocked, never cleared)
         self.permanent_obstacles = []
         
-        # Orientation discretization (24 = 15° resolution for speed)
-        self.num_orientations = 32
+        # Orientation discretization (16 = 22.5° resolution for speed)
+        self.num_orientations = 16
         self.orientation_step = 2 * math.pi / self.num_orientations
         
         # Motion primitives (optimized for speed)
-        self.step_sizes = [25.0]  # mm - single step size for speed
-        self.turn_angles = [-30, 0, 30]  # degrees - reduced angles
+        self.step_sizes = [50.0]  # mm - larger steps for faster search
+        self.turn_angles = [-30, 0, 30]  # degrees - left, straight, right
         
         # Cost weights
         self.forward_cost = 1.0
@@ -435,8 +435,8 @@ class HybridAStarPathfinder:
         closed_set = set()
         
         # Goal tolerance (relaxed for speed)
-        goal_tolerance = 20.0  # mm
-        angle_tolerance = math.radians(20)  # degrees
+        goal_tolerance = 50.0  # mm - increased for faster convergence
+        angle_tolerance = math.radians(45)  # degrees - more relaxed
         
         iterations = 0
         while open_set and iterations < max_iterations:
@@ -453,7 +453,29 @@ class HybridAStarPathfinder:
             
             if dist_to_goal < goal_tolerance and angle_diff < angle_tolerance:
                 print(f"✅ Path found in {iterations} iterations!")
-                return self._reconstruct_path(came_from, current)
+                path = self._reconstruct_path(came_from, current)
+                
+                # Add final waypoint at exact goal position if not already there
+                if len(path) > 0:
+                    last_x, last_y, last_theta = path[-1]
+                    final_dist = math.sqrt((last_x - goal_x)**2 + (last_y - goal_y)**2)
+                    
+                    # If we're not exactly at goal (within 5mm), try to add precise goal waypoint
+                    if final_dist > 5.0:
+                        # Check if goal position is collision-free
+                        if not self.is_collision(goal_x, goal_y, goal_theta, grid_resolution):
+                            # Check if line from last waypoint to goal is collision-free
+                            if self._is_line_collision_free((last_x, last_y, last_theta), 
+                                                           (goal_x, goal_y, goal_theta), 
+                                                           grid_resolution):
+                                path.append((goal_x, goal_y, goal_theta))
+                                print(f"✓ Added precise goal waypoint at ({goal_x:.1f}, {goal_y:.1f})")
+                            else:
+                                print(f"⚠ Cannot add precise goal: path blocked")
+                        else:
+                            print(f"⚠ Cannot add precise goal: position in collision")
+                
+                return path
             
             if current_discrete in closed_set:
                 continue
