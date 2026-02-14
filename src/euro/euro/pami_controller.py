@@ -189,6 +189,17 @@ class PamiController(Node):
         
         self.pami_start_publishers[number].publish(msg)
         self.get_logger().info(f"🚀 Sent start signal (1) to {topic_name}")
+    
+    def start_pamis(self):
+        """
+        Send start signal to all PAMI robots (PAMI 1 through 6)
+        """
+        self.get_logger().info("🚀 Starting all PAMIs...")
+        
+        for pami_number in range(1, 7):  # PAMIs 1 to 6
+            self.start_pami(pami_number)
+        
+        self.get_logger().info("✅ Start signal sent to all 6 PAMIs")
 
 
 def main(args=None):

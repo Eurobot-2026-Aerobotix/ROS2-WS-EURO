@@ -358,15 +358,7 @@ def main(args=None):
     )
     back_thread.start()
     
-    
-    rasp_pi_thread = threading.Thread(
-        target=rasp_pi_task,
-        args=(strategy, strategy.round, rpi, stm32, front, back, pneumatic),
-        daemon=True
-    )
-    rasp_pi_thread.start()
-    
-    # Get tasks file path
+    # Get tasks file path and load PAMI controller before starting rasp_pi_thread
     # Check if a YAML file path was provided as argument
     if len(sys.argv) > 1:
         tasks_file = sys.argv[1]
@@ -391,6 +383,16 @@ def main(args=None):
         if os.path.exists(pami_folder):
             from euro.pami_controller import PamiController
             pami_ctrl = PamiController(strategy.strategy_name, pami_folder, 'pami_controller_internal')
+        else:
+            pami_ctrl = None
+        
+        # Start rasp_pi_thread with pami_ctrl
+        rasp_pi_thread = threading.Thread(
+            target=rasp_pi_task,
+            args=(strategy, strategy.round, rpi, stm32, front, back, pneumatic, pami_ctrl),
+            daemon=True
+        )
+        rasp_pi_thread.start()
         
         reset_systems(pneumatic,front,back,None,strategy,True,False)
         time.sleep(2)
