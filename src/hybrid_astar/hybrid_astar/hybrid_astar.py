@@ -402,12 +402,26 @@ class HybridAStarPathfinder:
         print(f"   Goal: ({goal_x:.1f}, {goal_y:.1f}, {math.degrees(goal_theta):.1f}°)")
         
         # Check start/goal validity
-        if self.is_collision(start_x, start_y, start_theta, grid_resolution):
-            print("✗ Start position is in collision!")
+        start_collision = self.is_collision(start_x, start_y, start_theta, grid_resolution)
+        if start_collision:
+            print(f"✗ Start position ({start_x:.1f}, {start_y:.1f}) is in collision!")
+            # Check which grid cell
+            gx = int(start_x / grid_resolution)
+            gy = int(start_y / grid_resolution)
+            print(f"   Grid cell: ({gx}, {gy})")
+            if 0 <= gx < self.grid_width and 0 <= gy < self.grid_height:
+                print(f"   Grid occupied: {self.grid[gy, gx]}")
             return None
         
-        if self.is_collision(goal_x, goal_y, goal_theta, grid_resolution):
-            print("✗ Goal position is in collision!")
+        goal_collision = self.is_collision(goal_x, goal_y, goal_theta, grid_resolution)
+        if goal_collision:
+            print(f"✗ Goal position ({goal_x:.1f}, {goal_y:.1f}) is in collision!")
+            # Check which grid cell
+            gx = int(goal_x / grid_resolution)
+            gy = int(goal_y / grid_resolution)
+            print(f"   Grid cell: ({gx}, {gy})")
+            if 0 <= gx < self.grid_width and 0 <= gy < self.grid_height:
+                print(f"   Grid occupied: {self.grid[gy, gx]}")
             return None
         
         # Priority queue: (f_score, counter, pose)
