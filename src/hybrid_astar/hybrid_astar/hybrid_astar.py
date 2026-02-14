@@ -43,13 +43,13 @@ class HybridAStarPathfinder:
         # Permanent static obstacle areas (always blocked, never cleared)
         self.permanent_obstacles = []
         
-        # Orientation discretization (24 = 15° resolution for speed)
-        self.num_orientations = 32
+        # Orientation discretization (16 = 22.5° resolution for speed)
+        self.num_orientations = 16
         self.orientation_step = 2 * math.pi / self.num_orientations
         
         # Motion primitives (optimized for speed)
-        self.step_sizes = [25.0]  # mm - single step size for speed
-        self.turn_angles = [-30, 0, 30]  # degrees - reduced angles
+        self.step_sizes = [50.0]  # mm - larger steps for faster search
+        self.turn_angles = [-30, 0, 30]  # degrees - left, straight, right
         
         # Cost weights
         self.forward_cost = 1.0
@@ -118,42 +118,26 @@ class HybridAStarPathfinder:
         Example:
             # Block area from (0,600) to (450,2400)
             pathfinder.add_permanent_obstacle_area(0, 600, 450, 2400)
+        
+        Note:
+            Grid indices are recalculated when set_obstacles() is called with the
+            actual runtime grid_resolution, not stored at add time.
         """
-        grid_resolution = self.grid_resolution
-        
-        # Convert world coordinates to grid cells
-        grid_x_start = int(x_min / grid_resolution)
-        grid_y_start = int(y_min / grid_resolution)
-        grid_x_end = int(x_max / grid_resolution) + 1
-        grid_y_end = int(y_max / grid_resolution) + 1
-        
-        # Clamp to grid boundaries
-        grid_x_start = max(0, min(grid_x_start, self.grid_width - 1))
-        grid_x_end = max(0, min(grid_x_end, self.grid_width))
-        grid_y_start = max(0, min(grid_y_start, self.grid_height - 1))
-        grid_y_end = max(0, min(grid_y_end, self.grid_height))
-        
-        # Store the area definition
+        # Store the area definition (world coordinates only)
+        # Grid indices will be calculated in set_obstacles() with correct resolution
         area = {
             'x_min': x_min,
             'y_min': y_min,
             'x_max': x_max,
-            'y_max': y_max,
-            'grid_x_start': grid_x_start,
-            'grid_y_start': grid_y_start,
-            'grid_x_end': grid_x_end,
-            'grid_y_end': grid_y_end
+            'y_max': y_max
         }
         self.permanent_obstacles.append(area)
-        
-        # Immediately mark in grid
-        self.grid[grid_y_start:grid_y_end, grid_x_start:grid_x_end] = True
         
         width = x_max - x_min
         height = y_max - y_min
         print(f"🚫 Added permanent obstacle area: ({x_min:.0f},{y_min:.0f}) to ({x_max:.0f},{y_max:.0f})")
         print(f"   Size: {width:.0f}mm × {height:.0f}mm")
-        print(f"   Grid cells: [{grid_x_start}:{grid_x_end}, {grid_y_start}:{grid_y_end}]")
+        print(f"   ⚠️ Grid indices will be calculated when obstacles are set with actual resolution")
     
     def set_obstacles(self, obstacles: List[dict], grid_resolution: float, static_walls: List[dict] = None):
         """
@@ -168,10 +152,28 @@ class HybridAStarPathfinder:
         # Clear grid
         self.grid.fill(False)
         
-        # Re-apply permanent obstacle areas FIRST (always present)
+        # Re-apply permanent obstacle areas FIRST with CORRECT grid_resolution
         for area in self.permanent_obstacles:
-            self.grid[area['grid_y_start']:area['grid_y_end'], 
-                      area['grid_x_start']:area['grid_x_end']] = True
+            # Calculate grid indices using the RUNTIME grid_resolution (not stored resolution)
+            grid_x_start = int(area['x_min'] / grid_resolution)
+            grid_y_start = int(area['y_min'] / grid_resolution)
+            grid_x_end = int(area['x_max'] / grid_resolution) + 1
+            grid_y_end = int(area['y_max'] / grid_resolution) + 1
+            
+            # Clamp to grid boundaries
+            grid_x_start = max(0, min(grid_x_start, self.grid_width))
+            grid_x_end = max(0, min(grid_x_end, self.grid_width))
+            grid_y_start = max(0, min(grid_y_start, self.grid_height))
+            grid_y_end = max(0, min(grid_y_end, self.grid_height))
+            
+            # Mark in grid
+            self.grid[grid_y_start:grid_y_end, grid_x_start:grid_x_end] = True
+            
+            # Store calculated indices back for debugging
+            area['grid_x_start'] = grid_x_start
+            area['grid_y_start'] = grid_y_start
+            area['grid_x_end'] = grid_x_end
+            area['grid_y_end'] = grid_y_end
         
         # Add static walls if provided
         # Note: In ROS2 node mode, static walls are loaded from JSON file
@@ -367,7 +369,7 @@ class HybridAStarPathfinder:
     
     def heuristic(self, x: float, y: float, goal_x: float, goal_y: float) -> float:
         """Euclidean distance heuristic (weighted for faster convergence)."""
-        return 2.0 * math.sqrt((x - goal_x)**2 + (y - goal_y)**2)
+        return 1.5 * math.sqrt((x - goal_x)**2 + (y - goal_y)**2)
     
     def discretize_pose(self, x: float, y: float, theta: float, grid_resolution: float) -> Tuple[int, int, int]:
         """Discretize continuous pose for duplicate detection."""
@@ -400,12 +402,26 @@ class HybridAStarPathfinder:
         print(f"   Goal: ({goal_x:.1f}, {goal_y:.1f}, {math.degrees(goal_theta):.1f}°)")
         
         # Check start/goal validity
-        if self.is_collision(start_x, start_y, start_theta, grid_resolution):
-            print("✗ Start position is in collision!")
+        start_collision = self.is_collision(start_x, start_y, start_theta, grid_resolution)
+        if start_collision:
+            print(f"✗ Start position ({start_x:.1f}, {start_y:.1f}) is in collision!")
+            # Check which grid cell
+            gx = int(start_x / grid_resolution)
+            gy = int(start_y / grid_resolution)
+            print(f"   Grid cell: ({gx}, {gy})")
+            if 0 <= gx < self.grid_width and 0 <= gy < self.grid_height:
+                print(f"   Grid occupied: {self.grid[gy, gx]}")
             return None
         
-        if self.is_collision(goal_x, goal_y, goal_theta, grid_resolution):
-            print("✗ Goal position is in collision!")
+        goal_collision = self.is_collision(goal_x, goal_y, goal_theta, grid_resolution)
+        if goal_collision:
+            print(f"✗ Goal position ({goal_x:.1f}, {goal_y:.1f}) is in collision!")
+            # Check which grid cell
+            gx = int(goal_x / grid_resolution)
+            gy = int(goal_y / grid_resolution)
+            print(f"   Grid cell: ({gx}, {gy})")
+            if 0 <= gx < self.grid_width and 0 <= gy < self.grid_height:
+                print(f"   Grid occupied: {self.grid[gy, gx]}")
             return None
         
         # Priority queue: (f_score, counter, pose)
@@ -418,9 +434,9 @@ class HybridAStarPathfinder:
         g_score = {self.discretize_pose(*start_pose, grid_resolution): 0}
         closed_set = set()
         
-        # Goal tolerance (relaxed for speed, refinement phase will get us closer)
-        goal_tolerance = 50.0  # mm
-        angle_tolerance = math.radians(20)  # degrees
+        # Goal tolerance (relaxed for speed)
+        goal_tolerance = 50.0  # mm - increased for faster convergence
+        angle_tolerance = math.radians(45)  # degrees - more relaxed
         
         iterations = 0
         while open_set and iterations < max_iterations:
@@ -439,12 +455,25 @@ class HybridAStarPathfinder:
                 print(f"✅ Path found in {iterations} iterations!")
                 path = self._reconstruct_path(came_from, current)
                 
-                # Refinement phase: try to get closer to exact goal
-                if dist_to_goal > 10.0:  # Only refine if further than 10mm
-                    refined = self._refine_final_position(path, goal_pose, grid_resolution)
-                    if refined:
-                        print(f"   🎯 Refined final position: {dist_to_goal:.1f}mm → {math.sqrt((refined[-1][0]-goal_x)**2 + (refined[-1][1]-goal_y)**2):.1f}mm")
-                        return refined
+                # Add final waypoint at exact goal position if not already there
+                if len(path) > 0:
+                    last_x, last_y, last_theta = path[-1]
+                    final_dist = math.sqrt((last_x - goal_x)**2 + (last_y - goal_y)**2)
+                    
+                    # If we're not exactly at goal (within 5mm), try to add precise goal waypoint
+                    if final_dist > 5.0:
+                        # Check if goal position is collision-free
+                        if not self.is_collision(goal_x, goal_y, goal_theta, grid_resolution):
+                            # Check if line from last waypoint to goal is collision-free
+                            if self._is_line_collision_free((last_x, last_y, last_theta), 
+                                                           (goal_x, goal_y, goal_theta), 
+                                                           grid_resolution):
+                                path.append((goal_x, goal_y, goal_theta))
+                                print(f"✓ Added precise goal waypoint at ({goal_x:.1f}, {goal_y:.1f})")
+                            else:
+                                print(f"⚠ Cannot add precise goal: path blocked")
+                        else:
+                            print(f"⚠ Cannot add precise goal: position in collision")
                 
                 return path
             
@@ -473,40 +502,6 @@ class HybridAStarPathfinder:
                         counter += 1
         
         print(f"✗ No path found after {iterations} iterations")
-        return None
-    
-    def _refine_final_position(self, path: List[Tuple[float, float, float]], 
-                               goal_pose: Tuple[float, float, float],
-                               grid_resolution: float) -> Optional[List[Tuple[float, float, float]]]:
-        """Try to refine the final position to get closer to the exact goal."""
-        if len(path) < 2:
-            return None
-        
-        goal_x, goal_y, goal_theta = goal_pose
-        last_x, last_y, last_theta = path[-1]
-        
-        # Try small steps toward goal
-        for step_size in [5.0, 10.0, 15.0, 20.0]:  # mm
-            dx = goal_x - last_x
-            dy = goal_y - last_y
-            dist = math.sqrt(dx**2 + dy**2)
-            
-            if dist < step_size:
-                # Direct step to goal
-                if not self.is_collision(goal_x, goal_y, goal_theta, grid_resolution):
-                    return path[:-1] + [(goal_x, goal_y, goal_theta)]
-            else:
-                # Intermediate step
-                ratio = step_size / dist
-                new_x = last_x + dx * ratio
-                new_y = last_y + dy * ratio
-                angle_to_goal = math.atan2(dy, dx)
-                
-                if not self.is_collision(new_x, new_y, angle_to_goal, grid_resolution):
-                    # Check if we can then reach goal
-                    if not self.is_collision(goal_x, goal_y, goal_theta, grid_resolution):
-                        return path[:-1] + [(new_x, new_y, angle_to_goal), (goal_x, goal_y, goal_theta)]
-        
         return None
     
     def _reconstruct_path(self, came_from: dict, current: Tuple[float, float, float]) -> List[Tuple[float, float, float]]:
@@ -556,7 +551,8 @@ class HybridAStarPathfinder:
         x2, y2, theta2 = pose2
         
         dist = math.sqrt((x2 - x1)**2 + (y2 - y1)**2)
-        num_checks = int(dist / (grid_resolution * 0.5))
+        # Use denser sampling: check every 5mm to catch tight clearances
+        num_checks = max(10, int(dist / 5.0))
         
         for i in range(num_checks + 1):
             t = i / max(num_checks, 1)

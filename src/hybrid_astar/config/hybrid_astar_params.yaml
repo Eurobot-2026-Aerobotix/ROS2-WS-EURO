@@ -9,7 +9,7 @@ hybrid_astar_node:
     
     # Grid configuration (from complete_map.json "grid" section)
     grid:
-      resolution_mm: 25.0
+      resolution_mm: 15.0
     
     # Pathfinding configuration (from complete_map.json "pathfinding" section)
     pathfinding:
