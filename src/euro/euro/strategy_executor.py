@@ -544,7 +544,7 @@ def back_task(strategy, back_controller=None,pneumatic_controller=None):
             strategy.queues['ESP_back'].popleft()
         
         time.sleep(0.1)  # 100ms
-def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=None, front_controller=None, back_controller=None, pneumatic_controller=None):
+def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=None, front_controller=None, back_controller=None, pneumatic_controller=None, pami_controller=None):
     """Runs every 100ms to process RASP_PI queue"""
     global SHUTDOWN_REQUESTED
     global WAITING_TIRETTE
@@ -567,6 +567,9 @@ def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=No
                     stm32_controller.reset()
                     WAITING_TIRETTE=False
                     strategy.get_logger().info(f"✅ Tirette tjebdet  STRATEGY GOOOOOOOOO !!!!")
+                    # Start all 6 PAMI robots if controller exists
+                    if pami_controller:
+                        pami_controller.start_pamis()
                     round_timer.start_game()
                     strategy.get_logger().info(f"⏱️  Game timer started!")
                     strategy.get_logger().info("updating map ")
