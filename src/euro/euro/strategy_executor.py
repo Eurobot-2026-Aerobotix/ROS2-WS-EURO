@@ -567,7 +567,7 @@ def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=No
                     stm32_controller.reset()
                     WAITING_TIRETTE=False
                     strategy.get_logger().info(f"✅ Tirette tjebdet  STRATEGY GOOOOOOOOO !!!!")
-                    # Start all 6 PAMI robots if controller exists
+                    # Start all 7 PAMI robots if controller exists
                     if pami_controller:
                         pami_controller.start_pamis()
                     round_timer.start_game()

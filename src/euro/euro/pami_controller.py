@@ -52,16 +52,18 @@ class PamiController(Node):
             self.get_logger().error(f"Error loading {yaml_file}: {e}")
             return None
     
-    def sequence_to_float_array(self, sequence: List[List]) -> List[float]:
+    def sequence_to_float_array(self, sequence: List[List], pami_number: int = None) -> List[float]:
         """
         Convert sequence list to flat float array with padding
-        Each command is padded to exactly 4 floats
+        For pami 1-6: Each command is padded to exactly 4 floats
+        For pami 7: Sends floats as-is without padding or trimming
         
         Args:
             sequence: List of lists containing command data
+            pami_number: PAMI robot number (used to determine encoding logic)
             
         Returns:
-            Flattened list of floats (each command = 4 floats)
+            Flattened list of floats
         """
         flat_array = []
         for cmd in sequence:
@@ -74,12 +76,16 @@ class PamiController(Node):
                     self.get_logger().warn(f"Could not convert '{value}' to float, using 0.0")
                     cmd_floats.append(0.0)
             
-            # Pad to exactly 4 floats if needed
-            while len(cmd_floats) < 4:
-                cmd_floats.append(0.0)
-            
-            # Add the 4 floats to the array
-            flat_array.extend(cmd_floats[:4])  # Take only first 4 values if more than 4
+            # For pami 7: send floats as-is without padding/trimming
+            if pami_number == 7:
+                flat_array.extend(cmd_floats)
+            else:
+                # For other pamis: pad to exactly 4 floats if needed
+                while len(cmd_floats) < 4:
+                    cmd_floats.append(0.0)
+                
+                # Add the 4 floats to the array
+                flat_array.extend(cmd_floats[:4])  # Take only first 4 values if more than 4
         
         return flat_array
     
@@ -149,7 +155,7 @@ class PamiController(Node):
                 self.get_logger().info(f"  Created publisher for topic: {start_topic}")
             
             # Convert sequence to float array
-            float_array = self.sequence_to_float_array(sequence)
+            float_array = self.sequence_to_float_array(sequence, pami_number)
             
             # Create and publish message
             msg = Float32MultiArray()
@@ -158,8 +164,12 @@ class PamiController(Node):
             # Publish the strategy
             self.pami_publishers[pami_number].publish(msg)
             
-            self.get_logger().info(f"  Published {len(float_array)} floats to {strategy_topic}")
-            self.get_logger().info(f"  ({len(sequence)} commands × 4 floats each)")
+            if pami_number == 7:
+                self.get_logger().info(f"  Published {len(float_array)} floats to {strategy_topic}")
+                self.get_logger().info(f"  ({len(sequence)} commands, raw encoding)")
+            else:
+                self.get_logger().info(f"  Published {len(float_array)} floats to {strategy_topic}")
+                self.get_logger().info(f"  ({len(sequence)} commands × 4 floats each)")
         
         self.get_logger().info(f"\n{'='*60}")
         self.get_logger().info(f"✓ Loaded and published {matched_count} matching PAMI strategies")
@@ -192,14 +202,14 @@ class PamiController(Node):
     
     def start_pamis(self):
         """
-        Send start signal to all PAMI robots (PAMI 1 through 6)
+        Send start signal to all PAMI robots (PAMI 1 through 7)
         """
         self.get_logger().info("🚀 Starting all PAMIs...")
         
-        for pami_number in range(1, 7):  # PAMIs 1 to 6
+        for pami_number in range(1, 8):  # PAMIs 1 to 7
             self.start_pami(pami_number)
         
-        self.get_logger().info("✅ Start signal sent to all 6 PAMIs")
+        self.get_logger().info("✅ Start signal sent to all 7 PAMIs")
 
 
 def main(args=None):
