@@ -49,7 +49,7 @@ def robot_status(strategy, stm32, lidar):
     global PREVIOUS_IDLE_FOR_SYSTEMS
     global SYSTEMS_IDLE_COUNT
     global last_stm_command
-    while rclpy.ok() and not SHUTDOWN_REQUESTED
+    while rclpy.ok() and not SHUTDOWN_REQUESTED:
         # Only check if robot is idle when we think it's busy
         if not IDLE:
             if not IDLE_FOR_SYSTEMS :
