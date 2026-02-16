@@ -386,6 +386,21 @@ class MapManager:
             filtered_batches = list(deduplicated_batches.values())
             self.node.get_logger().info(f"✅ After deduplication: {len(filtered_batches)} unique batches")
             
+            # CLEAR ALL FX/SX BATCHES AND OBSTACLES ONCE AT THE START
+            with self.obstacles_lock:
+                old_count = len(self.obstacles)
+                self.obstacles = [obs for obs in self.obstacles if self.obstacle_sources.get(obs.id, '') not in ['fx', 'sx']]
+                removed = old_count - len(self.obstacles)
+                
+                # Clear obstacle sources for both FX and SX
+                self.obstacle_sources = {k: v for k, v in self.obstacle_sources.items() if v not in ['fx', 'sx']}
+                
+                # Clear both batch dictionaries
+                with self.batches_lock:
+                    self.batches_fx.clear()
+                    self.batches_sx.clear()
+                    self.node.get_logger().info(f"🗑️  Cleared all FX and SX batches and {removed} obstacles before update")
+            
             # Determine source - for 'sfg' we process both SX and FX
             # Process SX batches (s prefix)
             sx_batches = [b for b in filtered_batches if b.known_id.startswith('s')]
@@ -444,20 +459,17 @@ class MapManager:
     def _handle_aruco_mapper_state(self, msg: ArucoMapperState, source: str):
         """
         Internal method to handle ArUco mapper state updates
-        source: 'fx' or 'sx'
+        source: 'fx', 'sx', or 'gx'
+        Note: FX/SX batches and obstacles are cleared before this is called
         """
         self.first_crate_update=True
         with self.obstacles_lock:
-            # Remove only obstacles from this source
-            old_count = len(self.obstacles)
-            self.obstacles = [obs for obs in self.obstacles if self.obstacle_sources.get(obs.id, '') != source]
-            removed = old_count - len(self.obstacles)
-            
-            # Clear obstacle sources for this source
-            self.obstacle_sources = {k: v for k, v in self.obstacle_sources.items() if v != source}
-
-            # Process each batch
+            # Process each batch (no clearing needed - done at top level)
             for batch in msg.batches:
+                # Skip GX batches (goal area markers - don't create obstacles)
+                if source == 'gx':
+                    continue
+                
                 # For FX batches, skip if no members
                 # For SX batches, we use predefined positions, so members are not required
                 if source == 'fx' and not batch.members:
@@ -467,8 +479,9 @@ class MapManager:
                 with self.batches_lock:
                     if source == 'fx':
                         self.batches_fx[batch.known_id] = batch
-                    else:
+                    elif source == 'sx':
                         self.batches_sx[batch.known_id] = batch
+                    # GX batches are not stored (goal area markers only)
                 
                 if source == 'sx':
                     # SX: Use predefined batch position from lookup table
@@ -502,36 +515,6 @@ class MapManager:
                     batch_center_x_mm = batch_center_x * 1000.0
                     batch_center_y_mm = batch_center_y * 1000.0
                     
-                    # Determine obstacle dimensions based on batch direction
-                    # Each obstacle is 15x5 cm or 5x15 cm depending on orientation
-                    if batch.direction == "horizontal":
-                        obs_width_mm = 50.0   # 5 cm (narrow)
-                        obs_height_mm = 150.0 # 15 cm (tall)
-                        # For horizontal: 4 obstacles side by side (total width = 200mm)
-                        # Centers at: cx-75, cx-25, cx+25, cx+75 (edge to edge)
-                        offsets = [
-                            (-75.0, 0.0),  # Left-most
-                            (-25.0, 0.0),
-                            (25.0, 0.0),
-                            (75.0, 0.0)    # Right-most
-                        ]
-                    elif batch.direction == "vertical":
-                        obs_width_mm = 150.0  # 15 cm (wide)
-                        obs_height_mm = 50.0  # 5 cm (short)
-                        # For vertical: 4 obstacles stacked (total height = 200mm)
-                        # Centers at: cy-75, cy-25, cy+25, cy+75 (edge to edge)
-                        offsets = [
-                            (0.0, -75.0),  # Bottom-most
-                            (0.0, -25.0),
-                            (0.0, 25.0),
-                            (0.0, 75.0)    # Top-most
-                        ]
-                    else:
-                        # Default to horizontal if direction is unknown
-                        obs_width_mm = 50.0
-                        obs_height_mm = 150.0
-                        offsets = [(-75.0, 0.0), (-25.0, 0.0), (25.0, 0.0), (75.0, 0.0)]
-                    
                     # Get color pattern from batch pattern string (e.g., "bbyy")
                     pattern_str = batch.pattern.lower() if batch.pattern else ""
                     
@@ -558,32 +541,105 @@ class MapManager:
                         )
                         continue
                     
-                    self.node.get_logger().info(f"✅ Creating 4 obstacles for batch '{batch_known_id}' with pattern {pattern_colors}")
+                    # Check if batch has members with real positions
+                    if batch.members and len(batch.members) > 0 and len(batch.members) < 4:
+                        # Use REAL member positions (for batches with < 4 members)
+                        self.node.get_logger().info(
+                            f"✅ Creating {len(batch.members)} obstacles for batch '{batch_known_id}' "
+                            f"using REAL positions from members"
+                        )
+                        
+                        for idx, member in enumerate(batch.members):
+                            obs = Obstacle()
+                            obs.id = f"{source}_{batch_known_id}_member{idx}"
+                            obs.type = 'crate'
+                            
+                            # Use color from pattern if available
+                            if idx < len(pattern_colors):
+                                obs.color = pattern_colors[idx]
+                            else:
+                                obs.color = pattern_colors[-1] if pattern_colors else 'yellow'
+                            
+                            # Determine obstacle dimensions based on batch direction
+                            if batch.direction == "horizontal":
+                                obs.width_mm = 50.0
+                                obs.height_mm = 150.0
+                            elif batch.direction == "vertical":
+                                obs.width_mm = 150.0
+                                obs.height_mm = 50.0
+                            else:
+                                # Skip if no direction
+                                self.node.get_logger().warn(
+                                    f"⚠️  Batch '{batch_known_id}' has no direction, skipping"
+                                )
+                                continue
+                            
+                            # Use ACTUAL member position from service
+                            center_x_mm = member.map_pos.x * 1000.0
+                            center_y_mm = member.map_pos.y * 1000.0
+                            
+                            # Convert to TOP-LEFT corner
+                            obs.pose.x = center_x_mm - (obs.width_mm / 2.0)
+                            obs.pose.y = center_y_mm - (obs.height_mm / 2.0)
+                            obs.pose.theta = 0.0
+                            
+                            obs.detected_at = msg.stamp
+                            
+                            self.node.get_logger().info(
+                                f"  ✅ Created obstacle '{obs.id}' at REAL position "
+                                f"({center_x_mm:.0f}, {center_y_mm:.0f}) mm, color={obs.color}"
+                            )
+                            
+                            # Add to obstacles list and track source
+                            self.obstacles.append(obs)
+                            self.obstacle_sources[obs.id] = source
                     
-                    # Create 4 obstacles for this batch
-                    for idx, (offset_x, offset_y) in enumerate(offsets):
-                        obs = Obstacle()
-                        obs.id = f"{source}_{batch_known_id}_member{idx}"  # Use known_id for unique IDs
-                        obs.type = 'crate'
-                        # Use color from pattern at this index (or last color if not enough in pattern)
-                        obs.color = pattern_colors[idx] if idx < len(pattern_colors) else pattern_colors[-1]
-                        obs.width_mm = obs_width_mm
-                        obs.height_mm = obs_height_mm
+                    else:
+                        # Use PREDEFINED positions with offsets (for full batches with 4 members or no member data)
+                        # Determine obstacle dimensions based on batch direction
+                        if batch.direction == "horizontal":
+                            obs_width_mm = 50.0
+                            obs_height_mm = 150.0
+                            offsets = [(-75.0, 0.0), (-25.0, 0.0), (25.0, 0.0), (75.0, 0.0)]
+                        elif batch.direction == "vertical":
+                            obs_width_mm = 150.0
+                            obs_height_mm = 50.0
+                            offsets = [(0.0, -75.0), (0.0, -25.0), (0.0, 25.0), (0.0, 75.0)]
+                        else:
+                            # Skip if no direction
+                            self.node.get_logger().warn(
+                                f"⚠️  Batch '{batch_known_id}' has no direction, skipping obstacle creation"
+                            )
+                            continue
                         
-                        # Calculate obstacle center
-                        obs_center_x = batch_center_x_mm + offset_x
-                        obs_center_y = batch_center_y_mm + offset_y
+                        self.node.get_logger().info(
+                            f"✅ Creating 4 obstacles for batch '{batch_known_id}' "
+                            f"using PREDEFINED positions with pattern {pattern_colors}"
+                        )
                         
-                        # Convert to TOP-LEFT corner (what the planner expects)
-                        obs.pose.x = obs_center_x - (obs_width_mm / 2.0)
-                        obs.pose.y = obs_center_y - (obs_height_mm / 2.0)
-                        obs.pose.theta = 0.0
-                        
-                        obs.detected_at = msg.stamp
-                        
-                        # Add to obstacles list and track source
-                        self.obstacles.append(obs)
-                        self.obstacle_sources[obs.id] = source
+                        # Create 4 obstacles for this batch
+                        for idx, (offset_x, offset_y) in enumerate(offsets):
+                            obs = Obstacle()
+                            obs.id = f"{source}_{batch_known_id}_member{idx}"
+                            obs.type = 'crate'
+                            obs.color = pattern_colors[idx] if idx < len(pattern_colors) else pattern_colors[-1]
+                            obs.width_mm = obs_width_mm
+                            obs.height_mm = obs_height_mm
+                            
+                            # Calculate obstacle center using predefined offsets
+                            obs_center_x = batch_center_x_mm + offset_x
+                            obs_center_y = batch_center_y_mm + offset_y
+                            
+                            # Convert to TOP-LEFT corner
+                            obs.pose.x = obs_center_x - (obs_width_mm / 2.0)
+                            obs.pose.y = obs_center_y - (obs_height_mm / 2.0)
+                            obs.pose.theta = 0.0
+                            
+                            obs.detected_at = msg.stamp
+                            
+                            # Add to obstacles list and track source
+                            self.obstacles.append(obs)
+                            self.obstacle_sources[obs.id] = source
                 
                 else:
                     # FX: Use individual member positions
@@ -606,7 +662,7 @@ class MapManager:
                             # Skip if no valid color
                             continue
 
-                        # Determine obstacle dimensions based on batch direction (swapped)
+                        # Determine obstacle dimensions based on batch direction
                         if batch.direction == "horizontal":
                             obs.width_mm = self.params['obstacles']['crate_horizontal']['height_mm']
                             obs.height_mm = self.params['obstacles']['crate_horizontal']['width_mm']
@@ -614,9 +670,11 @@ class MapManager:
                             obs.width_mm = self.params['obstacles']['crate_vertical']['height_mm']
                             obs.height_mm = self.params['obstacles']['crate_vertical']['width_mm']
                         else:
-                            # Default to horizontal if direction is unknown
-                            obs.width_mm = self.params['obstacles']['crate_horizontal']['height_mm']
-                            obs.height_mm = self.params['obstacles']['crate_horizontal']['width_mm']
+                            # Skip if no valid direction
+                            self.node.get_logger().warn(
+                                f"⚠️  Obstacle '{obs.id}' has no direction, skipping"
+                            )
+                            continue
 
                         # IMPORTANT: map_pos is the CENTER of the obstacle
                         # Convert to TOP-LEFT corner (what the planner expects)

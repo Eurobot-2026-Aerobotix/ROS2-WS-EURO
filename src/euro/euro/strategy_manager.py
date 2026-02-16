@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 
-from sympy import Point
 import rclpy
 from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
@@ -9,7 +8,7 @@ import time
 import threading
 from typing import List, Dict, Any
 from collections import deque
-from geometry_msgs.msg import PoseStamped, Pose2D, Quaternion, Vector3
+from geometry_msgs.msg import PoseStamped, Pose2D, Quaternion, Vector3, Point
 from aruco_mapper_msgs.msg import ArucoMapperState
 from euro.yaml_loader import load_tasks_from_yaml
 import math
@@ -19,7 +18,8 @@ import euro.strategy_executor as executor_module  # Import module to access SHUT
 
 # Global variable to store team color
 color = None
-
+n=0
+found_goal_batch=False
 class StrategyManager(Node):
     """
     Simple strategy manager that loads and displays tasks from YAML
@@ -87,21 +87,21 @@ class StrategyManager(Node):
     def path(self):
         """Plan path from current position to stored goal and load commands into queue"""
         self.get_logger().info(f"🗺️  Planning path to stored goal in pathfinder")
-        
+        global n 
+        global found_goal_batch
         # Set flag to prevent task loading during replanning
         self.is_replanning = True
-        
         # Clear the STM32 queue
         self.queues['STM'].clear()
         executor_module.SYSTEMS_IDLE_COUNT=0
         # Use pathfinder's path method (it uses stored goal and latest robot pose)
         stm32_commands, success = self.pathfinder.path()
         
-        if not success:
+        while not success:
             self.get_logger().error("❌ Path planning failed!")
-            self.is_replanning = False
-            return False
-        
+            self.is_replanning = True
+            stm32_commands, success = self.pathfinder.path()
+            time.sleep(2)
         # Get goal from pathfinder for orientation command
         goal_angle = self.pathfinder.goal_angle
         
@@ -113,63 +113,79 @@ class StrategyManager(Node):
             y = float(values[1].strip())
             speed = int(values[2].strip())
             if cmd != last_cmd:
-                self.queues['STM'].append({
-                    'command': 'go_to',
-                    'params': [x, y, 700.0],  # List format: [x, y, speed]
-                    'wait': False
-                })
+                if self.last_task_device=="ESP_back":
+                    self.get_logger().info(f"go_to_backwards: x={x}, y={y}")
+                    self.queues['STM'].append({
+                        'command': 'go_to_backwards',
+                        'params': [x, y, 700.0],  # List format: [x, y, speed]
+                        'wait': False
+                    })
+                else:
+                    self.get_logger().info(f"go_to: x={x}, y={y}")
+                    self.queues['STM'].append({
+                        'command': 'go_to',
+                        'params': [x, y, 700.0],  # List format: [x, y, speed]
+                        'wait': False
+                    })
+
             last_cmd = cmd
         if success and goal_angle is not None:
             self.queues['STM'].append({
                 'command': 'orientate',
                 'params': [goal_angle, 0.0],  # List format: [angle, is_radian]
             })
-            if self.last_task_command=='pick_up':
+            if self.last_task_command=='pick_up' and found_goal_batch:
                 if self.last_task_device == 'ESP_front' :
                     self.queues['STM'].append({
                         'command': 'go_to',
-                        'params': [x, y, 1100.0],  # List format: [x, y, speed]
+                        'params': [self.global_pos_x, self.global_pos_y, 1100.0,1.0],  # List format: [x, y, speed]
                         'wait': False
                     })
+                    self.get_logger().info(f"Added go_to command with global position: x={self.global_pos_x}, y={self.global_pos_y} (last command after pathfinding )")
                 elif self.last_task_device == 'ESP_back' :
                     self.queues['STM'].append({
                         'command': 'go_to_backwards',
-                        'params': [x, y, 1100.0,1.0],  # List format: [x, y, speed]
+                        'params': [self.global_pos_x, self.global_pos_y, 1100.0,1.0],  # List format: [x, y, speed]
                         'wait': False
                     })
-        
-            
+        n=len((self.queues["STM"]))
+        executor_module.SYSTEMS_IDLE_COUNT=0
         self.get_logger().info(f"✅ Path planning complete! Added {len(self.queues['STM'])} commands to queue")
         # Resume task execution
         executor_module.replanning = False
         self.is_replanning = False
         return True
     def handle_global_goal(self, x, y, angle):
+        global found_goal_batch
         pos = Point()
         pos.x = float(x)
         pos.y = float(y)
         pos.z = 0.0
         known_id = ''
+        self.get_logger().info("requesting from pathfinder for checking if there is a batch or no(global pose ) ")
         color_pattern, success, direction, batch_center = self.pathfinder.get_batch_color(known_id, pos)
         if success and self.last_task_command =='pick_up' :
+            found_goal_batch=True
             if (direction == "horizontal" and y < batch_center.y) :
                 global_x=x
-                global_y=y-0.2
+                global_y=y-0.1
                 global_angle=angle
             elif(direction == "horizontal" and y > batch_center.y) :
                 global_x=x
-                global_y=y+0.2
+                global_y=y+0.1
                 global_angle=angle
             elif(direction == "vertical" and x < batch_center.x) :
-                global_x=x-0.2
+                global_x=x-0.1
                 global_y=y
                 global_angle=angle
             elif(direction == "vertical" and x > batch_center.x) :
-                global_x=x+0.2
+                global_x=x+0.1
                 global_y=y
                 global_angle=angle
             self.pathfinder.set_goal(float(global_x), float(global_y), float(global_angle))
         else:
+            found_goal_batch=False
+            self.get_logger().info(f"pathfinder goal set to :x = {x}, y = {y}  angle=  {angle}without pickuo ")
             self.pathfinder.set_goal(float(x), float(y), float(angle))
     def quaternion_to_yaw(self, quat: Quaternion) -> float:
         """Convert quaternion to yaw angle"""
@@ -189,6 +205,7 @@ class StrategyManager(Node):
     def load_task_to_queues(self, task_name: str):
         """Load a task's commands into device queues"""
         # Find the task
+        global n
         task = None
         for t in self.tasks:
             if t['name'] == task_name:
@@ -244,6 +261,7 @@ class StrategyManager(Node):
                         if executor_module.IDLE_FOR_SYSTEMS and not executor_module.IDLE:
                             executor_module.SYSTEMS_IDLE_COUNT=1
                         while executor_module.SYSTEMS_IDLE_COUNT !=n :
+                            self.get_logger().debug(f"Waiting for STM commands to be sent... STM queue size: {n}, SYSTEMS_IDLE_COUNT: {executor_module.SYSTEMS_IDLE_COUNT}")
                             time.sleep(0.1)
                 if device =="STM" and command =="set_position":
                     self.queues["RASP_PI"].append(cmd)
@@ -269,6 +287,7 @@ class StrategyManager(Node):
         
         while (not (self.are_all_queues_empty() or(  executor_module.ESP_FRONT_IDLE==True and executor_module.ESP_BACK_IDLE==True ))) or (not executor_module.IDLE) or executor_module.WAITING_TIRETTE or len(self.queues["STM"])!=0 or len(self.queues["RASP_PI"])!=0 or executor_module.replanning or self.end_game==True:
             # Check if shutdown is requested
+            self.get_logger().debug(f"Waiting for queues to empty... STM queue size: {len(self.queues['STM'])}, RASP_PI queue size: {len(self.queues['RASP_PI'])}, ESP_FRONT_IDLE: {executor_module.ESP_FRONT_IDLE}, ESP_BACK_IDLE: {executor_module.ESP_BACK_IDLE}, IDLE: {executor_module.IDLE}, WAITING_TIRETTE: {executor_module.WAITING_TIRETTE}, replanning: {executor_module.replanning}")
             if executor_module.SHUTDOWN_REQUESTED:
                 self.get_logger().info("Shutdown requested, stopping queue wait")
                 return
@@ -471,13 +490,17 @@ def main(args=None):
                     #strategy.get_logger().info(f"global pose x: {strategy.global_pos_x} y{strategy.global_pos_y} tita{strategy.global_pos_angle} ")
 
                     if strategy.global_pos_x != None and strategy.global_pos_y != None and strategy.global_pos_angle != None :
-                        strategy.handle_global_goal(strategy.global_pos_x, strategy.global_pos_y, strategy.global_pos_angle)
+                        strategy.handle_global_goal(float(strategy.global_pos_x)/1000, float(strategy.global_pos_y)/1000, float(strategy.global_pos_angle))
                         strategy.get_logger().info("global pose set goal")
+                        strategy.global_pos_x =float( strategy.global_pos_x)
+                        strategy.global_pos_y =float( strategy.global_pos_y)
+                        strategy.global_pos_angle =float( strategy.global_pos_angle)
                         #strategy.pathfinder.set_goal(float(strategy.global_pos_x)/1000, float(strategy.global_pos_y)/1000,float(strategy.global_pos_angle))
                 else:
                     strategy.get_logger().warning(f"⚠️  No global goal found for task: {task['name']}")
                 
                 # Load task into queues
+                strategy.get_logger().warning(f"  loading  tasks {task['name']} into queues...")
                 strategy.load_task_to_queues(task['name'])
                 
                 # Wait for all commands to complete

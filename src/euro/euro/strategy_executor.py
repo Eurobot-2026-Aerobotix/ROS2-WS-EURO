@@ -262,6 +262,7 @@ def stm32_task(strategy, stm32,lidar):
                         strategy.get_logger().info(f"IDLE: {IDLE}")
                         time.sleep(0.05)  # Wait until STM32 reports idle after stop
                     lidar.start_waiting()  # Start waiting period before rechecking obstacle
+                    strategy.pathfinder.update_map()
                     #IDLE = True  # Mark as idle to prevent status checks
                 
                 # Check if emergency cleared
@@ -277,14 +278,22 @@ def stm32_task(strategy, stm32,lidar):
                     replanning=True
                     time.sleep(3.0)  # Wait for 3 seconds before attempting to replan
                     strategy.get_logger().info(f"pathfinding after lidar: ")
-                    #strategy.pathfinder.set_goal(0.2,0.25,180.0)
+                    
+                    # Re-set the goal before replanning (goal was cleared after previous navigation)
+                    if strategy.global_pos_x is not None and strategy.global_pos_y is not None and strategy.global_pos_angle is not None:
+                        strategy.handle_global_goal(float(strategy.global_pos_x/1000), float(strategy.global_pos_y/1000), float(strategy.global_pos_angle))
+                        strategy.get_logger().info(f"✓ Re-set goal for replanning: ({float(strategy.global_pos_x)}, {float(strategy.global_pos_y)}, {float(strategy.global_pos_angle)}°)")
+                    else:
+                        strategy.get_logger().error("❌ Cannot replan: no global goal stored!")
+                    
                     strategy.path()
                     last_stm_command="path_finding"
                     SYSTEMS_IDLE_COUNT=0
                     IDLE=True
                     IDLE_FOR_SYSTEMS=True
                     lidar.clear_on=True
-                    strategy.end_game=True
+                    strategy.end_game=False  # Reset end_game flag so ESP tasks can continue
+                    #strategy.end_game=True
                 time.sleep(0.1)
             if  last_stm_command!="navigation": 
                 strategy.get_logger().info(f"idle : {IDLE} :  EMERGENCY_STOP : {EMERGENCY_STOP}"  )
@@ -427,7 +436,7 @@ def pick_up(controller,pneumatic,strategy,front):
         return
     
     time.sleep(1)
-    strategy.get_logger().info(f"🔍 Requesting NEW color pattern for {'FRONT' if front else 'BACK'} at position ({strategy.latest_robot_pose.x:.2f}, {strategy.latest_robot_pose.y:.2f})")
+    strategy.get_logger().info(f"🔍 Requesting NEW color pattern for {'FRONT' if front else 'BACK'} at position ({strategy.latest_robot_pose.x:.3f}, {strategy.latest_robot_pose.y:.3f})")
     color_pattern = talaa(strategy, controller)
     if front:
         color_pt_front = color_pattern

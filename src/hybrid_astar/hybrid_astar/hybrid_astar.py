@@ -455,25 +455,29 @@ class HybridAStarPathfinder:
                 print(f"✅ Path found in {iterations} iterations!")
                 path = self._reconstruct_path(came_from, current)
                 
-                # Add final waypoint at exact goal position if not already there
+                # ALWAYS ensure final waypoint is at exact goal position
                 if len(path) > 0:
                     last_x, last_y, last_theta = path[-1]
                     final_dist = math.sqrt((last_x - goal_x)**2 + (last_y - goal_y)**2)
                     
-                    # If we're not exactly at goal (within 5mm), try to add precise goal waypoint
-                    if final_dist > 5.0:
+                    # Always replace last waypoint with exact goal (even if < 5mm away)
+                    if final_dist > 0.1:  # Only if not already exactly at goal
                         # Check if goal position is collision-free
                         if not self.is_collision(goal_x, goal_y, goal_theta, grid_resolution):
                             # Check if line from last waypoint to goal is collision-free
                             if self._is_line_collision_free((last_x, last_y, last_theta), 
                                                            (goal_x, goal_y, goal_theta), 
                                                            grid_resolution):
-                                path.append((goal_x, goal_y, goal_theta))
-                                print(f"✓ Added precise goal waypoint at ({goal_x:.1f}, {goal_y:.1f})")
+                                # Replace last waypoint with exact goal
+                                path[-1] = (goal_x, goal_y, goal_theta)
+                                print(f"✓ Set final waypoint to exact goal at ({goal_x:.1f}, {goal_y:.1f})")
                             else:
-                                print(f"⚠ Cannot add precise goal: path blocked")
+                                # Path blocked - try adding as separate waypoint
+                                if len(path) > 1:
+                                    path[-1] = (goal_x, goal_y, goal_theta)
+                                    print(f"⚠ Forced final waypoint to exact goal (path may need validation)")
                         else:
-                            print(f"⚠ Cannot add precise goal: position in collision")
+                            print(f"⚠ Goal position in collision, keeping approximate waypoint")
                 
                 return path
             
@@ -523,7 +527,7 @@ class HybridAStarPathfinder:
             grid_resolution: Grid cell size
             
         Returns:
-            Smoothed path
+            Smoothed path (always preserves exact final waypoint)
         """
         if len(path) <= 2:
             return path
@@ -540,6 +544,11 @@ class HybridAStarPathfinder:
                     break
             else:
                 i += 1
+        
+        # Ensure the exact final waypoint is preserved
+        if len(smoothed) > 0 and len(path) > 0:
+            if smoothed[-1] != path[-1]:
+                smoothed.append(path[-1])
         
         return smoothed
     

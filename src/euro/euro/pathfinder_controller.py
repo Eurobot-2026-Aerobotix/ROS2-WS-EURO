@@ -194,7 +194,7 @@ class PathfinderClient(Node):
             self.get_logger().error('❌ /compute_path service is not available!')
             return [], False
 
-        self.get_logger().info(f'📍 Requesting path from ({start_pose.pose.position.x:.2f}, {start_pose.pose.position.y:.2f}) to ({goal_pose.pose.position.x:.2f}, {goal_pose.pose.position.y:.2f})')
+        self.get_logger().info(f'📍 Requesting path from ({start_pose.pose.position.x:.3f}, {start_pose.pose.position.y:.3f}) to ({goal_pose.pose.position.x:.3f}, {goal_pose.pose.position.y:.3f})')
 
         request = ComputePath.Request()
         request.start_pose = start_pose

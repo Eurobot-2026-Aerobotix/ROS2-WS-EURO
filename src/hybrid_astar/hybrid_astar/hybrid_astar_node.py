@@ -456,11 +456,13 @@ class HybridAStarNode(Node):
                 reduction = 100 * (1 - len(smoothed) / len(path)) if len(path) > 0 else 0
                 self.get_logger().info(f"🔄 Smoothed to {len(smoothed)} waypoints ({reduction:.1f}% reduction)")
                 
-                # Try to set the goal orientation if it's collision-free
+                # Ensure final waypoint is at EXACT goal position and try to set goal orientation
                 if len(smoothed) > 0:
-                    x, y, current_theta = smoothed[-1]
+                    # Replace last waypoint with exact goal position (preserving current orientation for now)
+                    _, _, current_theta = smoothed[-1]
+                    smoothed[-1] = (goal_x, goal_y, current_theta)
                     
-                    self.get_logger().info(f"  Checking goal rotation at ({x:.1f}, {y:.1f}): {math.degrees(current_theta):.1f}° → {math.degrees(goal_theta):.1f}°")
+                    self.get_logger().info(f"  Checking goal rotation at ({goal_x:.1f}, {goal_y:.1f}): {math.degrees(current_theta):.1f}° → {math.degrees(goal_theta):.1f}°")
                     
                     # Check multiple intermediate angles during rotation to ensure safe rotation
                     angle_diff = goal_theta - current_theta
@@ -476,7 +478,7 @@ class HybridAStarNode(Node):
                     for i in range(num_rotation_checks + 1):
                         ratio = i / num_rotation_checks
                         check_angle = current_theta + ratio * angle_diff
-                        if self.pathfinder.is_collision(x, y, check_angle, grid_resolution):
+                        if self.pathfinder.is_collision(goal_x, goal_y, check_angle, grid_resolution):
                             self.get_logger().info(f"    ⚠ Rotation collision at angle {math.degrees(check_angle):.1f}° (step {i}/{num_rotation_checks})")
                             rotation_safe = False
                             break
@@ -485,10 +487,10 @@ class HybridAStarNode(Node):
                         # Add intermediate waypoint for rotation if angle change is large
                         if abs(angle_diff) > math.radians(30):
                             # Keep position but change orientation gradually
-                            smoothed.append((x, y, goal_theta))
+                            smoothed.append((goal_x, goal_y, goal_theta))
                             self.get_logger().info(f"✓ Added rotation waypoint: {math.degrees(current_theta):.1f}° → {math.degrees(goal_theta):.1f}°")
                         else:
-                            smoothed[-1] = (x, y, goal_theta)
+                            smoothed[-1] = (goal_x, goal_y, goal_theta)
                             self.get_logger().info(f"✓ Final orientation set to goal: {math.degrees(goal_theta):.1f}°")
                     else:
                         self.get_logger().info(f"⚠ Goal orientation {math.degrees(goal_theta):.1f}° would cause collision during rotation, keeping {math.degrees(current_theta):.1f}°")
@@ -802,6 +804,21 @@ class HybridAStarNode(Node):
                 response.batch_center.z = 0.0
                 response.message = "No valid batches found"
                 self.get_logger().warn("❌ No valid batches found for position search")
+                return response
+            
+            # Check if closest batch is within 0.2m (200mm) tolerance
+            if min_distance > 0.2:
+                response.success = False
+                response.color_pattern = ""
+                response.direction = ""
+                response.batch_center.x = 0.0
+                response.batch_center.y = 0.0
+                response.batch_center.z = 0.0
+                response.message = f"Closest batch is too far ({min_distance*1000:.0f}mm > 200mm limit)"
+                self.get_logger().warn(
+                    f"❌ Closest batch '{closest_batch.known_id}' is {min_distance*1000:.0f}mm away "
+                    f"(exceeds 200mm limit) - skipping"
+                )
                 return response
             
             batch = closest_batch
