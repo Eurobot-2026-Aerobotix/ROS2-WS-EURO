@@ -49,7 +49,7 @@ def robot_status(strategy, stm32, lidar):
     global PREVIOUS_IDLE_FOR_SYSTEMS
     global SYSTEMS_IDLE_COUNT
     global last_stm_command
-    while rclpy.ok() and not SHUTDOWN_REQUESTED:        
+    while rclpy.ok() and not SHUTDOWN_REQUESTED:
         # Only check if robot is idle when we think it's busy
         if not IDLE:
             if not IDLE_FOR_SYSTEMS :
@@ -237,7 +237,7 @@ def stm32_task(strategy, stm32,lidar):
             params = cmd.get('params', {})
             wait = cmd.get('wait', False)
             params = to_float_list(params)
-            strategy.get_logger().info(f"goto : x: {params[0]} y : {params[1]}")
+            #strategy.get_logger().info(f"goto : x: {params[0]} y : {params[1]}")
             # Save command for potential resume after emergency
             last_command = command
             last_params = params
@@ -567,7 +567,7 @@ def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=No
                     stm32_controller.reset()
                     WAITING_TIRETTE=False
                     strategy.get_logger().info(f"✅ Tirette tjebdet  STRATEGY GOOOOOOOOO !!!!")
-                    # Start all 6 PAMI robots if controller exists
+                    # Start all 7 PAMI robots if controller exists
                     if pami_controller:
                         pami_controller.start_pamis()
                     round_timer.start_game()

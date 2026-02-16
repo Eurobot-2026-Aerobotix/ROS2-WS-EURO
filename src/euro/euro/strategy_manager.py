@@ -82,7 +82,7 @@ class StrategyManager(Node):
     def aruco_mapper_callback(self, msg):
         """Callback for aruco mapper state - store entire message"""
         self.latest_robot_pose_beacon = msg
-        self.get_logger().info(f"aruco mapper callback")
+        #self.get_logger().info(f"aruco mapper callback")
         self.latest_robot_pose_beacon_count += 1
     def path(self):
         """Plan path from current position to stored goal and load commands into queue"""
