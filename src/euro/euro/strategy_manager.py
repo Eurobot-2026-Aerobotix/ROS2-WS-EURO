@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+from sympy import Point
 import rclpy
 from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
@@ -54,6 +55,9 @@ class StrategyManager(Node):
         self.latest_robot_pose_beacon = None
         self.latest_robot_pose_beacon_count = 0
         self.end_game=False
+        # Track last pick_up/put_down command and device from task
+        self.last_task_command = None
+        self.last_task_device = None
         # Create Round timer instance
         from euro.strategy_executor import Round
         self.round = Round()
@@ -120,13 +124,53 @@ class StrategyManager(Node):
                 'command': 'orientate',
                 'params': [goal_angle, 0.0],  # List format: [angle, is_radian]
             })
+            if self.last_task_command=='pick_up':
+                if self.last_task_device == 'ESP_front' :
+                    self.queues['STM'].append({
+                        'command': 'go_to',
+                        'params': [x, y, 1100.0],  # List format: [x, y, speed]
+                        'wait': False
+                    })
+                elif self.last_task_device == 'ESP_back' :
+                    self.queues['STM'].append({
+                        'command': 'go_to_backwards',
+                        'params': [x, y, 1100.0,1.0],  # List format: [x, y, speed]
+                        'wait': False
+                    })
         
+            
         self.get_logger().info(f"✅ Path planning complete! Added {len(self.queues['STM'])} commands to queue")
         # Resume task execution
         executor_module.replanning = False
         self.is_replanning = False
         return True
-
+    def handle_global_goal(self, x, y, angle):
+        pos = Point()
+        pos.x = float(x)
+        pos.y = float(y)
+        pos.z = 0.0
+        known_id = ''
+        color_pattern, success, direction, batch_center = self.pathfinder.get_batch_color(known_id, pos)
+        if success and self.last_task_command =='pick_up' :
+            if (direction == "horizontal" and y < batch_center.y) :
+                global_x=x
+                global_y=y-0.2
+                global_angle=angle
+            elif(direction == "horizontal" and y > batch_center.y) :
+                global_x=x
+                global_y=y+0.2
+                global_angle=angle
+            elif(direction == "vertical" and x < batch_center.x) :
+                global_x=x-0.2
+                global_y=y
+                global_angle=angle
+            elif(direction == "vertical" and x > batch_center.x) :
+                global_x=x+0.2
+                global_y=y
+                global_angle=angle
+            self.pathfinder.set_goal(float(global_x), float(global_y), float(global_angle))
+        else:
+            self.pathfinder.set_goal(float(x), float(y), float(angle))
     def quaternion_to_yaw(self, quat: Quaternion) -> float:
         """Convert quaternion to yaw angle"""
         siny_cosp = 2 * (quat.w * quat.z + quat.x * quat.y)
@@ -405,6 +449,18 @@ def main(args=None):
                     strategy.get_logger().info("Shutdown requested, stopping task execution")
                     return
                 
+                # Check last command in task sequence
+                if task.get('sequence') and len(task['sequence']) > 0:
+                    last_cmd = task['sequence'][-1]
+                    last_command = last_cmd.get('command')
+                    last_device = last_cmd.get('device')
+                    
+                    if last_command in ['pick_up', 'put_down'] and last_device in ['ESP_front', 'ESP_back']:
+                        strategy.get_logger().info(f"📋 Last command in task '{task['name']}': {last_command} on device {last_device}")
+                        # Store in strategy attributes
+                        strategy.last_task_command = last_command
+                        strategy.last_task_device = last_device
+                
                 # Extract and store global goal
                 global_goal = task['global_goal']
                 if global_goal:
@@ -412,10 +468,12 @@ def main(args=None):
                     strategy.global_pos_y = global_goal.get('y')
                     # Support both 'angle' and 'theta' keys
                     strategy.global_pos_angle = global_goal.get('theta') 
-                    strategy.get_logger().info(f"global pose x: {strategy.global_pos_x} y{strategy.global_pos_y} tita{strategy.global_pos_angle} ")
+                    #strategy.get_logger().info(f"global pose x: {strategy.global_pos_x} y{strategy.global_pos_y} tita{strategy.global_pos_angle} ")
+
                     if strategy.global_pos_x != None and strategy.global_pos_y != None and strategy.global_pos_angle != None :
+                        strategy.handle_global_goal(strategy.global_pos_x, strategy.global_pos_y, strategy.global_pos_angle)
                         strategy.get_logger().info("global pose set goal")
-                        strategy.pathfinder.set_goal(float(strategy.global_pos_x)/1000, float(strategy.global_pos_y)/1000,float(strategy.global_pos_angle))
+                        #strategy.pathfinder.set_goal(float(strategy.global_pos_x)/1000, float(strategy.global_pos_y)/1000,float(strategy.global_pos_angle))
                 else:
                     strategy.get_logger().warning(f"⚠️  No global goal found for task: {task['name']}")
                 
