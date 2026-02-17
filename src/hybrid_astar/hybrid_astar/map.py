@@ -131,10 +131,10 @@ class MapManager:
             obs.type = 'enemy'
             obs.color = 'enemy'
             
-            # Enemy robot represented as a circle with radius 0.35m (350mm)
-            enemy_radius_mm = 350.0
+            # Enemy robot represented as a circle with diameter 0.35m (350mm)
+            enemy_diameter_mm = 350.0
+            enemy_radius_mm = enemy_diameter_mm / 2.0  # 175mm
             # For collision checking, represent circle as a square with side = diameter
-            enemy_diameter_mm = enemy_radius_mm * 2.0
             obs.width_mm = enemy_diameter_mm
             obs.height_mm = enemy_diameter_mm
             
@@ -170,9 +170,9 @@ class MapManager:
         enemy_marker.pose.position.z = 0.15  # 150mm high (half of 300mm)
         enemy_marker.pose.orientation = self.yaw_to_quaternion(0.0)  # Cylinders don't need rotation
         
-        # Size: radius 0.35m (diameter 0.7m)
-        enemy_marker.scale.x = 0.7  # Diameter in X
-        enemy_marker.scale.y = 0.7  # Diameter in Y
+        # Size: diameter 0.35m (radius 0.175m)
+        enemy_marker.scale.x = 0.35  # Diameter in X
+        enemy_marker.scale.y = 0.35  # Diameter in Y
         enemy_marker.scale.z = 0.30  # 300mm tall robot
         
         # Dark red/magenta for enemy
