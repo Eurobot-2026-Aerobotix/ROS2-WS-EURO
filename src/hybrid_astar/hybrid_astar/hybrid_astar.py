@@ -436,7 +436,7 @@ class HybridAStarPathfinder:
         
         # Goal tolerance (relaxed for speed)
         goal_tolerance = 50.0  # mm - increased for faster convergence
-        angle_tolerance = math.radians(45)  # degrees - more relaxed
+        # angle_tolerance = math.radians(45)  # DISABLED - ignoring final angle
         
         iterations = 0
         while open_set and iterations < max_iterations:
@@ -446,12 +446,12 @@ class HybridAStarPathfinder:
             current_x, current_y, current_theta = current
             current_discrete = self.discretize_pose(current_x, current_y, current_theta, grid_resolution)
             
-            # Check if reached goal
+            # Check if reached goal (position only, ignoring angle)
             dist_to_goal = math.sqrt((current_x - goal_x)**2 + (current_y - goal_y)**2)
-            angle_diff = abs(math.atan2(math.sin(current_theta - goal_theta), 
-                                       math.cos(current_theta - goal_theta)))
+            # angle_diff = abs(math.atan2(math.sin(current_theta - goal_theta), 
+            #                            math.cos(current_theta - goal_theta)))
             
-            if dist_to_goal < goal_tolerance and angle_diff < angle_tolerance:
+            if dist_to_goal < goal_tolerance:  # Only check position, not angle
                 print(f"✅ Path found in {iterations} iterations!")
                 path = self._reconstruct_path(came_from, current)
                 
