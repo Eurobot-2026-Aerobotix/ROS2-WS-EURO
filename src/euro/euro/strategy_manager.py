@@ -117,14 +117,14 @@ class StrategyManager(Node):
                     self.get_logger().info(f"go_to_backwards: x={x}, y={y}")
                     self.queues['STM'].append({
                         'command': 'go_to_backwards',
-                        'params': [x, y, 700.0],  # List format: [x, y, speed]
+                        'params': [x, y, 700.0, {'from_pathfinding': True}],  # Mark as from pathfinding
                         'wait': False
                     })
                 else:
                     self.get_logger().info(f"go_to: x={x}, y={y}")
                     self.queues['STM'].append({
                         'command': 'go_to',
-                        'params': [x, y, 700.0],  # List format: [x, y, speed]
+                        'params': [x, y, 700.0, {'from_pathfinding': True}],  # Mark as from pathfinding
                         'wait': False
                     })
 
@@ -138,14 +138,14 @@ class StrategyManager(Node):
                 if self.last_task_device == 'ESP_front' :
                     self.queues['STM'].append({
                         'command': 'go_to',
-                        'params': [self.global_pos_x, self.global_pos_y, 1100.0,1.0],  # List format: [x, y, speed]
+                        'params': [self.global_pos_x, self.global_pos_y, 1100.0, 1.0, {'from_pathfinding': True}],  # Mark as from pathfinding
                         'wait': False
                     })
                     self.get_logger().info(f"Added go_to command with global position: x={self.global_pos_x}, y={self.global_pos_y} (last command after pathfinding )")
                 elif self.last_task_device == 'ESP_back' :
                     self.queues['STM'].append({
                         'command': 'go_to_backwards',
-                        'params': [self.global_pos_x, self.global_pos_y, 1100.0,1.0],  # List format: [x, y, speed]
+                        'params': [self.global_pos_x, self.global_pos_y, 1100.0, 1.0, {'from_pathfinding': True}],  # Mark as from pathfinding
                         'wait': False
                     })
         n=len((self.queues["STM"]))

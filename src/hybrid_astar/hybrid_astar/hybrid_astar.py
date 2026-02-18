@@ -19,7 +19,7 @@ class HybridAStarPathfinder:
     """
     
     def __init__(self, grid_width: int, grid_height: int, 
-                 robot_width: float = 350.0, robot_length: float = 300.0,
+                 robot_width: float = 300.0, robot_length: float = 300.0,
                  grid_resolution: float = 25.0):
         """
         Initialize Hybrid A* pathfinder.

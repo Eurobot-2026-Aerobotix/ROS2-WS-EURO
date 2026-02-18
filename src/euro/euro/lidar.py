@@ -29,7 +29,8 @@ class Lidar(Node):
         self.cleared_emergency_count = 0
         # Obstacle parameters
         self.obstacle_radius = 0.25  # meters
-        self.enemy_radius = 0.35  # meters
+        self.enemy_radius = 0.35  # meters - for real-time collision detection
+        self.enemy_radius_for_pathfinding = 0.25  # meters - smaller for path generation
         self.robot_width = 0.30  # meters (30cm)
         self.robot_length = 0.30  # meters (30cm)
         # Calculate robot half-diagonal for collision detection
@@ -40,6 +41,7 @@ class Lidar(Node):
         self._recheck_count = 0  # Counter for 0.1s checks
         self.generate_path = 0  # Flag to indicate if new path generation is needed
         self.clear_on=True
+        self.path_just_generated = False  # Flag to suppress emergency after new path generated
         # Subscribe to /emergency_stop (custom EmergencyStop message)
         self.emergency_stop_subscription = self.create_subscription(
             EmergencyStop,
@@ -85,13 +87,14 @@ class Lidar(Node):
         """
         self.round_time = time
     
-    def set_goto_target(self, x, y):
+    def set_goto_target(self, x, y, from_pathfinding=False):
         """
         Set the target coordinates for go_to command
         
         Args:
             x (float): Target x coordinate
             y (float): Target y coordinate
+            from_pathfinding (bool): True if this target is from a newly generated path
         """
         self.target_x = x
         self.target_y = y
@@ -99,11 +102,17 @@ class Lidar(Node):
         # Start checking for enemy collision
         self.clear_on=True
         
+        # If this is from pathfinding, use relaxed collision threshold
+        if from_pathfinding:
+            self.path_just_generated = True
+            self.get_logger().info("🛤️  New path generated - using relaxed collision threshold")
+        
     
     def clear_goto_target(self):
         """Clear the go_to target when movement is complete"""
         self.target_x = None
         self.target_y = None
+        self.path_just_generated = False
         self.get_logger().info("Go-to target cleared")
     
     def check_enemy_collision_with_path(self):
@@ -111,6 +120,7 @@ class Lidar(Node):
         
         Takes into account the robot's 30x30cm rectangular body by using
         the robot's half-diagonal added to the enemy radius.
+        Uses the smaller pathfinding radius (0.25m) for consistency with generated paths.
         """
         if self.enemy_x is None or self.enemy_y is None:
             return False  # No enemy data
@@ -119,10 +129,10 @@ class Lidar(Node):
             return False  # No target
         
         # Line segment from (current_x, current_y) to (target_x, target_y)
-        # Circle at (enemy_x, enemy_y) with effective radius = enemy_radius + robot_half_diagonal
-        # This accounts for the robot's 30x30cm body
+        # Circle at (enemy_x, enemy_y) with effective radius = enemy_radius_for_pathfinding + robot_half_diagonal
+        # Use the smaller pathfinding radius to match how paths are generated
         
-        effective_radius = self.enemy_radius + self.robot_half_diagonal
+        effective_radius = self.enemy_radius_for_pathfinding + self.robot_half_diagonal
         
         # Vector from robot to target
         dx = self.target_x - self.current_x
@@ -181,14 +191,34 @@ class Lidar(Node):
                 self.cleared_emergency_count=0
                 # Only set emergency status if round time is >= 1 second
                 if self.round_time >= 1.0:
-                    self.emergency_status = 1
-                    self.clear_on=False
-                    # Start checking enemy collision for 1 second
-                    self.get_logger().warning(
-                        f"🚨 Emergency ! Obstacle ({effective_collision_distance*1000:.0f}mm) "
-                        f"is before target ({distance_to_target*1000:.0f}mm) "
-                        f"robot position : ({self.current_x:.3f}, {self.current_y:.3f})"
-                    )
+                    # When following a generated path, use reduced collision margin
+                    # Path was generated with 0.25m enemy radius, so accept being in detection zone
+                    if self.path_just_generated:
+                        # Only stop if we're ACTUALLY colliding (distance to collision ≈ 0)
+                        # Normal detection triggers at 350mm, but generated path stays >250mm away
+                        if effective_collision_distance > 0.05:  # 50mm safety margin
+                            self.get_logger().info(
+                                f"🛤️  Following generated path - distance to collision: "
+                                f"{effective_collision_distance*1000:.0f}mm (safe, >50mm)"
+                            )
+                            self.emergency_status = 0
+                        else:
+                            # Only stop if actual collision imminent (<50mm to impact)
+                            self.emergency_status = 1
+                            self.clear_on=False
+                            self.get_logger().warning(
+                                f"⚠️  Path execution - ACTUAL collision imminent! "
+                                f"Distance: {effective_collision_distance*1000:.0f}mm < 50mm"
+                            )
+                    else:
+                        self.emergency_status = 1
+                        self.clear_on=False
+                        # Start checking enemy collision for 1 second
+                        self.get_logger().warning(
+                            f"🚨 Emergency ! Obstacle ({effective_collision_distance*1000:.0f}mm) "
+                            f"is before target ({distance_to_target*1000:.0f}mm) "
+                            f"robot position : ({self.current_x:.3f}, {self.current_y:.3f})"
+                        )
                 else:
                     self.get_logger().info(
                         f"⏱️  Ignoring obstacle - round time ({self.round_time:.1f}s) < 3s"
@@ -238,13 +268,13 @@ class Lidar(Node):
             
             self.emergency_status = 1
             self.generate_path = 1
-            effective_radius = self.enemy_radius + self.robot_half_diagonal
+            effective_radius = self.enemy_radius_for_pathfinding + self.robot_half_diagonal
             self._recheck_count = 0
             self.get_logger().warning(
                 f"🚨 After 1s: Enemy still blocks path! emergency_status=1, generate_path=1 "
                 f"Enemy at ({self.enemy_x:.3f}, {self.enemy_y:.3f}), "
                 f"effective collision radius={effective_radius*1000:.0f}mm "
-                f"(enemy {self.enemy_radius*1000:.0f}mm + robot {self.robot_half_diagonal*1000:.0f}mm)"
+                f"(enemy {self.enemy_radius_for_pathfinding*1000:.0f}mm + robot {self.robot_half_diagonal*1000:.0f}mm)"
             )
     
     def getstatus(self):
@@ -264,8 +294,14 @@ class Lidar(Node):
             float: Distance in meters until collision (0.0 if no emergency)
         """
         return self.travel_distance
+    
     def get_path_status(self):
+        """Returns whether new path generation is needed"""
         return self.generate_path
+    
+    def get_enemy_radius_for_pathfinding(self):
+        """Returns the smaller enemy radius to use for path generation (0.25m)"""
+        return self.enemy_radius_for_pathfinding
 
 def main(args=None):
     rclpy.init(args=args)

@@ -118,6 +118,13 @@ def handle_stm32_command(command, params, stm32, lidar, strategy):
     global IDLE
     global IDLE_FOR_SYSTEMS
     
+    # Check if this is a path-generated command (marked in params)
+    from_pathfinding = False
+    if isinstance(params, list) and len(params) > 0 and isinstance(params[-1], dict):
+        # Last param is metadata dict
+        metadata = params.pop()
+        from_pathfinding = metadata.get('from_pathfinding', False)
+    
     if command == 'move_forward':
         stm32.move_forward(params[0], params[1], params[2] if len(params) > 2 else 0.0)
         IDLE = False
@@ -127,7 +134,7 @@ def handle_stm32_command(command, params, stm32, lidar, strategy):
         IDLE = False
         IDLE_FOR_SYSTEMS = False
     elif command == 'go_to':
-        lidar.set_goto_target(params[0]/1000, params[1]/1000)  # Convert mm to meters for lidar
+        lidar.set_goto_target(params[0]/1000, params[1]/1000, from_pathfinding=from_pathfinding)  # Convert mm to meters for lidar
         IDLE_FOR_SYSTEMS = False
         
         if len(params) > 3:
@@ -150,7 +157,7 @@ def handle_stm32_command(command, params, stm32, lidar, strategy):
     
     elif command == 'go_to_backwards':
         # Publish target position for collision detection
-        lidar.set_goto_target(params[0]/1000, params[1]/1000)  # Convert mm to meters for lidar
+        lidar.set_goto_target(params[0]/1000, params[1]/1000, from_pathfinding=from_pathfinding)  # Convert mm to meters for lidar
         
         if len(params) > 3:
             stm32.go_to_backwards(params[0], params[1], params[2], params[3])

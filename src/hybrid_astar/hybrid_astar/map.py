@@ -131,9 +131,9 @@ class MapManager:
             obs.type = 'enemy'
             obs.color = 'enemy'
             
-            # Enemy robot represented as a circle with diameter 0.35m (350mm)
-            enemy_diameter_mm = 350.0
-            enemy_radius_mm = enemy_diameter_mm / 2.0  # 175mm
+            # Enemy robot represented as a circle with diameter 0.7m (700mm)
+            enemy_diameter_mm = 700.0
+            enemy_radius_mm = enemy_diameter_mm / 2.0  # 300
             # For collision checking, represent circle as a square with side = diameter
             obs.width_mm = enemy_diameter_mm
             obs.height_mm = enemy_diameter_mm
