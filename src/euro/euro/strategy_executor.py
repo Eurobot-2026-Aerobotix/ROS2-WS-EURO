@@ -279,7 +279,7 @@ def stm32_task(strategy, stm32,lidar):
                         strategy.get_logger().info(f"IDLE: {IDLE}")
                         time.sleep(0.05)  # Wait until STM32 reports idle after stop
                     lidar.start_enemy_collision_check()  # Start waiting period before rechecking obstacle
-                    strategy.pathfinder.update_map()
+                    #strategy.pathfinder.update_map()
                     #IDLE = True  # Mark as idle to prevent status checks
                 
                 # Check if emergency cleared
