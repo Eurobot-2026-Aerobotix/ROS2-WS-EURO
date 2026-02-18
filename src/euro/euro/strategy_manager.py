@@ -371,6 +371,7 @@ def main(args=None):
     executor.add_node(pneumatic)
     executor.add_node(rpi)
     executor.add_node(strategy.pathfinder)
+    
     # Reset STM32 and wait for reconnection
     strategy.get_logger().info("Resetting STM32...")
     rpi.reset_stm32()
@@ -392,6 +393,18 @@ def main(args=None):
      # Start background threads for each device
     strategy.get_logger().info("Starting background threads...")
     time.sleep(1)
+    
+    # Reset ArUco stability in background thread (after executor starts spinning)
+    def reset_aruco_stability():
+        time.sleep(0.5)  # Wait for executor to start
+        strategy.pathfinder.reset_stability()
+    
+    reset_thread = threading.Thread(
+        target=reset_aruco_stability,
+        daemon=True
+    )
+    reset_thread.start()
+    
     status_thread = threading.Thread(
         target=robot_status,
         args=(strategy, stm32, lidar),
