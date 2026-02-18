@@ -182,6 +182,12 @@ class StrategyManager(Node):
                 global_x=x+0.1
                 global_y=y
                 global_angle=angle
+            else:
+                # Default case: use original coordinates
+                global_x=x
+                global_y=y
+                global_angle=angle
+                self.get_logger().warn(f"Edge case: position equals batch center or unexpected direction '{direction}'")
             self.pathfinder.set_goal(float(global_x), float(global_y), float(global_angle))
         else:
             found_goal_batch=False
@@ -487,9 +493,14 @@ def main(args=None):
                     strategy.global_pos_y = global_goal.get('y')
                     # Support both 'angle' and 'theta' keys
                     strategy.global_pos_angle = global_goal.get('theta') 
-                    #strategy.get_logger().info(f"global pose x: {strategy.global_pos_x} y{strategy.global_pos_y} tita{strategy.global_pos_angle} ")
+                    strategy.get_logger().info(f"DEBUG: Raw global_goal dict = {global_goal}")
+                    strategy.get_logger().info(f"DEBUG: After extraction - x={strategy.global_pos_x}, y={strategy.global_pos_y}, angle={strategy.global_pos_angle}")
 
                     if strategy.global_pos_x != None and strategy.global_pos_y != None and strategy.global_pos_angle != None :
+                        strategy.get_logger().info(f"x= {strategy.global_pos_x} ")
+                        strategy.get_logger().info(f"y= {strategy.global_pos_y} ")
+                        strategy.get_logger().info(f"angle= {strategy.global_pos_angle} ")
+                        strategy.get_logger().info(f"Global goal found for task '{task['name']}'")
                         strategy.handle_global_goal(float(strategy.global_pos_x)/1000, float(strategy.global_pos_y)/1000, float(strategy.global_pos_angle))
                         strategy.get_logger().info("global pose set goal")
                         strategy.global_pos_x =float( strategy.global_pos_x)

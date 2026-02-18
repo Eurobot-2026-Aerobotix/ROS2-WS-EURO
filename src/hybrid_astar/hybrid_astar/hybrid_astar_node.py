@@ -811,7 +811,7 @@ class HybridAStarNode(Node):
                 return response
             
             # Check if closest batch is within 0.2m (200mm) tolerance
-            if min_distance > 0.2:
+            if min_distance > 0.3:
                 response.success = False
                 response.color_pattern = ""
                 response.direction = ""
@@ -821,7 +821,7 @@ class HybridAStarNode(Node):
                 response.message = f"Closest batch is too far ({min_distance*1000:.0f}mm > 200mm limit)"
                 self.get_logger().warn(
                     f"❌ Closest batch '{closest_batch.known_id}' is {min_distance*1000:.0f}mm away "
-                    f"(exceeds 200mm limit) - skipping"
+                    f"(exceeds 300mm limit) - skipping"
                 )
                 return response
             
