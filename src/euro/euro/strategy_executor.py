@@ -243,7 +243,17 @@ def stm32_task(strategy, stm32,lidar):
             command = cmd.get('command')
             params = cmd.get('params', {})
             wait = cmd.get('wait', False)
+            
+            # Extract metadata dict if present (before converting to floats)
+            metadata = None
+            if isinstance(params, list) and len(params) > 0 and isinstance(params[-1], dict):
+                metadata = params.pop()
+            
             params = to_float_list(params)
+            
+            # Re-add metadata after float conversion
+            if metadata is not None:
+                params.append(metadata)
             #strategy.get_logger().info(f"goto : x: {params[0]} y : {params[1]}")
             # Save command for potential resume after emergency
             last_command = command
@@ -299,6 +309,7 @@ def stm32_task(strategy, stm32,lidar):
                     IDLE=True
                     IDLE_FOR_SYSTEMS=True
                     lidar.clear_on=True
+                    lidar.generate_path = 0  # Reset generate_path flag after triggering replanning
                     strategy.end_game=False  # Reset end_game flag so ESP tasks can continue
                     #strategy.end_game=True
                 time.sleep(0.1)
@@ -318,6 +329,7 @@ def stm32_task(strategy, stm32,lidar):
                 lidar.clear_goto_target()
                 strategy.pathfinder.clear_goal()
                 strategy.queues['STM'].popleft()
+                replanning=False  # Reset replanning flag when navigation completes
         
         time.sleep(0.1)  # 100ms
 def handle_color_pattner(strategy):
@@ -613,6 +625,11 @@ def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=No
                 time.sleep(0.1)
             elif command == 'set_position':
                 strategy.get_logger().info("set position sent from the rasp queue")
+                
+                # Extract metadata dict if present (before converting to floats)
+                if isinstance(params, list) and len(params) > 0 and isinstance(params[-1], dict):
+                    params.pop()
+                
                 params = to_float_list(params)
                 stm32_controller.set_position(params[0], params[1], params[2])
                 IDLE_FOR_SYSTEMS=True

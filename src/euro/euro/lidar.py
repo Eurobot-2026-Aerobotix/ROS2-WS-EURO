@@ -164,6 +164,71 @@ class Lidar(Node):
         
         return False
     
+    def is_enemy_on_side(self):
+        """Check if enemy robot is to the left or right (not directly in path)
+        
+        Returns:
+            bool: True if enemy is on the side (left/right), False if in front/behind
+        """
+        if self.enemy_x is None or self.enemy_y is None:
+            return False
+        
+        if self.target_x is None or self.target_y is None:
+            return False
+        
+        # Vector from robot to target (direction of travel)
+        dx = self.target_x - self.current_x
+        dy = self.target_y - self.current_y
+        
+        # Normalize direction vector
+        path_length = math.sqrt(dx * dx + dy * dy)
+        if path_length < 0.015:  # Very close to target (15mm) - don't care about obstacles
+            self.get_logger().info(
+                f"🎯 Very close to target ({path_length*1000:.0f}mm) - ignoring side check"
+            )
+            return True
+        
+        dx_norm = dx / path_length
+        dy_norm = dy / path_length
+        
+        # Vector from robot to enemy
+        enemy_dx = self.enemy_x - self.current_x
+        enemy_dy = self.enemy_y - self.current_y
+        
+        # Distance to enemy
+        enemy_distance = math.sqrt(enemy_dx * enemy_dx + enemy_dy * enemy_dy)
+        
+        # Calculate dot product (forward/backward component)
+        # and cross product magnitude (left/right component)
+        forward_component = enemy_dx * dx_norm + enemy_dy * dy_norm
+        lateral_component = abs(enemy_dx * dy_norm - enemy_dy * dx_norm)
+        
+        # If enemy is behind us (negative forward component)
+        if forward_component < 0:
+            self.get_logger().info(
+                f"⬅️ Enemy is behind us (forward={forward_component*1000:.0f}mm) - not blocking path"
+            )
+            return True
+        
+        # If enemy is mostly to the side (left/right)
+        # Improved logic: enemy is on side if lateral displacement is significantly greater than forward
+        # Use a threshold: lateral_component > 1.2 * forward_component (more aggressive side detection)
+        if lateral_component > 1.2 * abs(forward_component):
+            self.get_logger().info(
+                f"🔄 Enemy is on the side (lateral={lateral_component*1000:.0f}mm, "
+                f"forward={forward_component*1000:.0f}mm, distance={enemy_distance*1000:.0f}mm) - not blocking path"
+            )
+            return True
+        
+        # Additional check: if enemy is far to the side (> 400mm laterally), consider it not blocking
+        if lateral_component > 0.4:
+            self.get_logger().info(
+                f"↔️ Enemy is far to the side ({lateral_component*1000:.0f}mm lateral) - not blocking path"
+            )
+            return True
+        
+        return False
+    
     def emergency_stop_callback(self, msg):
         """Callback function for EmergencyStop custom message"""
         self.travel_distance = msg.distance
@@ -179,8 +244,26 @@ class Lidar(Node):
             
             effective_collision_distance = abs(self.travel_distance)
             
-            # If target is closer than the obstacle, don't trigger emergency stop
-            if distance_to_target < effective_collision_distance:
+            # If we're very close to target (within 15mm), ignore obstacles - we've basically arrived
+            if distance_to_target < 0.015:  # 15mm tolerance
+                if self.emergency_status != 1:
+                    self.emergency_status = 0
+                self.get_logger().info(
+                    f"✅ At target location ({distance_to_target*1000:.0f}mm away) - ignoring obstacles"
+                )
+                return
+            
+            # Check if enemy is on the side (left/right) or behind - not my collision
+            if self.is_enemy_on_side():
+                if self.emergency_status != 1:
+                    self.emergency_status = 0
+                self.get_logger().info(
+                    "✅ Enemy is on the side - not causing collision, continuing"
+                )
+                return
+            
+            # If target is closer than or equal to the obstacle, don't trigger emergency stop
+            if distance_to_target <= effective_collision_distance:
                 if self.emergency_status != 1:
                     self.emergency_status=0
                 self.get_logger().info(
@@ -243,6 +326,19 @@ class Lidar(Node):
     def _recheck_enemy_collision(self):
         """Check every 0.1s if enemy collides with path. Stop early if clear, or after 1s set generate_path"""
         self._recheck_count += 1
+        
+        # First check if enemy is on the side (not blocking)
+        if self.is_enemy_on_side():
+            if self._recheck_timer is not None:
+                self._recheck_timer.cancel()
+                self._recheck_timer = None
+            self.emergency_status = 0
+            self.generate_path = 0
+            self._recheck_count = 0
+            self.get_logger().info(
+                f"✅ Enemy is on the side during recheck - not blocking, clearing emergency"
+            )
+            return
         
         # Check if enemy circle still intersects with path
         collision_detected = self.check_enemy_collision_with_path()
