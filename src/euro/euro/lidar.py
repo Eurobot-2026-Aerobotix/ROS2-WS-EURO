@@ -37,7 +37,9 @@ class Lidar(Node):
         self.enemy_x = None
         self.enemy_y = None
         self._recheck_timer = None
-        self.clear_on=False
+        self._recheck_count = 0  # Counter for 0.1s checks
+        self.generate_path = 0  # Flag to indicate if new path generation is needed
+        self.clear_on=True
         # Subscribe to /emergency_stop (custom EmergencyStop message)
         self.emergency_stop_subscription = self.create_subscription(
             EmergencyStop,
@@ -94,6 +96,9 @@ class Lidar(Node):
         self.target_x = x
         self.target_y = y
         self.get_logger().info(f"Go-to target set: ({x:.3f}, {y:.3f})")
+        # Start checking for enemy collision
+        self.clear_on=True
+        
     
     def clear_goto_target(self):
         """Clear the go_to target when movement is complete"""
@@ -166,8 +171,7 @@ class Lidar(Node):
             
             # If target is closer than the obstacle, don't trigger emergency stop
             if distance_to_target < effective_collision_distance:
-                self.cleared_emergency_count+=1
-                if(self.cleared_emergency_count>5):
+                if self.emergency_status != 1:
                     self.emergency_status=0
                 self.get_logger().info(
                     f"✅ Target ({distance_to_target*1000:.0f}mm) is closer than obstacle "
@@ -175,9 +179,11 @@ class Lidar(Node):
                 )
             else: 
                 self.cleared_emergency_count=0
-                # Only set emergency status if round time is >= 3 seconds
+                # Only set emergency status if round time is >= 1 second
                 if self.round_time >= 1.0:
                     self.emergency_status = 1
+                    self.clear_on=False
+                    # Start checking enemy collision for 1 second
                     self.get_logger().warning(
                         f"🚨 Emergency ! Obstacle ({effective_collision_distance*1000:.0f}mm) "
                         f"is before target ({distance_to_target*1000:.0f}mm) "
@@ -191,36 +197,54 @@ class Lidar(Node):
             if self.clear_on:
                 self.emergency_status=0
 
-    def start_waiting(self):
-        """Start the timer logic to recheck enemy collision after 1 second"""
+    def start_enemy_collision_check(self):
+        """Start checking enemy collision every 0.1s for up to 1 second"""
         if self._recheck_timer is not None:
             self._recheck_timer.cancel()
             self._recheck_timer = None
         
-        self.get_logger().info("⏱️  Starting 1-second wait before recheck")
-        self._recheck_timer = self.create_timer(1.0, self._recheck_enemy_collision)
+        # Reset counter and generate_path flag
+        self._recheck_count = 0
+        self.generate_path = 0
+        
+        self.get_logger().info("⏱️  Starting enemy collision checks every 0.1s for 1 second")
+        self._recheck_timer = self.create_timer(0.1, self._recheck_enemy_collision)
     
     def _recheck_enemy_collision(self):
-        global was_in_emergency
-        """Recheck after 1 second if enemy still collides with path to target"""
-        if self._recheck_timer is not None:
-            self._recheck_timer.cancel()
-            self._recheck_timer = None
+        """Check every 0.1s if enemy collides with path. Stop early if clear, or after 1s set generate_path"""
+        self._recheck_count += 1
         
         # Check if enemy circle still intersects with path
-        if self.check_enemy_collision_with_path():
+        collision_detected = self.check_enemy_collision_with_path()
+        
+        # If no collision detected, stop checking and clear emergency
+        if not collision_detected:
+            if self._recheck_timer is not None:
+                self._recheck_timer.cancel()
+                self._recheck_timer = None
+            self.emergency_status = 0
+            self.generate_path = 0
+            self._recheck_count = 0
+            self.get_logger().info(
+                f"✅ Enemy collision cleared! Path is clear, emergency_status=0, generate_path=0"
+            )
+            return
+        
+        # After 10 checks (1 second total), set generate_path flag
+        if self._recheck_count >= 10:
+            if self._recheck_timer is not None:
+                self._recheck_timer.cancel()
+                self._recheck_timer = None
+            
             self.emergency_status = 1
+            self.generate_path = 1
             effective_radius = self.enemy_radius + self.robot_half_diagonal
+            self._recheck_count = 0
             self.get_logger().warning(
-                f"🚨 Recheck: Enemy still blocks path! "
+                f"🚨 After 1s: Enemy still blocks path! emergency_status=1, generate_path=1 "
                 f"Enemy at ({self.enemy_x:.3f}, {self.enemy_y:.3f}), "
                 f"effective collision radius={effective_radius*1000:.0f}mm "
                 f"(enemy {self.enemy_radius*1000:.0f}mm + robot {self.robot_half_diagonal*1000:.0f}mm)"
-            )
-        else:
-            self.emergency_status = 0
-            self.get_logger().info(
-                f"✅ Recheck: Path is clear! Enemy does not block path to target"
             )
     
     def getstatus(self):
@@ -240,6 +264,8 @@ class Lidar(Node):
             float: Distance in meters until collision (0.0 if no emergency)
         """
         return self.travel_distance
+    def get_path_status(self):
+        return self.generate_path
 
 def main(args=None):
     rclpy.init(args=args)

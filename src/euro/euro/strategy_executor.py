@@ -261,7 +261,7 @@ def stm32_task(strategy, stm32,lidar):
                     while(not IDLE and not SHUTDOWN_REQUESTED):
                         strategy.get_logger().info(f"IDLE: {IDLE}")
                         time.sleep(0.05)  # Wait until STM32 reports idle after stop
-                    lidar.start_waiting()  # Start waiting period before rechecking obstacle
+                    lidar.start_enemy_collision_check()  # Start waiting period before rechecking obstacle
                     strategy.pathfinder.update_map()
                     #IDLE = True  # Mark as idle to prevent status checks
                 
@@ -274,9 +274,9 @@ def stm32_task(strategy, stm32,lidar):
                     was_in_emergency = False
                     IDLE = False  # Back to moving
                     IDLE_FOR_SYSTEMS = False
-                elif EMERGENCY_STOP and replanning==False :
+                elif lidar.get_path_status() and replanning==False :
                     replanning=True
-                    time.sleep(3.0)  # Wait for 3 seconds before attempting to replan
+                    #time.sleep(3.0)  # Wait for 3 seconds before attempting to replan
                     strategy.get_logger().info(f"pathfinding after lidar: ")
                     
                     # Re-set the goal before replanning (goal was cleared after previous navigation)
