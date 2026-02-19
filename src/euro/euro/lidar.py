@@ -255,8 +255,7 @@ class Lidar(Node):
             
             # Check if enemy is on the side (left/right) or behind - not my collision
             if self.is_enemy_on_side():
-                if self.emergency_status != 1:
-                    self.emergency_status = 0
+                self.emergency_status = 0
                 self.get_logger().info(
                     "✅ Enemy is on the side - not causing collision, continuing"
                 )
