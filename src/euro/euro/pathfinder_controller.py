@@ -6,7 +6,7 @@ from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped, Point,Vector3
 from nav_msgs.msg import Path
 
-from hybrid_astar.srv import ComputePath, GetBatchColorPattern
+from hybrid_astar.srv import ComputePath, GetBatchColorPattern, DeleteBatch
 from std_srvs.srv import Trigger
 
 class PathfinderClient(Node):
@@ -27,6 +27,11 @@ class PathfinderClient(Node):
         self.batch_color_client = self.create_client(
             GetBatchColorPattern,
             '/get_batch_color_pattern'
+        )
+        
+        self.delete_batch_client = self.create_client(
+            DeleteBatch,
+            '/delete_batch'
         )
         
         self.update_map_client = self.create_client(
@@ -51,6 +56,12 @@ class PathfinderClient(Node):
             self.get_logger().warning('⚠️  /get_batch_color_pattern service not available after 5 seconds')
         else:
             self.get_logger().info('✅ /get_batch_color_pattern service is ready')
+        
+        self.get_logger().info('Waiting for /delete_batch service...')
+        if not self.delete_batch_client.wait_for_service(timeout_sec=5.0):
+            self.get_logger().warning('⚠️  /delete_batch service not available after 5 seconds')
+        else:
+            self.get_logger().info('✅ /delete_batch service is ready')
         
         self.get_logger().info('Waiting for /update_map service...')
         if not self.update_map_client.wait_for_service(timeout_sec=5.0):
@@ -336,6 +347,7 @@ class PathfinderClient(Node):
             success (bool)
             direction (str)
             batch_center (Point)
+            known_id (str) - The actual batch known_id from the response
         """
 
         request = GetBatchColorPattern.Request()
@@ -351,20 +363,62 @@ class PathfinderClient(Node):
         while not future.done():
             if time.time() - start_time > timeout:
                 self.get_logger().error('❌ Batch color service call timed out after 10s')
-                return "", False, "", Point()
+                return "", False, "", Point(), ""
             time.sleep(0.01)
 
         if not future.result():
             self.get_logger().error('❌ Batch color service call failed')
-            return "", False, "", Point()
+            return "", False, "", Point(), ""
 
         response = future.result()
 
         if response.success:
-            return response.color_pattern, True, response.direction, response.batch_center
+            return response.color_pattern, True, response.direction, response.batch_center, response.message, response.message
         else:
             self.get_logger().warning(f'⚠ Batch error: {response.message}')
-            return "", False, "", Point()
+            return "", False, "", Point(), ""
+    
+    def delete_batch(self, known_id: str):
+        """
+        Delete a batch by its known_id (after it's been picked up)
+        
+        Args:
+            known_id: The batch known_id to delete (e.g., 'f1', 's2', 'g3')
+        
+        Returns:
+            success (bool): True if batch was deleted, False otherwise
+        """
+        if not known_id:
+            self.get_logger().warning('⚠️  Empty known_id provided to delete_batch')
+            return False
+        
+        request = DeleteBatch.Request()
+        request.known_id = known_id
+        
+        future = self.delete_batch_client.call_async(request)
+        
+        # Wait for future to complete
+        import time
+        timeout = 5.0
+        start_time = time.time()
+        while not future.done():
+            if time.time() - start_time > timeout:
+                self.get_logger().error(f'❌ Delete batch service call timed out after {timeout}s')
+                return False
+            time.sleep(0.01)
+        
+        if not future.result():
+            self.get_logger().error('❌ Delete batch service call failed')
+            return False
+        
+        response = future.result()
+        
+        if response.success:
+            self.get_logger().info(f'🗑️  Batch "{known_id}" deleted successfully')
+            return True
+        else:
+            self.get_logger().warning(f'⚠️  Failed to delete batch "{known_id}": {response.message}')
+            return False
 
 
 def main(args=None):

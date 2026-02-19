@@ -1,0 +1,6 @@
+# Request
+string known_id
+---
+# Response
+bool success
+string message

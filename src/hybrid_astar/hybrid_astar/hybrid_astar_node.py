@@ -39,7 +39,7 @@ from visualization_msgs.msg import Marker, MarkerArray
 from hybrid_astar.msg import Obstacle, ObstacleArray, ColorCommand
 from aruco_mapper_msgs.msg import ArucoMapperState, Batch, BatchMember
 from aruco_mapper_msgs.srv import GetStableBatches
-from hybrid_astar.srv import ComputePath, GetBatchColorPattern
+from hybrid_astar.srv import ComputePath, GetBatchColorPattern, DeleteBatch, DeleteBatch
 
 # Import the pathfinding algorithm
 from hybrid_astar.hybrid_astar import HybridAStarPathfinder
@@ -95,6 +95,9 @@ class HybridAStarNode(Node):
         
         self.batch_color_service = self.create_service(
             GetBatchColorPattern, '/get_batch_color_pattern', self.handle_get_batch_color_pattern)
+        
+        self.delete_batch_service = self.create_service(
+            DeleteBatch, '/delete_batch', self.handle_delete_batch)
         
         # Delegate update_map service to MapManager
         self.update_map_service = self.create_service(
@@ -894,12 +897,16 @@ class HybridAStarNode(Node):
         response.success = True
         response.color_pattern = color_pattern
         
+        # Always return the actual batch known_id in the message
+        response.message = batch.known_id
+        
+        # Log details
         if known_id == "":
-            response.message = (
+            self.get_logger().info(
                 f"Closest batch '{batch.known_id}' ({direction}): {color_pattern}"
             )
         else:
-            response.message = (
+            self.get_logger().info(
                 f"Batch '{known_id}' ({direction}): {color_pattern}"
             )
 
@@ -909,6 +916,35 @@ class HybridAStarNode(Node):
             f"center=({batch.center.x:.1f}, {batch.center.y:.1f})"
         )
 
+        return response
+    
+    def handle_delete_batch(self, request, response):
+        """
+        Service handler: Delete a batch by its known_id
+        
+        This removes the batch from both FX and SX storage,
+        useful when a batch is picked up and should no longer be considered.
+        """
+        known_id = request.known_id.strip()
+        
+        if not known_id:
+            response.success = False
+            response.message = "Empty known_id provided"
+            self.get_logger().warn("❌ Delete batch request with empty known_id")
+            return response
+        
+        # Delegate to map_manager
+        success = self.map_manager.delete_batch(known_id)
+        
+        if success:
+            response.success = True
+            response.message = f"Batch '{known_id}' deleted successfully"
+            self.get_logger().info(f"✅ Batch '{known_id}' deleted")
+        else:
+            response.success = False
+            response.message = f"Batch '{known_id}' not found"
+            self.get_logger().warn(f"❌ Batch '{known_id}' not found for deletion")
+        
         return response
     
     def waypoints_to_stm32_go_to_commands(self, waypoints, speed=100):

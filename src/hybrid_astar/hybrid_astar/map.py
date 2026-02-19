@@ -716,6 +716,36 @@ class MapManager:
         with self.batches_lock:
             return {**self.batches_fx, **self.batches_sx}
     
+    def delete_batch(self, known_id: str) -> bool:
+        """
+        Delete a batch by its known_id from both FX and SX storage
+        
+        Args:
+            known_id: The batch known_id to delete (e.g., 'f1', 's1', 'g2')
+        
+        Returns:
+            True if batch was found and deleted, False otherwise
+        """
+        with self.batches_lock:
+            deleted_from_fx = False
+            deleted_from_sx = False
+            
+            if known_id in self.batches_fx:
+                del self.batches_fx[known_id]
+                deleted_from_fx = True
+                self.node.get_logger().info(f"🗑️  Deleted batch '{known_id}' from FX storage")
+            
+            if known_id in self.batches_sx:
+                del self.batches_sx[known_id]
+                deleted_from_sx = True
+                self.node.get_logger().info(f"🗑️  Deleted batch '{known_id}' from SX storage")
+            
+            if deleted_from_fx or deleted_from_sx:
+                return True
+            else:
+                self.node.get_logger().warn(f"⚠️  Batch '{known_id}' not found in FX or SX storage")
+                return False
+    
     def get_obstacle_counts(self) -> Dict[str, int]:
         """Get counts of obstacles by source"""
         with self.obstacles_lock:

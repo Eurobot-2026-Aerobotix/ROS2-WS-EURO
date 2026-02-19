@@ -344,8 +344,16 @@ def handle_color_pattner(strategy):
     pos.z = 0.0
     known_id = ''
 
-    color_pattern, success, direction, batch_center = strategy.pathfinder.get_batch_color(known_id, pos)
-    strategy.get_logger().info(f"pattern received fro beacon: {color_pattern} ")
+    color_pattern, success, direction, batch_center, batch_known_id = strategy.pathfinder.get_batch_color(known_id, pos)
+    strategy.get_logger().info(f"pattern received from beacon: {color_pattern} ")
+    
+    # Delete the batch after successfully retrieving its color pattern
+    if success and batch_known_id:
+        deleted = strategy.pathfinder.delete_batch(batch_known_id)
+        if deleted:
+            strategy.get_logger().info(f"🗑️  Batch '{batch_known_id}' deleted from map after pickup")
+        else:
+            strategy.get_logger().warning(f"⚠️  Failed to delete batch '{batch_known_id}' from map")
 
     if success and batch_center:
         if (direction == "horizontal" and y < batch_center.y) or (direction == "vertical" and x > batch_center.x):
