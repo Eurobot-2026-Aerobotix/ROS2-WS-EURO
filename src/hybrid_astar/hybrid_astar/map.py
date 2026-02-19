@@ -491,7 +491,7 @@ class MapManager:
                     self.node.get_logger().info(
                         f"🔍 SX Batch '{batch_known_id}' received: "
                         f"pattern='{batch.pattern}', direction='{batch.direction}', "
-                        f"count={batch.count}, members={len(batch.members)}"
+                        f"count={batch.count}, members={len(batch.members)}, type='{batch.state}'"
                     )
                     
                     if batch_known_id not in self.predefined_batch_positions:
