@@ -740,11 +740,35 @@ class MapManager:
                 deleted_from_sx = True
                 self.node.get_logger().info(f"🗑️  Deleted batch '{known_id}' from SX storage")
             
-            if deleted_from_fx or deleted_from_sx:
-                return True
-            else:
+            if not (deleted_from_fx or deleted_from_sx):
                 self.node.get_logger().warn(f"⚠️  Batch '{known_id}' not found in FX or SX storage")
                 return False
+        
+        # Remove all obstacles associated with this batch
+        with self.obstacles_lock:
+            # Find obstacles that belong to this batch (format: fx_{known_id}_member{idx} or sx_{known_id}_member{idx})
+            obstacles_to_remove = []
+            for obs in self.obstacles:
+                # Check if obstacle ID contains the batch known_id
+                if f"fx_{known_id}_" in obs.id or f"sx_{known_id}_" in obs.id:
+                    obstacles_to_remove.append(obs)
+            
+            # Remove found obstacles
+            removed_count = 0
+            for obs in obstacles_to_remove:
+                self.obstacles.remove(obs)
+                # Remove from source tracking
+                if obs.id in self.obstacle_sources:
+                    del self.obstacle_sources[obs.id]
+                removed_count += 1
+            
+            if removed_count > 0:
+                self.node.get_logger().info(f"🗑️  Removed {removed_count} obstacles for batch '{known_id}'")
+        
+        # Republish obstacles to update visualization
+        self.publish_current_obstacles()
+        
+        return True
     
     def get_obstacle_counts(self) -> Dict[str, int]:
         """Get counts of obstacles by source"""

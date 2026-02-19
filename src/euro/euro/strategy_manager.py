@@ -163,7 +163,7 @@ class StrategyManager(Node):
         pos.z = 0.0
         known_id = ''
         self.get_logger().info("requesting from pathfinder for checking if there is a batch or no(global pose ) ")
-        color_pattern, success, direction, batch_center = self.pathfinder.get_batch_color(known_id, pos)
+        color_pattern, success, direction, batch_center, batch_known_id = self.pathfinder.get_batch_color(known_id, pos)
         if success and self.last_task_command =='pick_up' :
             found_goal_batch=True
             if (direction == "horizontal" and y < batch_center.y) :

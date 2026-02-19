@@ -373,7 +373,7 @@ class PathfinderClient(Node):
         response = future.result()
 
         if response.success:
-            return response.color_pattern, True, response.direction, response.batch_center, response.message, response.message
+            return response.color_pattern, True, response.direction, response.batch_center, response.message
         else:
             self.get_logger().warning(f'⚠ Batch error: {response.message}')
             return "", False, "", Point(), ""
