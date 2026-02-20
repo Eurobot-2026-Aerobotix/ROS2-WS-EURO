@@ -663,8 +663,5 @@ def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=No
             # Remove command from queue after execution
             strategy.queues['RASP_PI'].popleft()
             
-            # If more commands waiting, process immediately without sleeping
-            if len(strategy.queues['RASP_PI']) > 0:
-                continue
         
         time.sleep(0.1)  # 100ms
