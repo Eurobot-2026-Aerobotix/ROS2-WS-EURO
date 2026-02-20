@@ -434,7 +434,7 @@ class MapManager:
             else:
                 self.node.get_logger().info(f"✅ Received {num_batches} batches from ArUco mapper")
             
-            # On first update: only process TRACKING batches, track others for retry
+            # On first update: only process TRACKING batches, track SX/GX for retry (not FX)
             # On retry: process if TRACKING, otherwise keep in retry list
             if self.first_update_map and specific_known_id is None:
                 # First update: only accept TRACKING batches
@@ -447,15 +447,19 @@ class MapManager:
                         filtered_batches.append(batch)
                         self.node.get_logger().info(f"  ✅ Batch '{batch.known_id}': TRACKING - will process")
                     else:
-                        non_tracking_ids.add(batch.known_id)
-                        self.node.get_logger().info(f"  ⏳ Batch '{batch.known_id}': {state} - will retry later")
+                        # Only retry SX (s*) and GX (g*) batches, not FX (f*)
+                        if batch.known_id.startswith('s') or batch.known_id.startswith('g'):
+                            non_tracking_ids.add(batch.known_id)
+                            self.node.get_logger().info(f"  ⏳ Batch '{batch.known_id}': {state} - will retry later (SX/GX)")
+                        else:
+                            self.node.get_logger().info(f"  ⏭️  Batch '{batch.known_id}': {state} - skipping (FX, no retry)")
                 
-                # Store non-tracking IDs for retry
+                # Store non-tracking IDs for retry (only SX and GX)
                 self.known_ids_to_retry = non_tracking_ids
                 
                 self.node.get_logger().info(
                     f"📊 First update: {len(filtered_batches)}/{num_batches} TRACKING batches processed, "
-                    f"{len(non_tracking_ids)} batches queued for retry"
+                    f"{len(non_tracking_ids)} SX/GX batches queued for retry (FX batches not retried)"
                 )
                 
                 # Mark first update as complete
@@ -600,25 +604,25 @@ class MapManager:
                     self._stop_retry_timer()
 
     def _start_retry_timer(self):
-        """Start periodic retries until all batches are TRACKING."""
+        """Start periodic retries until all SX/GX batches are TRACKING (FX not retried)."""
         if self.retry_timer is not None:
             return
 
         interval = max(self.retry_interval_sec, 0.1)
         self.retry_timer = self.node.create_timer(interval, self._retry_timer_callback)
         self.node.get_logger().info(
-            f"⏳ Auto-retry enabled: checking non-TRACKING batches every {interval:.1f}s"
+            f"⏳ Auto-retry enabled: checking non-TRACKING SX/GX batches every {interval:.1f}s"
         )
 
     def _stop_retry_timer(self):
-        """Stop periodic retries when all batches are TRACKING."""
+        """Stop periodic retries when all SX/GX batches are TRACKING."""
         if self.retry_timer is None:
             return
 
         self.retry_timer.cancel()
         self.retry_timer = None
         self.retry_pending = 0
-        self.node.get_logger().info("✅ Auto-retry stopped: all batches are TRACKING")
+        self.node.get_logger().info("✅ Auto-retry stopped: all SX/GX batches are TRACKING")
 
     def _retry_timer_callback(self):
         """Timer callback to retry non-TRACKING known_ids."""
@@ -634,7 +638,7 @@ class MapManager:
             return
 
         self.node.get_logger().info(
-            f"🔁 Auto-retrying {len(self.known_ids_to_retry)} non-TRACKING known_ids"
+            f"🔁 Auto-retrying {len(self.known_ids_to_retry)} non-TRACKING SX/GX batches"
         )
 
         for known_id in list(self.known_ids_to_retry):
