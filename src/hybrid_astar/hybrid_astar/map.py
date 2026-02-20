@@ -86,6 +86,13 @@ class MapManager:
         
         # Set to track known_ids that need to be retried (not in TRACKING state)
         self.known_ids_to_retry: set = set()
+
+        # Retry management for auto update_map
+        self.retry_timer = None
+        self.retry_interval_sec = params.get('rates', {}).get('update_map_retry_sec', 1.0)
+        self.retry_pending = 0
+        self.retry_client = None
+        self.retry_service_name = ""
         
         # Create publishers
         self.current_obs_pub = node.create_publisher(
@@ -314,6 +321,10 @@ class MapManager:
             response.success = False
             response.message = "No batch service available"
             return response
+
+        # Remember service for auto-retry timer
+        self.retry_client = client_to_use
+        self.retry_service_name = service_name
         
         if self.first_update_map:
             # First call: Get all batches with 'sfg' filter
@@ -325,7 +336,8 @@ class MapManager:
             # Call service asynchronously
             self.node.get_logger().info(f"📡 Calling {service_name} service...")
             future = client_to_use.call_async(stable_request)
-            future.add_done_callback(lambda f: self._handle_get_stable_batches_response(f, response, client_to_use, service_name))
+            future.add_done_callback(lambda f: self._handle_get_stable_batches_response(
+                f, response, client_to_use, service_name, None, False))
             
             response.success = True
             response.message = f"First map update triggered from {service_name} (processing asynchronously)"
@@ -337,6 +349,9 @@ class MapManager:
                 response.success = True
                 response.message = "No batches to retry"
                 return response
+
+            # Ensure auto-retry timer is running
+            self._start_retry_timer()
             
             self.node.get_logger().info(f"🔄 Retrying {len(self.known_ids_to_retry)} known_ids that were not TRACKING")
             
@@ -348,13 +363,14 @@ class MapManager:
                 
                 self.node.get_logger().info(f"📡 Calling {service_name} for known_id '{known_id}'...")
                 future = client_to_use.call_async(stable_request)
-                future.add_done_callback(lambda f, kid=known_id: self._handle_get_stable_batches_response(f, response, client_to_use, service_name, kid))
+                future.add_done_callback(lambda f, kid=known_id: self._handle_get_stable_batches_response(
+                    f, response, client_to_use, service_name, kid, False))
             
             response.success = True
             response.message = f"Retrying {len(self.known_ids_to_retry)} known_ids"
             return response
     
-    def _handle_get_stable_batches_response(self, future, trigger_response=None, client=None, service_name="", specific_known_id=None):
+    def _handle_get_stable_batches_response(self, future, trigger_response=None, client=None, service_name="", specific_known_id=None, from_retry_timer=False):
         """
         Callback for GetStableBatches service response
         Processes the received batches and updates the map
@@ -408,6 +424,10 @@ class MapManager:
                 
                 # Mark first update as complete
                 self.first_update_map = False
+
+                # Start auto-retry timer if needed
+                if self.known_ids_to_retry:
+                    self._start_retry_timer()
             else:
                 # Retry mode: check if specific batch is now TRACKING
                 filtered_batches = []
@@ -537,6 +557,62 @@ class MapManager:
             self.node.get_logger().error(f"❌ Error processing service response: {e}")
             import traceback
             self.node.get_logger().error(traceback.format_exc())
+        finally:
+            if from_retry_timer:
+                self.retry_pending = max(0, self.retry_pending - 1)
+                if self.retry_pending == 0 and not self.known_ids_to_retry:
+                    self._stop_retry_timer()
+
+    def _start_retry_timer(self):
+        """Start periodic retries until all batches are TRACKING."""
+        if self.retry_timer is not None:
+            return
+
+        interval = max(self.retry_interval_sec, 0.1)
+        self.retry_timer = self.node.create_timer(interval, self._retry_timer_callback)
+        self.node.get_logger().info(
+            f"⏳ Auto-retry enabled: checking non-TRACKING batches every {interval:.1f}s"
+        )
+
+    def _stop_retry_timer(self):
+        """Stop periodic retries when all batches are TRACKING."""
+        if self.retry_timer is None:
+            return
+
+        self.retry_timer.cancel()
+        self.retry_timer = None
+        self.retry_pending = 0
+        self.node.get_logger().info("✅ Auto-retry stopped: all batches are TRACKING")
+
+    def _retry_timer_callback(self):
+        """Timer callback to retry non-TRACKING known_ids."""
+        if not self.known_ids_to_retry:
+            self._stop_retry_timer()
+            return
+
+        if self.retry_pending > 0:
+            return
+
+        if not self.retry_client or not self.retry_client.service_is_ready():
+            self.node.get_logger().warn("⚠️ Auto-retry: batch service not ready, will retry later")
+            return
+
+        self.node.get_logger().info(
+            f"🔁 Auto-retrying {len(self.known_ids_to_retry)} non-TRACKING known_ids"
+        )
+
+        for known_id in list(self.known_ids_to_retry):
+            stable_request = GetStableBatches.Request()
+            stable_request.batch_types_filter = "sfg"
+            stable_request.specific_known_id = known_id
+
+            future = self.retry_client.call_async(stable_request)
+            self.retry_pending += 1
+            future.add_done_callback(
+                lambda f, kid=known_id: self._handle_get_stable_batches_response(
+                    f, None, self.retry_client, self.retry_service_name, kid, True
+                )
+            )
     
     def _handle_aruco_mapper_state(self, msg: ArucoMapperState, source: str):
         """
