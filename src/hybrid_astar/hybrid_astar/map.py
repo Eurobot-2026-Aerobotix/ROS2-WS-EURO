@@ -81,6 +81,12 @@ class MapManager:
         # Flag for first crate update logging
         self.first_crate_update = False
         
+        # Flag to track if this is the first update_map call
+        self.first_update_map = True
+        
+        # Set to track known_ids that need to be retried (not in TRACKING state)
+        self.known_ids_to_retry: set = set()
+        
         # Create publishers
         self.current_obs_pub = node.create_publisher(
             ObstacleArray, '/obstacles/current', 10)
@@ -283,8 +289,9 @@ class MapManager:
     def handle_update_map(self, request: Trigger.Request, response: Trigger.Response) -> Trigger.Response:
         """
         Service handler: Update map by requesting stable batches from ArUco mapper or web handler
-        Calls /get_stable_batches service and processes the returned batches
-        Uses 'sfg' filter to get all stable batches
+        
+        First call: Uses 'sfg' filter to get all batches, processes only TRACKING ones
+        Subsequent calls: Retries specific known_ids that were not TRACKING
         
         Priority: Try web service first (for simulation), then fall back to aruco_mapper (for real robot)
         """
@@ -293,7 +300,6 @@ class MapManager:
         # Try web service first if available
         client_to_use = None
         service_name = ""
-        
         
         if self.get_stable_batches_client.service_is_ready():
             client_to_use = self.get_stable_batches_client
@@ -309,24 +315,46 @@ class MapManager:
             response.message = "No batch service available"
             return response
         
-        # Create request for GetStableBatches with 'sfg' filter (all batches)
-        stable_request = GetStableBatches.Request()
-        stable_request.batch_types_filter = "sfg"  # Get all stable batches
-        stable_request.specific_known_id = ""  # Get all batches matching the filter
-        
-        # Call service asynchronously and register callback with response object
-        self.node.get_logger().info(f"📡 Calling {service_name} service...")
-        future = client_to_use.call_async(stable_request)
-        future.add_done_callback(lambda f: self._handle_get_stable_batches_response(f, response))
-        
-        # Return immediately - response will be populated by callback
-        # Note: This is a limitation - service returns before processing completes
-        # But it avoids the deadlock issue
-        response.success = True
-        response.message = f"Map update triggered from {service_name} (processing asynchronously)"
-        return response
+        if self.first_update_map:
+            # First call: Get all batches with 'sfg' filter
+            self.node.get_logger().info("🔄 First update_map call - requesting all batches with 'sfg' filter")
+            stable_request = GetStableBatches.Request()
+            stable_request.batch_types_filter = "sfg"  # Get all stable batches
+            stable_request.specific_known_id = ""  # Get all batches matching the filter
+            
+            # Call service asynchronously
+            self.node.get_logger().info(f"📡 Calling {service_name} service...")
+            future = client_to_use.call_async(stable_request)
+            future.add_done_callback(lambda f: self._handle_get_stable_batches_response(f, response, client_to_use, service_name))
+            
+            response.success = True
+            response.message = f"First map update triggered from {service_name} (processing asynchronously)"
+            return response
+        else:
+            # Subsequent calls: Retry specific known_ids that were not TRACKING
+            if not self.known_ids_to_retry:
+                self.node.get_logger().info("✅ No known_ids to retry - all batches are TRACKING")
+                response.success = True
+                response.message = "No batches to retry"
+                return response
+            
+            self.node.get_logger().info(f"🔄 Retrying {len(self.known_ids_to_retry)} known_ids that were not TRACKING")
+            
+            # Call service for each specific known_id
+            for known_id in list(self.known_ids_to_retry):  # Copy to avoid modification during iteration
+                stable_request = GetStableBatches.Request()
+                stable_request.batch_types_filter = "sfg"
+                stable_request.specific_known_id = known_id
+                
+                self.node.get_logger().info(f"📡 Calling {service_name} for known_id '{known_id}'...")
+                future = client_to_use.call_async(stable_request)
+                future.add_done_callback(lambda f, kid=known_id: self._handle_get_stable_batches_response(f, response, client_to_use, service_name, kid))
+            
+            response.success = True
+            response.message = f"Retrying {len(self.known_ids_to_retry)} known_ids"
+            return response
     
-    def _handle_get_stable_batches_response(self, future, trigger_response=None):
+    def _handle_get_stable_batches_response(self, future, trigger_response=None, client=None, service_name="", specific_known_id=None):
         """
         Callback for GetStableBatches service response
         Processes the received batches and updates the map
@@ -334,6 +362,9 @@ class MapManager:
         Args:
             future: Future object containing the service response
             trigger_response: Optional Trigger response (not used currently due to async nature)
+            client: Service client for retrying specific known_ids
+            service_name: Name of the service being used
+            specific_known_id: If set, this is a retry for a specific known_id
         """
         try:
             stable_response = future.result()
@@ -346,18 +377,58 @@ class MapManager:
             aruco_state = stable_response.stable_state
             num_batches = len(aruco_state.batches)
             
-            self.node.get_logger().info(f"✅ Received {num_batches} batches from ArUco mapper")
+            if specific_known_id:
+                self.node.get_logger().info(f"✅ Received {num_batches} batches for known_id '{specific_known_id}'")
+            else:
+                self.node.get_logger().info(f"✅ Received {num_batches} batches from ArUco mapper")
             
-            # Filter batches by state: only STABLE_VALID and OBSTRUCTED
-            filtered_batches = []
-            for batch in aruco_state.batches:
-                state = batch.state.upper()
-                if state in ['TRACKING', 'DEGRADED','OCCLUDED']:
-                    filtered_batches.append(batch)
+            # On first update: only process TRACKING batches, track others for retry
+            # On retry: process if TRACKING, otherwise keep in retry list
+            if self.first_update_map and specific_known_id is None:
+                # First update: only accept TRACKING batches
+                filtered_batches = []
+                non_tracking_ids = set()
+                
+                for batch in aruco_state.batches:
+                    state = batch.state.upper()
+                    if state == 'TRACKING':
+                        filtered_batches.append(batch)
+                        self.node.get_logger().info(f"  ✅ Batch '{batch.known_id}': TRACKING - will process")
+                    else:
+                        non_tracking_ids.add(batch.known_id)
+                        self.node.get_logger().info(f"  ⏳ Batch '{batch.known_id}': {state} - will retry later")
+                
+                # Store non-tracking IDs for retry
+                self.known_ids_to_retry = non_tracking_ids
+                
+                self.node.get_logger().info(
+                    f"📊 First update: {len(filtered_batches)}/{num_batches} TRACKING batches processed, "
+                    f"{len(non_tracking_ids)} batches queued for retry"
+                )
+                
+                # Mark first update as complete
+                self.first_update_map = False
+            else:
+                # Retry mode: check if specific batch is now TRACKING
+                filtered_batches = []
+                
+                for batch in aruco_state.batches:
+                    state = batch.state.upper()
+                    if state == 'TRACKING':
+                        filtered_batches.append(batch)
+                        # Remove from retry list if TRACKING
+                        if batch.known_id in self.known_ids_to_retry:
+                            self.known_ids_to_retry.discard(batch.known_id)
+                            self.node.get_logger().info(f"  ✅ Batch '{batch.known_id}': Now TRACKING - removing from retry list")
+                    else:
+                        self.node.get_logger().info(f"  ⏳ Batch '{batch.known_id}': Still {state} - keeping in retry list")
+                
+                if specific_known_id and len(filtered_batches) == 0:
+                    self.node.get_logger().info(f"  ⏳ Batch '{specific_known_id}': Not yet TRACKING - will retry again")
 
             self.node.get_logger().info(
                 f"📊 Filtered {len(filtered_batches)}/{num_batches} batches "
-                f"(TRACKING or EGRADED or occuluded only)"
+                f"(TRACKING only)"
             )
             
             # Deduplicate batches by known_id - keep the most complete one
@@ -386,20 +457,31 @@ class MapManager:
             filtered_batches = list(deduplicated_batches.values())
             self.node.get_logger().info(f"✅ After deduplication: {len(filtered_batches)} unique batches")
             
-            # CLEAR ALL FX/SX BATCHES AND OBSTACLES ONCE AT THE START
-            with self.obstacles_lock:
-                old_count = len(self.obstacles)
-                self.obstacles = [obs for obs in self.obstacles if self.obstacle_sources.get(obs.id, '') not in ['fx', 'sx']]
-                removed = old_count - len(self.obstacles)
-                
-                # Clear obstacle sources for both FX and SX
-                self.obstacle_sources = {k: v for k, v in self.obstacle_sources.items() if v not in ['fx', 'sx']}
-                
-                # Clear both batch dictionaries
-                with self.batches_lock:
-                    self.batches_fx.clear()
-                    self.batches_sx.clear()
-                    self.node.get_logger().info(f"🗑️  Cleared all FX and SX batches and {removed} obstacles before update")
+            # CLEAR ALL FX/SX BATCHES AND OBSTACLES ONLY ON FIRST UPDATE
+            # On retries, we only update/add the specific batches
+            if specific_known_id is None:  # Only clear on first update (not on retries)
+                with self.obstacles_lock:
+                    old_count = len(self.obstacles)
+                    self.obstacles = [obs for obs in self.obstacles if self.obstacle_sources.get(obs.id, '') not in ['fx', 'sx']]
+                    removed = old_count - len(self.obstacles)
+                    
+                    # Clear obstacle sources for both FX and SX
+                    self.obstacle_sources = {k: v for k, v in self.obstacle_sources.items() if v not in ['fx', 'sx']}
+                    
+                    # Clear both batch dictionaries
+                    with self.batches_lock:
+                        self.batches_fx.clear()
+                        self.batches_sx.clear()
+                        self.node.get_logger().info(f"🗑️  Cleared all FX and SX batches and {removed} obstacles before first update")
+            else:
+                # On retry: only remove obstacles for this specific known_id
+                with self.obstacles_lock:
+                    old_count = len(self.obstacles)
+                    self.obstacles = [obs for obs in self.obstacles 
+                                     if not (obs.id.startswith(f"fx_{specific_known_id}_") or obs.id.startswith(f"sx_{specific_known_id}_"))]
+                    removed = old_count - len(self.obstacles)
+                    if removed > 0:
+                        self.node.get_logger().info(f"🗑️  Removed {removed} obstacles for batch '{specific_known_id}' before retry")
             
             # Determine source - for 'sfg' we process both SX and FX
             # Process SX batches (s prefix)
