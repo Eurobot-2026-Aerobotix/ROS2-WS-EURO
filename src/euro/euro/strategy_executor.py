@@ -6,6 +6,7 @@ Handles periodic execution of commands from device queues
 
 import rclpy
 import time
+import threading
 from geometry_msgs.msg import Point
 
 class Round:
@@ -603,13 +604,26 @@ def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=No
                     stm32_controller.reset()
                     WAITING_TIRETTE=False
                     strategy.get_logger().info(f"✅ Tirette tjebdet  STRATEGY GOOOOOOOOO !!!!")
-                    # Start all 7 PAMI robots if controller exists
-                    if pami_controller:
-                        pami_controller.start_pamis()
+                    
+                    # Start timer and map update FIRST (critical for robot operation)
                     round_timer.start_game()
                     strategy.get_logger().info(f"⏱️  Game timer started!")
-                    strategy.get_logger().info("updating map ")
+                    strategy.get_logger().info("🗺️  Updating map...")
                     strategy.pathfinder.update_map()
+                    
+                    # Start PAMIs in background thread (non-blocking)
+                    if pami_controller:
+                        def start_pamis_background():
+                            try:
+                                strategy.get_logger().info("🤖 Starting PAMIs in background...")
+                                pami_controller.start_pamis()
+                                strategy.get_logger().info("✅ PAMIs started successfully")
+                            except Exception as e:
+                                strategy.get_logger().error(f"❌ Error starting PAMIs: {e}")
+                        
+                        pami_thread = threading.Thread(target=start_pamis_background, daemon=True)
+                        pami_thread.start()
+                        strategy.get_logger().info("🚀 Robot ready - PAMIs starting in background")
                 else:
                     strategy.get_logger().warning("RPI controller not available - skipping wait_start")
             elif command == 'RESET':
@@ -648,5 +662,9 @@ def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=No
             
             # Remove command from queue after execution
             strategy.queues['RASP_PI'].popleft()
+            
+            # If more commands waiting, process immediately without sleeping
+            if len(strategy.queues['RASP_PI']) > 0:
+                continue
         
         time.sleep(0.1)  # 100ms
