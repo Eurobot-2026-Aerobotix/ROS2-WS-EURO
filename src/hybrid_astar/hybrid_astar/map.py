@@ -127,6 +127,42 @@ class MapManager:
         # Publish obstacle visualization after clearing
         self.publish_obstacles(self.get_active_obstacles())
     
+    def handle_clear_map(self, request: Trigger.Request, response: Trigger.Response) -> Trigger.Response:
+        """Service handler: Clear all obstacles and reset map state for fresh update"""
+        self.node.get_logger().info("🗺️  Clear map service called")
+        
+        # Stop any running retry timer
+        self._stop_retry_timer()
+        
+        # Clear all obstacles
+        with self.obstacles_lock:
+            obstacle_count = len(self.obstacles)
+            self.obstacles.clear()
+            self.obstacle_sources.clear()
+        
+        # Clear all batches
+        with self.batches_lock:
+            fx_count = len(self.batches_fx)
+            sx_count = len(self.batches_sx)
+            self.batches_fx.clear()
+            self.batches_sx.clear()
+        
+        # Reset state flags
+        self.first_update_map = True
+        self.known_ids_to_retry.clear()
+        
+        # Publish empty obstacle visualization
+        self.publish_obstacles([])
+        
+        self.node.get_logger().info(
+            f"✅ Map cleared: {obstacle_count} obstacles, {fx_count} FX batches, {sx_count} SX batches removed. "
+            f"State reset for fresh update_map call."
+        )
+        
+        response.success = True
+        response.message = f"Map cleared: {obstacle_count} obstacles removed, state reset"
+        return response
+    
     def handle_obstacle_relative(self, msg: PoseStamped):
         """Handle incoming obstacle from /obstacle_relative topic (only keeps one enemy)"""
         with self.obstacles_lock:

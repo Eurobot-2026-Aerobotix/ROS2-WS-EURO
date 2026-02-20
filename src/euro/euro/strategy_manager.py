@@ -378,7 +378,6 @@ def main(args=None):
     
     # Wait longer for STM32 to boot and connect to micro-ROS agent
     strategy.get_logger().info("Waiting for STM32 to boot and connect to micro-ROS agent...")
-    time.sleep(3)
     
     stm32 = STM32Controller('rpi_stm32')
     executor.add_node(stm32)
@@ -392,12 +391,12 @@ def main(args=None):
     
      # Start background threads for each device
     strategy.get_logger().info("Starting background threads...")
-    time.sleep(1)
     
     # Reset ArUco stability in background thread (after executor starts spinning)
     def reset_aruco_stability():
         time.sleep(0.5)  # Wait for executor to start
         strategy.pathfinder.reset_stability()
+        strategy.pathfinder.clear_map()
     
     reset_thread = threading.Thread(
         target=reset_aruco_stability,
