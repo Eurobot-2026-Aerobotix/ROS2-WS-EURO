@@ -86,6 +86,12 @@ class MapManager:
         
         # Set to track known_ids that need to be retried (not in TRACKING state)
         self.known_ids_to_retry: set = set()
+        
+        # Set to track manually deleted batch known_ids (should not be re-added)
+        self.deleted_batch_ids: set = set()
+        
+        # Set to track currently active batch known_ids (from last update)
+        self.active_batch_ids: set = set()
 
         # Retry management for auto update_map
         self.retry_timer = None
@@ -150,6 +156,8 @@ class MapManager:
         # Reset state flags
         self.first_update_map = True
         self.known_ids_to_retry.clear()
+        self.deleted_batch_ids.clear()
+        self.active_batch_ids.clear()
         
         # Publish empty obstacle visualization
         self.publish_obstacles([])
@@ -162,6 +170,89 @@ class MapManager:
         response.success = True
         response.message = f"Map cleared: {obstacle_count} obstacles removed, state reset"
         return response
+    
+    def delete_batch(self, known_id: str) -> bool:
+        """
+        Manually delete a batch and mark it to not be re-added
+        
+        Args:
+            known_id: The known_id of the batch to delete (e.g., 's1', 'f_batch_1')
+        
+        Returns:
+            True if batch was found and deleted, False otherwise
+        """
+        self.node.get_logger().info(f"🗑️  Manually deleting batch '{known_id}'")
+        
+        deleted = False
+        
+        # Remove obstacles for this batch
+        with self.obstacles_lock:
+            old_count = len(self.obstacles)
+            self.obstacles = [obs for obs in self.obstacles 
+                            if not (obs.id.startswith(f"fx_{known_id}_") or obs.id.startswith(f"sx_{known_id}_"))]
+            removed = old_count - len(self.obstacles)
+            
+            if removed > 0:
+                deleted = True
+                # Remove from obstacle sources
+                self.obstacle_sources = {k: v for k, v in self.obstacle_sources.items() 
+                                        if not (k.startswith(f"fx_{known_id}_") or k.startswith(f"sx_{known_id}_"))}
+                self.node.get_logger().info(f"  ✅ Removed {removed} obstacles for batch '{known_id}'")
+        
+        # Remove from batch dictionaries
+        with self.batches_lock:
+            if known_id in self.batches_fx:
+                del self.batches_fx[known_id]
+                deleted = True
+                self.node.get_logger().info(f"  ✅ Removed FX batch '{known_id}'")
+            if known_id in self.batches_sx:
+                del self.batches_sx[known_id]
+                deleted = True
+                self.node.get_logger().info(f"  ✅ Removed SX batch '{known_id}'")
+        
+        # Add to deleted set to prevent re-addition
+        self.deleted_batch_ids.add(known_id)
+        
+        # Remove from active batch IDs
+        self.active_batch_ids.discard(known_id)
+        
+        # Remove from retry list if present
+        self.known_ids_to_retry.discard(known_id)
+        
+        # Publish updated obstacles
+        self.publish_obstacles(self.get_active_obstacles())
+        
+        if deleted:
+            self.node.get_logger().info(
+                f"✅ Batch '{known_id}' deleted and marked to not be re-added. "
+                f"Deleted batches: {self.deleted_batch_ids}"
+            )
+        else:
+            self.node.get_logger().warn(f"⚠️  Batch '{known_id}' not found, but marked as deleted")
+        
+        return deleted
+    
+    def undelete_batch(self, known_id: str) -> bool:
+        """
+        Remove a batch from the deleted list, allowing it to be added again on next update
+        
+        Args:
+            known_id: The known_id of the batch to undelete
+        
+        Returns:
+            True if batch was in deleted list, False otherwise
+        """
+        if known_id in self.deleted_batch_ids:
+            self.deleted_batch_ids.remove(known_id)
+            self.node.get_logger().info(
+                f"✅ Batch '{known_id}' removed from deleted list. "
+                f"Will be added on next update if beacon provides it. "
+                f"Deleted batches: {self.deleted_batch_ids}"
+            )
+            return True
+        else:
+            self.node.get_logger().warn(f"⚠️  Batch '{known_id}' was not in deleted list")
+            return False
     
     def handle_obstacle_relative(self, msg: PoseStamped):
         """Handle incoming obstacle from /obstacle_relative topic (only keeps one enemy)"""
@@ -517,22 +608,66 @@ class MapManager:
             filtered_batches = list(deduplicated_batches.values())
             self.node.get_logger().info(f"✅ After deduplication: {len(filtered_batches)} unique batches")
             
+            # Get known_ids from current response
+            received_batch_ids = {batch.known_id for batch in filtered_batches}
+            
             # CLEAR ALL FX/SX BATCHES AND OBSTACLES ONLY ON FIRST UPDATE
-            # On retries, we only update/add the specific batches
+            # On subsequent updates, we do incremental updates
             if specific_known_id is None:  # Only clear on first update (not on retries)
-                with self.obstacles_lock:
-                    old_count = len(self.obstacles)
-                    self.obstacles = [obs for obs in self.obstacles if self.obstacle_sources.get(obs.id, '') not in ['fx', 'sx']]
-                    removed = old_count - len(self.obstacles)
+                if self.first_update_map:
+                    # FIRST UPDATE: Clear everything
+                    with self.obstacles_lock:
+                        old_count = len(self.obstacles)
+                        self.obstacles = [obs for obs in self.obstacles if self.obstacle_sources.get(obs.id, '') not in ['fx', 'sx']]
+                        removed = old_count - len(self.obstacles)
+                        
+                        # Clear obstacle sources for both FX and SX
+                        self.obstacle_sources = {k: v for k, v in self.obstacle_sources.items() if v not in ['fx', 'sx']}
+                        
+                        # Clear both batch dictionaries
+                        with self.batches_lock:
+                            self.batches_fx.clear()
+                            self.batches_sx.clear()
+                            self.node.get_logger().info(f"🗑️  Cleared all FX and SX batches and {removed} obstacles before first update")
+                else:
+                    # SUBSEQUENT UPDATES: Incremental update
+                    # 1. Find batches that disappeared (in active but not in received)
+                    disappeared_ids = self.active_batch_ids - received_batch_ids
                     
-                    # Clear obstacle sources for both FX and SX
-                    self.obstacle_sources = {k: v for k, v in self.obstacle_sources.items() if v not in ['fx', 'sx']}
+                    # 2. Remove obstacles for disappeared batches
+                    if disappeared_ids:
+                        with self.obstacles_lock:
+                            old_count = len(self.obstacles)
+                            self.obstacles = [obs for obs in self.obstacles 
+                                            if not any(obs.id.startswith(f"fx_{bid}_") or obs.id.startswith(f"sx_{bid}_") 
+                                                      for bid in disappeared_ids)]
+                            removed = old_count - len(self.obstacles)
+                            
+                            # Remove from obstacle sources
+                            self.obstacle_sources = {k: v for k, v in self.obstacle_sources.items() 
+                                                    if not any(k.startswith(f"fx_{bid}_") or k.startswith(f"sx_{bid}_") 
+                                                              for bid in disappeared_ids)}
+                            
+                            # Remove from batch dictionaries
+                            with self.batches_lock:
+                                for bid in disappeared_ids:
+                                    self.batches_fx.pop(bid, None)
+                                    self.batches_sx.pop(bid, None)
+                            
+                            self.node.get_logger().info(
+                                f"🗑️  Removed {removed} obstacles for {len(disappeared_ids)} disappeared batches: {disappeared_ids}"
+                            )
                     
-                    # Clear both batch dictionaries
-                    with self.batches_lock:
-                        self.batches_fx.clear()
-                        self.batches_sx.clear()
-                        self.node.get_logger().info(f"🗑️  Cleared all FX and SX batches and {removed} obstacles before first update")
+                    # 3. Filter out manually deleted batches (don't re-add them)
+                    if self.deleted_batch_ids:
+                        pre_filter_count = len(filtered_batches)
+                        filtered_batches = [b for b in filtered_batches if b.known_id not in self.deleted_batch_ids]
+                        filtered_count = pre_filter_count - len(filtered_batches)
+                        if filtered_count > 0:
+                            self.node.get_logger().info(
+                                f"🚫 Filtered out {filtered_count} manually deleted batches: "
+                                f"{self.deleted_batch_ids & received_batch_ids}"
+                            )
             else:
                 # On retry: only remove obstacles for this specific known_id
                 with self.obstacles_lock:
@@ -587,6 +722,13 @@ class MapManager:
             # Calculate obstacles created
             obstacles_after = len(self.obstacles)
             num_obstacles = obstacles_after - obstacles_before
+            
+            # Update active batch IDs (only on full updates, not retries)
+            if specific_known_id is None:
+                # Update active batch IDs to current state
+                new_batch_ids = {batch.known_id for batch in filtered_batches}
+                self.active_batch_ids = new_batch_ids
+                self.node.get_logger().info(f"📋 Active batches updated: {self.active_batch_ids}")
             
             self.node.get_logger().info(
                 f"✅ Map updated: processed {len(filtered_batches)} batches "
