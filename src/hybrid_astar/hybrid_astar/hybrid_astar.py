@@ -381,7 +381,8 @@ class HybridAStarPathfinder:
     def find_path(self, start_pose: Tuple[float, float, float], 
                   goal_pose: Tuple[float, float, float], 
                   grid_resolution: float,
-                  max_iterations: int = 50000) -> Optional[List[Tuple[float, float, float]]]:
+                  max_iterations: int = 50000,
+                  allow_goal_collision: bool = False) -> Optional[List[Tuple[float, float, float]]]:
         """
         Find path using Hybrid A*.
         
@@ -390,6 +391,7 @@ class HybridAStarPathfinder:
             goal_pose: (x, y, theta) in mm and radians
             grid_resolution: Grid cell size in mm
             max_iterations: Max search iterations
+            allow_goal_collision: If True, allows goal to be in collision (for batch pickup)
             
         Returns:
             List of (x, y, theta) waypoints or None
@@ -400,6 +402,8 @@ class HybridAStarPathfinder:
         print(f"🚀 Starting Hybrid A* search...")
         print(f"   Start: ({start_x:.1f}, {start_y:.1f}, {math.degrees(start_theta):.1f}°)")
         print(f"   Goal: ({goal_x:.1f}, {goal_y:.1f}, {math.degrees(goal_theta):.1f}°)")
+        if allow_goal_collision:
+            print(f"   🎯 Goal collision allowed (batch pickup mode)")
         
         # Check start/goal validity
         start_collision = self.is_collision(start_x, start_y, start_theta, grid_resolution)
@@ -414,7 +418,7 @@ class HybridAStarPathfinder:
             return None
         
         goal_collision = self.is_collision(goal_x, goal_y, goal_theta, grid_resolution)
-        if goal_collision:
+        if goal_collision and not allow_goal_collision:
             print(f"✗ Goal position ({goal_x:.1f}, {goal_y:.1f}) is in collision!")
             # Check which grid cell
             gx = int(goal_x / grid_resolution)
@@ -423,6 +427,8 @@ class HybridAStarPathfinder:
             if 0 <= gx < self.grid_width and 0 <= gy < self.grid_height:
                 print(f"   Grid occupied: {self.grid[gy, gx]}")
             return None
+        elif goal_collision and allow_goal_collision:
+            print(f"⚠ Goal position ({goal_x:.1f}, {goal_y:.1f}) is in collision, but proceeding (batch pickup mode)")
         
         # Priority queue: (f_score, counter, pose)
         counter = 0

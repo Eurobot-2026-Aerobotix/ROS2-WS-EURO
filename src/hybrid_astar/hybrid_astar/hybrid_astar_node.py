@@ -411,6 +411,67 @@ class HybridAStarNode(Node):
             self.get_logger().info(f"✨ Intersection optimization removed {removed} waypoints")
 
         return optimized
+    
+    def _is_goal_on_batch(self, goal_x: float, goal_y: float, obstacles: List[dict]) -> bool:
+        """
+        Check if goal position overlaps with any batch obstacle.
+        This is used to automatically enable batch pickup mode.
+        
+        Args:
+            goal_x, goal_y: Goal position in mm
+            obstacles: List of obstacle dictionaries
+            
+        Returns:
+            True if goal overlaps with a batch (FX or SX), False otherwise
+        """
+        # Enhanced margin to account for robot footprint when picking up batch
+        # Robot is ~370mm wide, so we need more margin to detect nearby goals
+        margin = 200.0  # mm - increased from 50mm to catch goals near batches
+        
+        batch_obstacles = [obs for obs in obstacles if obs.get('id', '').startswith(('fx_', 'sx_'))]
+        
+        if not batch_obstacles:
+            self.get_logger().info(f"  No batch obstacles found in {len(obstacles)} total obstacles")
+            return False
+        
+        self.get_logger().info(f"  Checking goal ({goal_x:.1f}, {goal_y:.1f}) against {len(batch_obstacles)} batches (margin={margin}mm)")
+        
+        # Check if goal center is inside any batch obstacle
+        for obs in batch_obstacles:
+            obs_id = obs.get('id', '')
+            obs_x = obs['x']
+            obs_y = obs['y']
+            obs_width = obs['width']
+            obs_height = obs['height']
+            
+            # Calculate distance from goal to batch center
+            batch_center_x = obs_x + obs_width / 2.0
+            batch_center_y = obs_y + obs_height / 2.0
+            distance = math.sqrt((goal_x - batch_center_x)**2 + (goal_y - batch_center_y)**2)
+            
+            # Check if goal is inside obstacle bounds (with margin)
+            in_x_range = obs_x - margin <= goal_x <= obs_x + obs_width + margin
+            in_y_range = obs_y - margin <= goal_y <= obs_y + obs_height + margin
+            
+            self.get_logger().info(
+                f"    Batch '{obs_id}': center=({batch_center_x:.1f}, {batch_center_y:.1f}), "
+                f"bounds=({obs_x:.1f},{obs_y:.1f})+({obs_width:.1f}x{obs_height:.1f}), "
+                f"dist={distance:.1f}mm, in_range={in_x_range and in_y_range}"
+            )
+            
+            if in_x_range and in_y_range:
+                self.get_logger().info(
+                    f"  ✅ Goal ({goal_x:.1f}, {goal_y:.1f}) overlaps with batch '{obs_id}' "
+                    f"(distance={distance:.1f}mm from center)"
+                )
+                return True
+        
+        self.get_logger().warn(
+            f"  ⚠️ Goal ({goal_x:.1f}, {goal_y:.1f}) does NOT overlap with any batch "
+            f"(checked {len(batch_obstacles)} batches with {margin}mm margin)"
+        )
+        return False
+    
     def handle_compute_path(self, request: ComputePath.Request, 
                            response: ComputePath.Response) -> ComputePath.Response:
         """
@@ -439,6 +500,10 @@ class HybridAStarNode(Node):
         self.get_logger().info(f"   Dynamic obstacles: {len(active_obstacles)}")
         self.get_logger().info(f"   Permanent area: (0,600)→(450,2400) always blocked")
         
+        # Log obstacle details for debugging
+        batch_count = sum(1 for obs in active_obstacles if obs.get('id', '').startswith(('fx_', 'sx_')))
+        self.get_logger().info(f"   Batch obstacles: {batch_count}")
+        
         try:
             # Set obstacles in pathfinder
             grid_resolution = self.params['grid']['resolution_mm']
@@ -446,13 +511,22 @@ class HybridAStarNode(Node):
             # All obstacles are dynamic (permanent area is handled automatically)
             self.pathfinder.set_obstacles(active_obstacles, grid_resolution, static_walls=None)
             
+            # Automatically detect if goal is targeting a batch for pickup
+            self.get_logger().info(f"🔍 Checking if goal is targeting a batch for pickup...")
+            allow_goal_collision = self._is_goal_on_batch(goal_x, goal_y, active_obstacles)
+            if allow_goal_collision:
+                self.get_logger().info("🎯 Goal overlaps with batch obstacle - enabling batch pickup mode")
+            else:
+                self.get_logger().info("ℹ️  Goal does not overlap with any batch - standard collision rules apply")
+            
             # Run Hybrid A* algorithm (same as local script)
             self.get_logger().info("🔍 Searching for path...")
             path = self.pathfinder.find_path(
                 start_pose=(start_x, start_y, start_theta),
                 goal_pose=(goal_x, goal_y, goal_theta),
                 grid_resolution=grid_resolution,
-                max_iterations=self.params['pathfinding']['max_iterations']
+                max_iterations=self.params['pathfinding']['max_iterations'],
+                allow_goal_collision=allow_goal_collision
             )
             
             if path:

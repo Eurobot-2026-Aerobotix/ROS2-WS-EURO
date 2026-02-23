@@ -305,13 +305,14 @@ def stm32_task(strategy, stm32,lidar):
                         strategy.get_logger().error("❌ Cannot replan: no global goal stored!")
                     
                     strategy.path()
-                    last_stm_command="path_finding"
+                    last_stm_command="replanned"  # Set to "replanned" so queue is NOT popped - new commands need to execute
                     SYSTEMS_IDLE_COUNT=0
                     IDLE=True
                     IDLE_FOR_SYSTEMS=True
                     lidar.clear_on=True
                     lidar.generate_path = 0  # Reset generate_path flag after triggering replanning
                     strategy.end_game=False  # Reset end_game flag so ESP tasks can continue
+                    # Note: replanning=False is set by strategy_manager.path() function
                     #strategy.end_game=True
                 time.sleep(0.1)
             if  last_stm_command!="navigation": 
@@ -330,7 +331,10 @@ def stm32_task(strategy, stm32,lidar):
                 lidar.clear_goto_target()
                 strategy.pathfinder.clear_goal()
                 strategy.queues['STM'].popleft()
-                replanning=False  # Reset replanning flag when navigation completes
+            elif last_stm_command=="replanned":
+                # After replanning, don't pop - let outer loop execute new commands
+                strategy.get_logger().info("✓ Replanning complete - new commands ready to execute")
+                # Don't pop from queue - commands were just added and need to be executed
         
         time.sleep(0.1)  # 100ms
 def handle_color_pattner(strategy):
@@ -656,6 +660,19 @@ def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=No
                 stm32_controller.set_position(params[0], params[1], params[2])
                 IDLE_FOR_SYSTEMS=True
                 IDLE=False
+
+            elif command == 'wait_end_game':
+                # Wait until game time reaches 1.25s + duration
+                duration = float(params[0]) if params else 0
+                target_time = 1.25 + duration
+                strategy.get_logger().info(f"⏳ Waiting until game time reaches {target_time}s (1.25s + {duration}s)")
+                
+                while rclpy.ok() and not SHUTDOWN_REQUESTED:
+                    current_time = round_timer.time()
+                    if current_time >= target_time:
+                        strategy.get_logger().info(f"✅ Target time {target_time}s reached (current: {current_time}s)")
+                        break
+                    time.sleep(0.05)  # Check every 50ms
 
             else:
                 strategy.get_logger().warn(f"Unknown RASP_PI command: {command}")
