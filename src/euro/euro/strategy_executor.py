@@ -664,8 +664,8 @@ def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=No
             elif command == 'wait_end_game':
                 # Wait until game time reaches 1.25s + duration
                 duration = float(params[0]) if params else 0
-                target_time = 1.25 + duration
-                strategy.get_logger().info(f"⏳ Waiting until game time reaches {target_time}s (1.25s + {duration}s)")
+                target_time = 85 + duration
+                strategy.get_logger().info(f"⏳ Waiting until game time reaches {target_time}s (85s + {duration}s)")
                 
                 while rclpy.ok() and not SHUTDOWN_REQUESTED:
                     current_time = round_timer.time()
