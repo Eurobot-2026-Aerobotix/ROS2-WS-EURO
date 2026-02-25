@@ -77,16 +77,7 @@ class PamiController(Node):
                     cmd_floats.append(0.0)
             
             # For pami 7: send floats as-is without padding/trimming
-            if pami_number == 7:
-                flat_array.extend(cmd_floats)
-            else:
-                # For other pamis: pad to exactly 4 floats if needed
-                while len(cmd_floats) < 4:
-                    cmd_floats.append(0.0)
-                
-                # Add the 4 floats to the array
-                flat_array.extend(cmd_floats[:4])  # Take only first 4 values if more than 4
-        
+            flat_array.extend(cmd_floats)        
         return flat_array
     
     def load_and_publish_pami_strategies(self):
