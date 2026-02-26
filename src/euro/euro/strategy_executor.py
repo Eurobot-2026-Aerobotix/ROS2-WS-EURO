@@ -190,9 +190,18 @@ def correct_bezier(strategy, stm32, params):
     global SHUTDOWN_REQUESTED
     
     # Wait for at least 2 position updates from beacon
-    while strategy.latest_robot_pose_beacon_count < 2 and not SHUTDOWN_REQUESTED:
+    available_aruco=False 
+    while strategy.latest_robot_pose_beacon_count <2 or not available_aruco and not SHUTDOWN_REQUESTED:
+        available_aruco=False
+        if strategy.latest_robot_pose_beacon and len(strategy.latest_robot_pose_beacon.tracks) > 0:
+            for track in strategy.latest_robot_pose_beacon.tracks:
+                if track.aruco_id == 211:
+                    available_aruco=True
+                elif track.aruco_id == 212:
+                    available_aruco=True
+        
         time.sleep(0.1)
-        strategy.get_logger().info(f"Waiting for two positions from beacon")
+        strategy.get_logger().info(f"Waiting for  positions from beacon to fix the")
     
     stm_msg = 0.0
     pos = None
@@ -202,21 +211,20 @@ def correct_bezier(strategy, stm32, params):
     # Search for ArUco markers 10 or 6 in beacon tracks
     if strategy.latest_robot_pose_beacon and len(strategy.latest_robot_pose_beacon.tracks) > 0:
         for track in strategy.latest_robot_pose_beacon.tracks:
-            if track.aruco_id == 10:
+            if track.aruco_id == 211:
                 stm_msg = 1.0
                 pos = track.map_pos
-                strategy.get_logger().info(f"track.pos: {track.map_pos}")
+                strategy.get_logger().info(f"track.pos front: {track.map_pos}")
                 break
-            elif track.aruco_id == 6:
+            elif track.aruco_id == 212:
                 stm_msg = 2.0
                 pos = track.map_pos
-                strategy.get_logger().info(f"track.pos: {track.map_pos}")
+                strategy.get_logger().info(f"track.pos back : {track.map_pos}")
                 break
-    
     # Apply position correction
     if pos is not None:
         strategy.get_logger().info(f"Received pos from beacon: x={pos.x}, y={pos.y}")
-        stm32.fix_position(stm_msg, pos.x, pos.y)
+        stm32.fix_position(stm_msg, pos.x*1000, pos.y*1000)
     else:
         strategy.get_logger().info(f"Using fallback position: x={params[6]}, y={params[7]}")
         stm32.fix_position(stm_msg, params[6], params[7])
@@ -320,14 +328,17 @@ def stm32_task(strategy, stm32,lidar):
                 strategy.get_logger().info( last_stm_command  )
                 # Reset emergency flag when command completes normally
                 was_in_emergency = False
-                strategy.latest_robot_pose_beacon_count = 0
                 
-                # Correct position using beacon after bezier curves
-                if command == 'bezier' or command == 'bezier_backwards':
-                    correct_bezier(strategy, stm32, params)
-                    
+                
+                
                 # Remove command from queue after execution
             if last_stm_command=="navigation":
+                # Correct position using beacon after bezier curves
+                if command == 'bezier' or command == 'bezier_backwards':
+                    strategy.get_logger().info("correcting bezier ")
+                    
+                    strategy.latest_robot_pose_beacon_count = 0
+                    #correct_bezier(strategy, stm32, params)
                 lidar.clear_goto_target()
                 strategy.pathfinder.clear_goal()
                 strategy.queues['STM'].popleft()
@@ -345,7 +356,7 @@ def handle_color_pattner(strategy):
     pos = Point()
     pos.x = float(x)
     pos.y = float(y)
-    strategy.get_logger().info(f"robot position : x={x} , y={y}")
+    #strategy.get_logger().info(f"robot position : x={x} , y={y}")
     pos.z = 0.0
     known_id = ''
 

@@ -595,7 +595,7 @@ class STM32Controller(Node):
         request.arg8 = 0.0
         request.arg9 = 0.0
         request.arg10 = 0.0
-        self.get_logger().info("Sending FIX POSITION command")
+        self.get_logger().info(f"Sending FIX POSITION command front1 back 2; {front1_back2} x: {x} y {y}")
         
         try:
             future = self.navi_client.call_async(request)
