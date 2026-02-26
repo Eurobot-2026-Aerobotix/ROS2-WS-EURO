@@ -271,16 +271,17 @@ class MapManager:
             obs.type = 'enemy'
             obs.color = 'enemy'
             
-            # Enemy robot represented as a circle with diameter 0.7m (700mm)
+            # Enemy robot represented as a circle with diameter 0.6m (600mm)
             enemy_diameter_mm = 600.0
             enemy_radius_mm = enemy_diameter_mm / 2.0  # 300
-            # For collision checking, represent circle as a square with side = diameter
-            obs.width_mm = enemy_diameter_mm
-            obs.height_mm = enemy_diameter_mm
+            # For collision checking, represent circle as a square with side = radius (300mm)
+            obs.width_mm = enemy_radius_mm
+            obs.height_mm = enemy_radius_mm
             
             # Convert to top-left corner (what the planner expects)
-            obs.pose.x = center_x_mm - enemy_radius_mm
-            obs.pose.y = center_y_mm - enemy_radius_mm
+            # For a square centered at (center_x, center_y), top-left = center - (width/2)
+            obs.pose.x = center_x_mm - (obs.width_mm / 2.0)
+            obs.pose.y = center_y_mm - (obs.height_mm / 2.0)
             obs.pose.theta = self.quaternion_to_yaw(msg.pose.orientation)
             
             obs.detected_at = msg.header.stamp
@@ -310,9 +311,9 @@ class MapManager:
         enemy_marker.pose.position.z = 0.15  # 150mm high (half of 300mm)
         enemy_marker.pose.orientation = self.yaw_to_quaternion(0.0)  # Cylinders don't need rotation
         
-        # Size: diameter 0.35m (radius 0.175m)
-        enemy_marker.scale.x = 0.35  # Diameter in X
-        enemy_marker.scale.y = 0.35  # Diameter in Y
+        # Size: 0.30m square (300mm radius)
+        enemy_marker.scale.x = 0.30  # 300mm side in X
+        enemy_marker.scale.y = 0.30  # 300mm side in Y
         enemy_marker.scale.z = 0.30  # 300mm tall robot
         
         # Dark red/magenta for enemy
