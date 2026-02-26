@@ -77,12 +77,7 @@ class PamiController(Node):
                     cmd_floats.append(0.0)
             
             # For pami 7: send floats as-is without padding/trimming
-<<<<<<< HEAD
             flat_array.extend(cmd_floats)        
-=======
-            flat_array.extend(cmd_floats)
-                        
->>>>>>> e176f50183ff6503785c2e66b15682531de83618
         return flat_array
     
     def load_and_publish_pami_strategies(self):
