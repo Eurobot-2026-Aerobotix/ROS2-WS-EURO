@@ -229,12 +229,7 @@ class PamiController(Node):
             # Create and publish message
             msg = Float32MultiArray()
             msg.data = float_array
-            
-            if pami_number == 7:
-                self.get_logger().info(f"  Strategy: {len(float_array)} floats ({len(sequence)} commands, raw encoding)")
-            else:
-                self.get_logger().info(f"  Strategy: {len(float_array)} floats ({len(sequence)} commands × 4 floats each)")
-            
+            self.get_logger().info(f"  Strategy: {len(float_array)} floats ({len(sequence)} commands, raw encoding)")  
             # Publish the strategy with retry logic
             self.publish_strategy_with_retry(pami_number, msg)
         
@@ -292,7 +287,7 @@ class PamiController(Node):
         """
         self.get_logger().info("🚀 Starting all PAMIs...")
         
-        for pami_number in range(1, 8):  # PAMIs 1 to 7
+        for pami_number in range(1, 7):  # PAMIs 1 to 6 // to add the ninja later 
             self.start_pami(pami_number)
         
         self.get_logger().info("✅ Start signal sent to all 7 PAMIs")
