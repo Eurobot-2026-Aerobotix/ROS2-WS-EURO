@@ -1,7 +1,7 @@
 # Request
 string batch_types_filter    # e.g., "s", "sf", "sfg" - filter by type (ignored if specific_known_id is set)
 string specific_known_id     # e.g., "s1", "f3", "g2" - request specific batch (empty = use filter)
-
+bool only_locked_baselines   # if true, return only the immutable baseline patterns locked after initialization
 ---
 
 # Response

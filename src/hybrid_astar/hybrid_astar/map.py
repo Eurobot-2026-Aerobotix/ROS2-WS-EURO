@@ -84,6 +84,9 @@ class MapManager:
         # Flag to track if this is the first update_map call
         self.first_update_map = True
         
+        # Flag to track if we've locked the baseline patterns
+        self.baselines_locked = False
+        
         # Set to track known_ids that need to be retried (not in TRACKING state)
         self.known_ids_to_retry: set = set()
         
@@ -155,6 +158,7 @@ class MapManager:
         
         # Reset state flags
         self.first_update_map = True
+        self.baselines_locked = False
         self.known_ids_to_retry.clear()
         self.deleted_batch_ids.clear()
         self.active_batch_ids.clear()
@@ -453,11 +457,12 @@ class MapManager:
         # Always get all batches with 'sfg' filter (for both first and subsequent calls)
         # The difference is that first call clears everything, subsequent calls do incremental updates
         if self.first_update_map:
-            self.node.get_logger().info("🔄 First update_map call - requesting all batches")
+            self.node.get_logger().info("🔄 First update_map call - requesting all batches (unlocked)")
         
         stable_request = GetStableBatches.Request()
         stable_request.batch_types_filter = "sfg"  # Get all stable batches
         stable_request.specific_known_id = ""  # Get all batches matching the filter
+        stable_request.only_locked_baselines = False  # Always False for update_map - lock call happens after all TRACKING
         
         # Call service asynchronously
         future = client_to_use.call_async(stable_request)
@@ -501,31 +506,32 @@ class MapManager:
             
             # Filter batches based on update type
             if is_first_update:
-                # FIRST UPDATE: only accept TRACKING batches, queue non-TRACKING SX/GX for retry
+                # FIRST UPDATE: accept non-EMERGING batches, queue EMERGING SX/GX for retry
                 filtered_batches = []
-                non_tracking_ids = set()
-                tracking_count = 0
+                emerging_ids = set()
+                non_emerging_count = 0
                 skipped_count = 0
                 
                 for batch in aruco_state.batches:
                     state = batch.state.upper()
-                    if state == 'TRACKING':
+                    if state != 'EMERGING':
+                        # Accept all non-EMERGING batches (TRACKING, DEGRADED, etc.)
                         filtered_batches.append(batch)
-                        tracking_count += 1
+                        non_emerging_count += 1
                     else:
-                        # Only retry DEGRADED SX/GX batches, not LOST ones
-                        if state == 'DEGRADED' and (batch.known_id.startswith('s') or batch.known_id.startswith('g')):
-                            non_tracking_ids.add(batch.known_id)
+                        # Only retry EMERGING SX/GX batches
+                        if batch.known_id.startswith('s') or batch.known_id.startswith('g'):
+                            emerging_ids.add(batch.known_id)
                             batch_type = 'SX' if batch.known_id.startswith('s') else 'GX'
                             self.node.get_logger().info(f"  ⏳ [{batch_type}] '{batch.known_id}': {state} → will retry")
                         else:
                             skipped_count += 1
                 
-                # Store non-tracking IDs for retry (only SX and GX)
-                self.known_ids_to_retry = non_tracking_ids
+                # Store EMERGING IDs for retry (only SX and GX)
+                self.known_ids_to_retry = emerging_ids
                 
                 self.node.get_logger().info(
-                    f"📊 First update summary: {tracking_count} TRACKING, {len(non_tracking_ids)} SX/GX queued for retry, "
+                    f"📊 First update summary: {non_emerging_count} non-EMERGING, {len(emerging_ids)} SX/GX EMERGING queued for retry, "
                     f"{skipped_count} FX skipped"
                 )
                 
@@ -537,11 +543,10 @@ class MapManager:
                     self._start_retry_timer()
                     
             elif is_full_update:
-                # SUBSEQUENT FULL UPDATE: process TRACKING batches + DEGRADED FX, retry all non-TRACKING
+                # SUBSEQUENT FULL UPDATE: process non-EMERGING batches, retry EMERGING SX/GX
                 filtered_batches = []
-                non_tracking_ids = set()
-                tracking_count = 0
-                degraded_fx_count = 0
+                emerging_ids = set()
+                non_emerging_count = 0
                 skipped_count = 0
                 
                 for batch in aruco_state.batches:
@@ -550,45 +555,39 @@ class MapManager:
                     is_sx_gx = batch.known_id.startswith('s') or batch.known_id.startswith('g')
                     batch_type = 'FX' if is_fx else ('SX' if batch.known_id.startswith('s') else 'GX')
                     
-                    if state == 'TRACKING':
+                    if state != 'EMERGING':
+                        # Accept all non-EMERGING batches (TRACKING, DEGRADED, etc.)
                         filtered_batches.append(batch)
-                        tracking_count += 1
-                        # Remove from retry list if it was there (log only state change)
+                        non_emerging_count += 1
+                        # Remove from retry list if it was there (no longer EMERGING)
                         if batch.known_id in self.known_ids_to_retry:
                             self.known_ids_to_retry.discard(batch.known_id)
-                            self.node.get_logger().info(f"  🔄 [{batch_type}] '{batch.known_id}': TRACKING (upgraded from retry)")
-                    elif state == 'DEGRADED' and is_fx:
-                        # Accept DEGRADED FX batches and retry them
-                        filtered_batches.append(batch)
-                        degraded_fx_count += 1
-                        non_tracking_ids.add(batch.known_id)
-                        # Only log when first added to retry
-                        if batch.known_id not in self.known_ids_to_retry:
-                            self.node.get_logger().info(f"  ⚠️  [FX] '{batch.known_id}': DEGRADED → added to retry")
+                            self.node.get_logger().info(f"  🔄 [{batch_type}] '{batch.known_id}': {state} (no longer EMERGING)")
                     else:
-                        # Handle non-TRACKING batches
+                        # Handle EMERGING batches
                         if state == 'LOST':
                             # LOST: Remove from retry queue and skip (will be removed as disappeared)
                             if batch.known_id in self.known_ids_to_retry:
                                 self.known_ids_to_retry.discard(batch.known_id)
                                 self.node.get_logger().info(f"  🗑️  [{batch_type}] '{batch.known_id}': LOST → removed from retry")
                             skipped_count += 1
-                        elif state == 'DEGRADED' and is_sx_gx:
-                            # DEGRADED SX/GX: Add to retry queue (log only on first add)
-                            if batch.known_id not in non_tracking_ids and batch.known_id not in self.known_ids_to_retry:
-                                self.node.get_logger().info(f"  ⏭️  [{batch_type}] '{batch.known_id}': DEGRADED → added to retry")
-                            non_tracking_ids.add(batch.known_id)
+                        elif is_sx_gx:
+                            # EMERGING SX/GX: Add to retry queue (log only on first add)
+                            if batch.known_id not in emerging_ids and batch.known_id not in self.known_ids_to_retry:
+                                self.node.get_logger().info(f"  ⏭️  [{batch_type}] '{batch.known_id}': EMERGING → added to retry")
+                            emerging_ids.add(batch.known_id)
                             skipped_count += 1
                         else:
+                            # EMERGING FX - skip
                             skipped_count += 1
                 
-                # Update retry list (add new non-TRACKING batches, keep existing ones)
-                self.known_ids_to_retry.update(non_tracking_ids)
+                # Update retry list (add new EMERGING batches, keep existing ones)
+                self.known_ids_to_retry.update(emerging_ids)
                 
                 # Only log if there are batches in retry or state changes
-                if self.known_ids_to_retry or degraded_fx_count > 0:
+                if self.known_ids_to_retry:
                     self.node.get_logger().info(
-                        f"📊 Update: {tracking_count} TRACKING, {len(self.known_ids_to_retry)} in retry queue"
+                        f"📊 Update: {non_emerging_count} non-EMERGING, {len(self.known_ids_to_retry)} EMERGING in retry queue"
                     )
                 
                 # Start auto-retry timer if needed
@@ -596,7 +595,7 @@ class MapManager:
                     self._start_retry_timer()
                     
             else:
-                # SPECIFIC RETRY: check if specific batch improved
+                # SPECIFIC RETRY: check if specific batch is no longer EMERGING
                 filtered_batches = []
                 
                 for batch in aruco_state.batches:
@@ -604,22 +603,20 @@ class MapManager:
                     is_fx = batch.known_id.startswith('f') or not (batch.known_id.startswith('s') or batch.known_id.startswith('g'))
                     batch_type = 'FX' if is_fx else ('SX' if batch.known_id.startswith('s') else 'GX')
                     
-                    if state == 'TRACKING':
+                    if state != 'EMERGING':
+                        # Accept non-EMERGING batches
                         filtered_batches.append(batch)
-                        # Remove from retry list if TRACKING
+                        # Remove from retry list if no longer EMERGING
                         if batch.known_id in self.known_ids_to_retry:
                             self.known_ids_to_retry.discard(batch.known_id)
-                            self.node.get_logger().info(f"  🎉 [{batch_type}] '{batch.known_id}': {state} ({len(batch.members)} members) → upgraded, removing from retry")
-                    elif state == 'DEGRADED' and is_fx:
-                        # Keep DEGRADED FX batches, update them
-                        filtered_batches.append(batch)
-                        self.node.get_logger().info(f"  ⚠️  [FX] '{batch.known_id}': {state} ({len(batch.members)} members) → updating (still degraded)")
+                            self.node.get_logger().info(f"  🎉 [{batch_type}] '{batch.known_id}': {state} ({len(batch.members)} members) → no longer EMERGING, removing from retry")
                     elif state == 'LOST':
                         # LOST: Remove from retry queue
                         self.known_ids_to_retry.discard(batch.known_id)
                         self.node.get_logger().info(f"  🗑️  [{batch_type}] '{batch.known_id}': {state} ({len(batch.members)} members) → LOST, removing from retry")
                     else:
-                        self.node.get_logger().info(f"  ⏳ [{batch_type}] '{batch.known_id}': {state} ({len(batch.members)} members) → still waiting, keeping in retry")
+                        # Still EMERGING
+                        self.node.get_logger().info(f"  ⏳ [{batch_type}] '{batch.known_id}': {state} ({len(batch.members)} members) → still EMERGING, keeping in retry")
                 
                 if specific_known_id and len(filtered_batches) == 0:
                     batch_type = 'FX' if specific_known_id.startswith('f') else ('SX' if specific_known_id.startswith('s') else 'GX')
@@ -680,9 +677,10 @@ class MapManager:
                     # 1. Find batches that disappeared (in active but not in received)
                     disappeared_ids = self.active_batch_ids - received_batch_ids
                     
-                    # 2. Remove obstacles for ALL batches that will be updated (both disappeared and still present)
-                    # This ensures we don't accumulate duplicate obstacles when batch data changes
-                    batches_to_remove = disappeared_ids | received_batch_ids  # Union of both sets
+                    # 2. Remove obstacles ONLY for batches that disappeared OR are FX (FX always refreshed)
+                    # Keep existing obstacles for SX batches that are still present
+                    fx_batches_ids = {batch.known_id for batch in filtered_batches if batch.known_id.startswith('f')}
+                    batches_to_remove = disappeared_ids | fx_batches_ids  # Disappeared + all FX
                     
                     if batches_to_remove:
                         with self.obstacles_lock:
@@ -697,17 +695,32 @@ class MapManager:
                                                     if not any(k.startswith(f"fx_{bid}_") or k.startswith(f"sx_{bid}_") 
                                                               for bid in batches_to_remove)}
                             
-                            # Remove from batch dictionaries (only for disappeared batches)
+                            # Remove from batch dictionaries
                             with self.batches_lock:
                                 for bid in disappeared_ids:
+                                    # Remove disappeared batches from storage
                                     self.batches_fx.pop(bid, None)
                                     self.batches_sx.pop(bid, None)
+                                for bid in fx_batches_ids:
+                                    # Remove FX batches for refresh (they'll be re-added)
+                                    self.batches_fx.pop(bid, None)
                             
-                            # Only log if batches disappeared
-                            if disappeared_ids:
+                            # Log removal
+                            if disappeared_ids and fx_batches_ids:
+                                self.node.get_logger().info(
+                                    f"🗑️  Removed {removed} obstacles: {len(disappeared_ids)} disappeared, {len(fx_batches_ids)} FX to refresh"
+                                )
+                            elif disappeared_ids:
                                 self.node.get_logger().info(
                                     f"🗑️  Removed {removed} obstacles from {len(disappeared_ids)} disappeared batches: {disappeared_ids}"
                                 )
+                            elif fx_batches_ids:
+                                self.node.get_logger().info(
+                                    f"🔄 Refreshing {len(fx_batches_ids)} FX batches (removed {removed} old obstacles)"
+                                )
+                    else:
+                        # No batches to remove, initialize empty set for consistency
+                        fx_batches_ids = set()
                     
                     # 3. Filter out manually deleted batches (don't re-add them)
                     if self.deleted_batch_ids:
@@ -719,6 +732,17 @@ class MapManager:
                                 f"🚫 Filtered out {filtered_count} manually deleted batches: "
                                 f"{self.deleted_batch_ids & received_batch_ids}"
                             )
+                    
+                    # 4. Filter out already-tracked SX/GX batches (keep existing obstacles, only add new ones)
+                    # FX batches are always processed (refreshed every update)
+                    new_batches = [b for b in filtered_batches 
+                                   if b.known_id not in self.active_batch_ids or b.known_id.startswith('f')]
+                    if len(new_batches) < len(filtered_batches):
+                        kept_count = len(filtered_batches) - len(new_batches)
+                        self.node.get_logger().info(
+                            f"♻️  Keeping {kept_count} existing SX/GX batches, adding {len(new_batches)} new/FX ones"
+                        )
+                    filtered_batches = new_batches
             else:
                 # On retry: only remove obstacles if we have better data (TRACKING or new members)
                 # For DEGRADED batches with no members, keep existing obstacles to avoid flickering
@@ -785,18 +809,38 @@ class MapManager:
             # Update active batch IDs (only on full updates, not retries)
             if specific_known_id is None:
                 # Update active batch IDs to current state
-                new_batch_ids = {batch.known_id for batch in filtered_batches}
-                self.active_batch_ids = new_batch_ids
+                # Use received_batch_ids (all batches in response) not filtered_batches (only new ones)
+                self.active_batch_ids = received_batch_ids
+                
+                # Check if all batches are TRACKING and we haven't locked baselines yet
+                if not self.baselines_locked and not self.known_ids_to_retry:
+                    self._lock_baseline_patterns()
             
             # Count obstacles by type for summary
             fx_count = sum(1 for v in self.obstacle_sources.values() if v == 'fx')
             sx_count = sum(1 for v in self.obstacle_sources.values() if v == 'sx')
+            enemy_count = sum(1 for v in self.obstacle_sources.values() if v == 'enemy')
+            untracked_count = len(self.obstacles) - len(self.obstacle_sources)
+            
+            # Check for duplicate obstacle IDs (debugging)
+            obs_ids = [obs.id for obs in self.obstacles]
+            unique_ids = set(obs_ids)
+            if len(obs_ids) != len(unique_ids):
+                duplicates = [id for id in obs_ids if obs_ids.count(id) > 1]
+                self.node.get_logger().warning(
+                    f"⚠️  Found {len(obs_ids) - len(unique_ids)} duplicate obstacle IDs: {set(duplicates)}"
+                )
             
             # Only log summary on first update or when changes occur
             if is_first_update or num_obstacles > 0 or disappeared_ids:
-                self.node.get_logger().info(
-                    f"📦 Map updated: FX={fx_count}, SX={sx_count}, Total={len(self.obstacles)}"
-                )
+                if untracked_count > 0:
+                    self.node.get_logger().warning(
+                        f"📦 Map updated: FX={fx_count}, SX={sx_count}, Enemy={enemy_count}, Untracked={untracked_count}, Total={len(self.obstacles)}"
+                    )
+                else:
+                    self.node.get_logger().info(
+                        f"📦 Map updated: FX={fx_count}, SX={sx_count}, Enemy={enemy_count}, Total={len(self.obstacles)}"
+                    )
             
         except Exception as e:
             self.node.get_logger().error(f"❌ Error processing service response: {e}")
@@ -809,14 +853,14 @@ class MapManager:
                     self._stop_retry_timer()
 
     def _start_retry_timer(self):
-        """Start periodic retries until all DEGRADED batches become TRACKING (LOST batches are removed)."""
+        """Start periodic retries until all EMERGING batches become non-EMERGING (stable)."""
         if self.retry_timer is not None:
             return
 
         interval = max(self.retry_interval_sec, 0.1)
         self.retry_timer = self.node.create_timer(interval, self._retry_timer_callback)
         self.node.get_logger().info(
-            f"⏳ Auto-retry enabled: checking DEGRADED batches every {interval:.1f}s (LOST batches removed)"
+            f"⏳ Auto-retry enabled: checking EMERGING batches every {interval:.1f}s until stable"
         )
 
     def _stop_retry_timer(self):
@@ -827,10 +871,56 @@ class MapManager:
         self.retry_timer.cancel()
         self.retry_timer = None
         self.retry_pending = 0
-        self.node.get_logger().info("✅ Auto-retry stopped: all batches are TRACKING or removed")
+        self.node.get_logger().info("✅ Auto-retry stopped: all batches are no longer EMERGING")
+        
+        # After all batches are no longer EMERGING, lock the baseline patterns
+        if not self.baselines_locked:
+            self._lock_baseline_patterns()
+    
+    def _lock_baseline_patterns(self):
+        """Call GetStableBatches with only_locked_baselines=True to lock the baseline patterns."""
+        if self.baselines_locked:
+            return
+        
+        if not self.retry_client or not self.retry_client.service_is_ready():
+            self.node.get_logger().warn("⚠️ Cannot lock baselines: batch service not ready")
+            return
+        
+        self.node.get_logger().info("🔒 All batches are no longer EMERGING - locking baseline patterns...")
+        
+        stable_request = GetStableBatches.Request()
+        stable_request.batch_types_filter = "sfg"
+        stable_request.specific_known_id = ""
+        stable_request.only_locked_baselines = True  # Request locked/immutable baselines
+        
+        future = self.retry_client.call_async(stable_request)
+        future.add_done_callback(self._handle_lock_baseline_response)
+    
+    def _handle_lock_baseline_response(self, future):
+        """Handle response from locked baseline patterns request."""
+        try:
+            response = future.result()
+            if response and response.stable_state:
+                num_batches = len(response.stable_state.batches)
+                self.baselines_locked = True
+                self.node.get_logger().info(f"✅ Baseline patterns locked! Received {num_batches} locked batches")
+                
+                # Update batches with locked patterns
+                with self.batches_lock:
+                    for batch in response.stable_state.batches:
+                        if batch.known_id.startswith('s'):
+                            self.batches_sx[batch.known_id] = batch
+                            self.node.get_logger().info(f"   🔒 Locked SX pattern: {batch.known_id} = '{batch.pattern}'")
+                        elif batch.known_id.startswith('f'):
+                            self.batches_fx[batch.known_id] = batch
+                            self.node.get_logger().info(f"   🔒 Locked FX pattern: {batch.known_id} = '{batch.pattern}'")
+            else:
+                self.node.get_logger().error("❌ Failed to lock baseline patterns: no response")
+        except Exception as e:
+            self.node.get_logger().error(f"❌ Error locking baseline patterns: {e}")
 
     def _retry_timer_callback(self):
-        """Timer callback to retry non-TRACKING known_ids."""
+        """Timer callback to retry EMERGING known_ids."""
         if not self.known_ids_to_retry:
             self._stop_retry_timer()
             return
@@ -843,13 +933,14 @@ class MapManager:
             return
 
         self.node.get_logger().info(
-            f"🔁 Auto-retrying {len(self.known_ids_to_retry)} DEGRADED batches"
+            f"🔁 Auto-retrying {len(self.known_ids_to_retry)} EMERGING batches"
         )
 
         for known_id in list(self.known_ids_to_retry):
             stable_request = GetStableBatches.Request()
             stable_request.batch_types_filter = "sfg"
             stable_request.specific_known_id = known_id
+            stable_request.only_locked_baselines = False  # Retries should not use locked baselines only
 
             future = self.retry_client.call_async(stable_request)
             self.retry_pending += 1

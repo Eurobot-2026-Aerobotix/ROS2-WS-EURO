@@ -275,7 +275,7 @@ def stm32_task(strategy, stm32,lidar):
                 last_stm_command="navigation"
             
             # Wait for command completion with emergency handling
-            while (not IDLE and not SHUTDOWN_REQUESTED) or  (EMERGENCY_STOP) or last_stm_command=="emergency" :
+            while ((not IDLE and not SHUTDOWN_REQUESTED) or (EMERGENCY_STOP) or last_stm_command=="emergency") and last_stm_command != "replanned":
                 # Check for emergency stop
                 if EMERGENCY_STOP and not was_in_emergency and not replanning :
                     strategy.get_logger().warning("🚨 Emergency detected during movement - stopping STM32")
