@@ -283,14 +283,15 @@ class Lidar(Node):
                                 f"🛤️  Following generated path - distance to collision: "
                                 f"{effective_collision_distance*1000:.0f}mm (safe, >50mm)"
                             )
+                            self.clear_on=True
                             self.emergency_status = 0
                         else:
                             # Only stop if actual collision imminent (<50mm to impact)
                             self.emergency_status = 1
                             self.clear_on=False
                             self.get_logger().warning(
-                                f"⚠️  Path execution - ACTUAL collision imminent! "
-                                f"Distance: {effective_collision_distance*1000:.0f}mm < 50mm"
+                               f"⚠️  Path execution - ACTUAL collision imminent! "
+                               f"Distance: {effective_collision_distance*1000:.0f}mm < 50mm"
                             )
                     else:
                         self.emergency_status = 1
