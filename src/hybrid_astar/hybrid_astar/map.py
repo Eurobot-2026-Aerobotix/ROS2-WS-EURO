@@ -95,6 +95,9 @@ class MapManager:
         
         # Set to track currently active batch known_ids (from last update)
         self.active_batch_ids: set = set()
+        
+        # Set to track batches that already have obstacles created (prevents duplicates)
+        self.batches_with_obstacles: set = set()
 
         # Retry management for auto update_map
         self.retry_timer = None
@@ -133,6 +136,11 @@ class MapManager:
             self.obstacles.clear()
             self.obstacle_sources.clear()
             self.node.get_logger().info(f"🗑️  Cleared all {count} obstacles")
+        
+        # Clear batch obstacle tracking
+        with self.batches_lock:
+            self.batches_with_obstacles.clear()
+        
         # Publish obstacle visualization after clearing
         self.publish_obstacles(self.get_active_obstacles())
     
@@ -155,6 +163,7 @@ class MapManager:
             sx_count = len(self.batches_sx)
             self.batches_fx.clear()
             self.batches_sx.clear()
+            self.batches_with_obstacles.clear()  # Clear tracking
         
         # Reset state flags
         self.first_update_map = True
@@ -671,6 +680,7 @@ class MapManager:
                         with self.batches_lock:
                             self.batches_fx.clear()
                             self.batches_sx.clear()
+                            self.batches_with_obstacles.clear()  # Clear tracking
                             self.node.get_logger().info(f"🗑️  Cleared all FX and SX batches and {removed} obstacles before first update")
                 else:
                     # SUBSEQUENT UPDATES: Incremental update
@@ -701,9 +711,11 @@ class MapManager:
                                     # Remove disappeared batches from storage
                                     self.batches_fx.pop(bid, None)
                                     self.batches_sx.pop(bid, None)
+                                    self.batches_with_obstacles.discard(bid)  # Remove from tracking
                                 for bid in fx_batches_ids:
                                     # Remove FX batches for refresh (they'll be re-added)
                                     self.batches_fx.pop(bid, None)
+                                    self.batches_with_obstacles.discard(bid)  # Remove from tracking
                             
                             # Log removal
                             if disappeared_ids and fx_batches_ids:
@@ -758,6 +770,10 @@ class MapManager:
                                     self.obstacles = [obs for obs in self.obstacles 
                                                      if not (obs.id.startswith(f"fx_{specific_known_id}_") or obs.id.startswith(f"sx_{specific_known_id}_"))]
                                     removed = old_count - len(self.obstacles)
+                                
+                                # Clear from tracking so obstacles can be recreated
+                                with self.batches_lock:
+                                    self.batches_with_obstacles.discard(specific_known_id)
                             break
                 
                 # If no update needed, skip processing for this batch (keep existing obstacles)
@@ -964,10 +980,15 @@ class MapManager:
                 if source == 'gx':
                     continue
                 
-                # For FX batches, skip if no members
+                # For FX batches, log member count and skip if no members
                 # For SX batches, we use predefined positions, so members are not required
-                if source == 'fx' and not batch.members:
-                    continue
+                if source == 'fx':
+                    member_count = len(batch.members) if batch.members else 0
+                    self.node.get_logger().info(
+                        f"📦 FX batch '{batch.known_id}' received with {member_count} members"
+                    )
+                    if not batch.members:
+                        continue
                 
                 # Store batch by known_id in the appropriate dictionary FIRST (always store, even if can't create obstacles)
                 with self.batches_lock:
@@ -976,6 +997,19 @@ class MapManager:
                     elif source == 'sx':
                         self.batches_sx[batch.known_id] = batch
                     # GX batches are not stored (goal area markers only)
+                    
+                    # Check if this batch already has obstacles created
+                    if batch.known_id in self.batches_with_obstacles:
+                        # Skip obstacle creation - already processed
+                        self.node.get_logger().info(
+                            f"⏭️  Skipping '{batch.known_id}' - obstacles already created"
+                        )
+                        skip_creation = True
+                    else:
+                        skip_creation = False
+                
+                if skip_creation:
+                    continue
                 
                 if source == 'sx':
                     # SX: Use predefined batch position from lookup table
@@ -1122,6 +1156,10 @@ class MapManager:
                             # Add to obstacles list and track source
                             self.obstacles.append(obs)
                             self.obstacle_sources[obs.id] = source
+                        
+                        # Mark this batch as having obstacles created
+                        with self.batches_lock:
+                            self.batches_with_obstacles.add(batch_known_id)
                 
                 else:
                     # FX: Use individual member positions
@@ -1172,6 +1210,10 @@ class MapManager:
                         # Add to obstacles list and track source
                         self.obstacles.append(obs)
                         self.obstacle_sources[obs.id] = source
+                    
+                    # Mark this batch as having obstacles created
+                    with self.batches_lock:
+                        self.batches_with_obstacles.add(batch.known_id)
             
             # Obstacle counts are logged in final summary
 
@@ -1214,6 +1256,9 @@ class MapManager:
                 del self.batches_sx[known_id]
                 deleted_from_sx = True
                 self.node.get_logger().info(f"🗑️  Deleted batch '{known_id}' from SX storage")
+            
+            # Remove from obstacle creation tracking
+            self.batches_with_obstacles.discard(known_id)
             
             if not (deleted_from_fx or deleted_from_sx):
                 self.node.get_logger().warn(f"⚠️  Batch '{known_id}' not found in FX or SX storage")

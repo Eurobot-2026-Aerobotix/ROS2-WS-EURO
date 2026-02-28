@@ -318,6 +318,7 @@ def stm32_task(strategy, stm32,lidar):
                     IDLE=True
                     IDLE_FOR_SYSTEMS=True
                     lidar.clear_on=True
+                    lidar.clear_goto_target()
                     lidar.generate_path = 0  # Reset generate_path flag after triggering replanning
                     strategy.end_game=False  # Reset end_game flag so ESP tasks can continue
                     # Note: replanning=False is set by strategy_manager.path() function
@@ -631,7 +632,7 @@ def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=No
                         def start_pamis_background():
                             try:
                                 strategy.get_logger().info("🤖 Starting PAMIs in background...")
-                                pami_controller.start_pamis()
+                                #pami_controller.start_pamis()
                                 strategy.get_logger().info("✅ PAMIs started successfully")
                             except Exception as e:
                                 strategy.get_logger().error(f"❌ Error starting PAMIs: {e}")

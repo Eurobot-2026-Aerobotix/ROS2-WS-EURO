@@ -379,7 +379,10 @@ class Lidar(Node):
         Returns:
             int: 0 for normal, 1 for emergency
         """
-        return self.emergency_status
+        if self.target_x is not None:
+            return self.emergency_status
+        else:
+            return 0  # No target means no emergency
     
     def get_travel_distance(self):
         """
