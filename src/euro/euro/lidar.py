@@ -14,6 +14,10 @@ class Lidar(Node):
     def __init__(self, node_name='lidar'):
         super().__init__(node_name)
         
+        # Log deduplication - track last N messages to prevent spam
+        self._last_log_messages = []
+        self._max_log_history = 5
+        
         # Emergency status variable (0 = normal, 1 = emergency)
         self.emergency_status = 0
         self.travel_distance = 0.0
@@ -67,6 +71,27 @@ class Lidar(Node):
         )
         
         self.get_logger().info('Lidar node initialized - subscribed to /emergency_stop, /robot_pose_raw, and /obstacle_relative topics')
+    
+    def log_once(self, message: str, level: str = 'info'):
+        """Log a message only if it's different from recent messages (prevents spam)"""
+        # Check if this exact message was logged recently
+        if message in self._last_log_messages:
+            return  # Skip duplicate
+        
+        # Log the message
+        if level == 'info':
+            self.get_logger().info(message)
+        elif level == 'warn' or level == 'warning':
+            self.get_logger().warning(message)
+        elif level == 'error':
+            self.get_logger().error(message)
+        elif level == 'debug':
+            self.get_logger().debug(message)
+        
+        # Update history
+        self._last_log_messages.append(message)
+        if len(self._last_log_messages) > self._max_log_history:
+            self._last_log_messages.pop(0)
 
     def pose_callback(self, msg):
         """Update current robot position"""
@@ -183,7 +208,7 @@ class Lidar(Node):
         # Normalize direction vector
         path_length = math.sqrt(dx * dx + dy * dy)
         if path_length < 0.015:  # Very close to target (15mm) - don't care about obstacles
-            self.get_logger().info(
+            self.log_once(
                 f"🎯 Very close to target ({path_length*1000:.0f}mm) - ignoring side check"
             )
             return True
@@ -205,7 +230,7 @@ class Lidar(Node):
         
         # If enemy is behind us (negative forward component)
         if forward_component < 0:
-            self.get_logger().info(
+            self.log_once(
                 f"⬅️ Enemy is behind us (forward={forward_component*1000:.0f}mm) - not blocking path"
             )
             return True
@@ -214,7 +239,7 @@ class Lidar(Node):
         # Improved logic: enemy is on side if lateral displacement is significantly greater than forward
         # Use a threshold: lateral_component > 1.2 * forward_component (more aggressive side detection)
         if lateral_component > 1.2 * abs(forward_component):
-            self.get_logger().info(
+            self.log_once(
                 f"🔄 Enemy is on the side (lateral={lateral_component*1000:.0f}mm, "
                 f"forward={forward_component*1000:.0f}mm, distance={enemy_distance*1000:.0f}mm) - not blocking path"
             )
@@ -222,7 +247,7 @@ class Lidar(Node):
         
         # Additional check: if enemy is far to the side (> 400mm laterally), consider it not blocking
         if lateral_component > 0.4:
-            self.get_logger().info(
+            self.log_once(
                 f"↔️ Enemy is far to the side ({lateral_component*1000:.0f}mm lateral) - not blocking path"
             )
             return True
@@ -248,7 +273,7 @@ class Lidar(Node):
             if distance_to_target < 0.015:  # 15mm tolerance
                 if self.emergency_status != 1:
                     self.emergency_status = 0
-                self.get_logger().info(
+                self.log_once(
                     f"✅ At target location ({distance_to_target*1000:.0f}mm away) - ignoring obstacles"
                 )
                 return
@@ -256,7 +281,7 @@ class Lidar(Node):
             # Check if enemy is on the side (left/right) or behind - not my collision
             if self.is_enemy_on_side():
                 self.emergency_status = 0
-                self.get_logger().info(
+                self.log_once(
                     "✅ Enemy is on the side - not causing collision, continuing"
                 )
                 return
@@ -265,7 +290,7 @@ class Lidar(Node):
             if distance_to_target <= effective_collision_distance:
                 if self.emergency_status != 1:
                     self.emergency_status=0
-                self.get_logger().info(
+                self.log_once(
                     f"✅ Target ({distance_to_target*1000:.0f}mm) is closer than obstacle "
                     f"({effective_collision_distance*1000:.0f}mm) - continuing to target"
                 )
@@ -279,7 +304,7 @@ class Lidar(Node):
                         # Only stop if we're ACTUALLY colliding (distance to collision ≈ 0)
                         # Normal detection triggers at 350mm, but generated path stays >250mm away
                         if effective_collision_distance > 0.05:  # 50mm safety margin
-                            self.get_logger().info(
+                            self.log_once(
                                 f"🛤️  Following generated path - distance to collision: "
                                 f"{effective_collision_distance*1000:.0f}mm (safe, >50mm)"
                             )
@@ -303,7 +328,7 @@ class Lidar(Node):
                             f"robot position : ({self.current_x:.3f}, {self.current_y:.3f})"
                         )
                 else:
-                    self.get_logger().info(
+                    self.log_once(
                         f"⏱️  Ignoring obstacle - round time ({self.round_time:.1f}s) < 3s"
                     )
         else: 
@@ -335,7 +360,7 @@ class Lidar(Node):
             self.emergency_status = 0
             self.generate_path = 0
             self._recheck_count = 0
-            self.get_logger().info(
+            self.log_once(
                 f"✅ Enemy is on the side during recheck - not blocking, clearing emergency"
             )
             return
@@ -351,7 +376,7 @@ class Lidar(Node):
             self.emergency_status = 0
             self.generate_path = 0
             self._recheck_count = 0
-            self.get_logger().info(
+            self.log_once(
                 f"✅ Enemy collision cleared! Path is clear, emergency_status=0, generate_path=0"
             )
             return

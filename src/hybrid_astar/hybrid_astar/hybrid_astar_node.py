@@ -69,6 +69,10 @@ class HybridAStarNode(Node):
     def __init__(self):
         super().__init__('hybrid_astar_node')
         
+        # Log deduplication - track last N messages to prevent spam
+        self._last_log_messages = []
+        self._max_log_history = 5
+        
         # Load all parameters
         self.load_parameters()
         
@@ -144,6 +148,27 @@ class HybridAStarNode(Node):
         self.get_logger().info(f"Map: {self.params['map']['width_mm']}x{self.params['map']['height_mm']}mm")
         self.get_logger().info('='*60)
         self.get_logger().info('Waiting for path planning requests...')
+    
+    def log_once(self, message: str, level: str = 'info'):
+        """Log a message only if it's different from recent messages (prevents spam)"""
+        # Check if this exact message was logged recently
+        if message in self._last_log_messages:
+            return  # Skip duplicate
+        
+        # Log the message
+        if level == 'info':
+            self.get_logger().info(message)
+        elif level == 'warn':
+            self.get_logger().warn(message)
+        elif level == 'error':
+            self.get_logger().error(message)
+        elif level == 'debug':
+            self.get_logger().debug(message)
+        
+        # Update history
+        self._last_log_messages.append(message)
+        if len(self._last_log_messages) > self._max_log_history:
+            self._last_log_messages.pop(0)
     
     def load_parameters(self):
         """Load all ROS2 parameters (replaces JSON loading)"""
@@ -431,10 +456,10 @@ class HybridAStarNode(Node):
         batch_obstacles = [obs for obs in obstacles if obs.get('id', '').startswith(('fx_', 'sx_'))]
         
         if not batch_obstacles:
-            self.get_logger().info(f"  No batch obstacles found in {len(obstacles)} total obstacles")
+            self.log_once(f"  No batch obstacles found in {len(obstacles)} total obstacles")
             return False
         
-        self.get_logger().info(f"  Checking goal ({goal_x:.1f}, {goal_y:.1f}) against {len(batch_obstacles)} batches (margin={margin}mm)")
+        self.log_once(f"  Checking goal ({goal_x:.1f}, {goal_y:.1f}) against {len(batch_obstacles)} batches (margin={margin}mm)")
         
         # Check if goal center is inside any batch obstacle
         for obs in batch_obstacles:
@@ -453,7 +478,8 @@ class HybridAStarNode(Node):
             in_x_range = obs_x - margin <= goal_x <= obs_x + obs_width + margin
             in_y_range = obs_y - margin <= goal_y <= obs_y + obs_height + margin
             
-            self.get_logger().info(
+            # Use log_once to avoid spamming batch check details
+            self.log_once(
                 f"    Batch '{obs_id}': center=({batch_center_x:.1f}, {batch_center_y:.1f}), "
                 f"bounds=({obs_x:.1f},{obs_y:.1f})+({obs_width:.1f}x{obs_height:.1f}), "
                 f"dist={distance:.1f}mm, in_range={in_x_range and in_y_range}"
@@ -865,7 +891,8 @@ class HybridAStarNode(Node):
             closest_batch = None
             
             for b in all_batches.values():
-                self.get_logger().info(f"batch known_id={b.known_id} and  its center : {b.center}")
+                # Use log_once to avoid spamming same batch info
+                self.log_once(f"batch known_id={b.known_id} and  its center : {b.center}")
                 
                 # Use batch center for distance calculation
                 # For SX batches, center is set from predefined positions
