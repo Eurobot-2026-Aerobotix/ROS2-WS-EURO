@@ -967,7 +967,7 @@ class HybridAStarNode(Node):
 
         # ✅ USE SAVED PATTERN DIRECTLY - No sorting, no reconstruction
         color_pattern = batch.pattern.lower() if batch.pattern else ""
-        color_pattern = color_pattern[::-1]
+        #color_pattern = color_pattern[::-1]
         # Validate pattern has content
         if not color_pattern:
             # Fallback: reconstruct from members only if pattern is empty

@@ -7,6 +7,7 @@ Handles periodic execution of commands from device queues
 import rclpy
 import time
 import threading
+import math
 from geometry_msgs.msg import Point
 
 class Round:
@@ -349,10 +350,11 @@ def stm32_task(strategy, stm32,lidar):
                 # Don't pop from queue - commands were just added and need to be executed
         
         time.sleep(0.1)  # 100ms
-def handle_color_pattner(strategy):
+def handle_color_pattner(strategy,front):
     """Handle color pattern retrieval"""
     x = strategy.latest_robot_pose.x
     y = strategy.latest_robot_pose.y
+    z = strategy.latest_robot_pose.z
     # Create Point for current position
     pos = Point()
     pos.x = float(x)
@@ -373,9 +375,28 @@ def handle_color_pattner(strategy):
             strategy.get_logger().warning(f"⚠️  Failed to delete batch '{batch_known_id}' from map")
 
     if success and batch_center:
-        if (direction == "horizontal" and y < batch_center.y) or (direction == "vertical" and x > batch_center.x):
-            # Reverse the color pattern
+        theta = math.degrees(z)  # Convert radians to degrees
+        
+        # Determine if we should reverse based on direction and robot orientation
+        should_reverse = False
+        
+        if direction == "vertical":
+            # For horizontal batches: reverse if (front AND theta == -180) OR (back AND theta == 0)
+            if (front and abs(theta - (-180)) < 5) or (not front and abs(theta - 0) < 5):
+                strategy.get_logger().info(f"front: {front} theta : {theta} vertical")
+                should_reverse = False
+            else:
+                should_reverse=True
+        elif direction == "horizontal":
+            # For vertical batches: reverse if (front AND theta == -90) OR (back AND theta == 90)
+            if (front and abs(theta - (-90)) < 5) or (not front and abs(theta - 90) < 5):
+                should_reverse = True
+                strategy.get_logger().info(f"front: {front} theta : {theta} horizontal")
+            else: 
+                should_reverse=False
+        if should_reverse:
             color_pattern = color_pattern[::-1]
+            strategy.get_logger().info(f"🔄 Reversed color pattern - direction: {direction}, front: {front}, theta: {theta:.1f}°")
     else:
         strategy.get_logger().warning("Failed to get batch center from service")
     strategy.get_logger().info(f"color received from beacon{color_pattern}")
@@ -421,7 +442,7 @@ def stana(controller):
         idle = controller.IDLE(timeout=2.0)
         time.sleep(0.1)
     
-def talaa(strategy, front_controller=None):
+def talaa(strategy, front_controller=None,front=True):
     """Request color pattern from pathfinding service"""
     x = strategy.global_pos_x
     y = strategy.global_pos_y
@@ -434,7 +455,8 @@ def talaa(strategy, front_controller=None):
     # pos.z = 0.0
     
     known_id = ''
-    color_pattern=handle_color_pattner(strategy)
+
+    color_pattern=handle_color_pattner(strategy,front)
     success=True
     if success:
         # Convert global color ('yellow' or 'blue') to single letter ('y' or 'b')
@@ -481,7 +503,7 @@ def pick_up(controller,pneumatic,strategy,front):
     
     time.sleep(1)
     strategy.get_logger().info(f"🔍 Requesting NEW color pattern for {'FRONT' if front else 'BACK'} at position ({strategy.latest_robot_pose.x:.3f}, {strategy.latest_robot_pose.y:.3f})")
-    color_pattern = talaa(strategy, controller)
+    color_pattern = talaa(strategy, controller,front)
     if front:
         color_pt_front = color_pattern
         ESP_FRONT_IDLE=True
@@ -632,7 +654,7 @@ def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=No
                         def start_pamis_background():
                             try:
                                 strategy.get_logger().info("🤖 Starting PAMIs in background...")
-                                #pami_controller.start_pamis()
+                                pami_controller.start_pamis()
                                 strategy.get_logger().info("✅ PAMIs started successfully")
                             except Exception as e:
                                 strategy.get_logger().error(f"❌ Error starting PAMIs: {e}")

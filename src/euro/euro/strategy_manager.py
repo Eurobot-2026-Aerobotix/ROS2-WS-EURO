@@ -463,8 +463,8 @@ def main(args=None):
         
         if os.path.exists(pami_folder):
             from euro.pami_controller import PamiController
-            #pami_ctrl = PamiController(strategy.strategy_name, pami_folder, 'pami_controller_internal')
-            pami_ctrl=None
+            pami_ctrl = PamiController(strategy.strategy_name, pami_folder, 'pami_controller_internal')
+            #pami_ctrl = None
         else:
             pami_ctrl = None
         
@@ -475,9 +475,10 @@ def main(args=None):
             daemon=True
         )
         rasp_pi_thread.start()
-        
+        #pami_ctrl.load_and_publish_pami_strategies()
         reset_systems(pneumatic,front,back,None,strategy,True,False)
         time.sleep(2)
+
         # Execute tasks sequentially
         # Start a thread to execute tasks one by one
         def execute_tasks_sequentially():

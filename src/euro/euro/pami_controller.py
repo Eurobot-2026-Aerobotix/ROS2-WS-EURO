@@ -7,6 +7,7 @@ from std_srvs.srv import Trigger
 import yaml
 import os
 import time
+import threading
 from pathlib import Path
 from typing import List, Dict, Any
 
@@ -283,14 +284,26 @@ class PamiController(Node):
     
     def start_pamis(self):
         """
-        Send start signal to all PAMI robots (PAMI 1 through 7)
+        Send start signal to all PAMI robots (PAMI 1 through 6) in parallel threads
         """
-        self.get_logger().info("🚀 Starting all PAMIs...")
+        self.get_logger().info("🚀 Starting all PAMIs in parallel...")
         
-        for pami_number in range(1, 7):  # PAMIs 1 to 6 // to add the ninja later 
-            self.start_pami(pami_number)
+        threads = []
+        for pami_number in range(1, 8):  # PAMIs 1 to 6
+            thread = threading.Thread(
+                target=self.start_pami,
+                args=(pami_number,),
+                daemon=True,
+                name=f"PAMI_{pami_number}_start"
+            )
+            thread.start()
+            threads.append(thread)
         
-        self.get_logger().info("✅ Start signal sent to all 7 PAMIs")
+        # Wait for all threads to complete
+        for thread in threads:
+            thread.join(timeout=5.0)  # 5 second timeout per PAMI
+        
+        self.get_logger().info("✅ All PAMI start threads completed")
 
 
 def main(args=None):
