@@ -13,7 +13,7 @@ from aruco_mapper_msgs.msg import ArucoMapperState
 from euro.yaml_loader import load_tasks_from_yaml
 import math
 from euro.pathfinder_controller import PathfinderClient
-from euro.strategy_executor import robot_status, lidar_status, stm32_task, front_task, back_task,rasp_pi_task, IDLE, EMERGENCY_STOP
+from euro.strategy_executor import robot_status, lidar_status, stm32_task, front_task, back_task,rasp_pi_task, path_planning_task, IDLE, EMERGENCY_STOP
 import euro.strategy_executor as executor_module  # Import module to access SHUTDOWN_REQUESTED and other globals
 
 # Global variable to store team color
@@ -97,64 +97,65 @@ class StrategyManager(Node):
         # Use pathfinder's path method (it uses stored goal and latest robot pose)
         stm32_commands, success = self.pathfinder.path()
         
-        while not success:
-            self.get_logger().error("❌ Path planning failed!")
-            self.is_replanning = True
-            stm32_commands, success = self.pathfinder.path()
-            time.sleep(2)
+        # while not success:
+        #     self.get_logger().error("❌ Path planning failed!")
+        #     self.is_replanning = True
+        #     stm32_commands, success = self.pathfinder.path()
+        #     time.sleep(2)
         # Get goal from pathfinder for orientation command
-        goal_angle = self.pathfinder.goal_angle
-        
-        # Process commands and add to queue
-        last_cmd = None
-        for cmd in stm32_commands:
-            values = cmd.replace('go_to(', '').replace(')', '').split(',')
-            x = float(values[0].strip())
-            y = float(values[1].strip())
-            speed = int(values[2].strip())
-            if cmd != last_cmd:
-                if self.last_task_device=="ESP_back":
-                    self.get_logger().info(f"go_to_backwards: x={x}, y={y}")
-                    self.queues['STM'].append({
-                        'command': 'go_to_backwards',
-                        'params': [x, y, 700.0, {'from_pathfinding': True}],  # Mark as from pathfinding
-                        'wait': False
-                    })
-                else:
-                    self.get_logger().info(f"go_to: x={x}, y={y}")
-                    self.queues['STM'].append({
-                        'command': 'go_to',
-                        'params': [x, y, 700.0, {'from_pathfinding': True}],  # Mark as from pathfinding
-                        'wait': False
-                    })
+        if success:
+            goal_angle = self.pathfinder.goal_angle
+            
+            # Process commands and add to queue
+            last_cmd = None
+            for cmd in stm32_commands:
+                values = cmd.replace('go_to(', '').replace(')', '').split(',')
+                x = float(values[0].strip())
+                y = float(values[1].strip())
+                speed = int(values[2].strip())
+                if cmd != last_cmd:
+                    if self.last_task_device=="ESP_back":
+                        self.get_logger().info(f"go_to_backwards: x={x}, y={y}")
+                        self.queues['STM'].append({
+                            'command': 'go_to_backwards',
+                            'params': [x, y, 700.0, {'from_pathfinding': True}],  # Mark as from pathfinding
+                            'wait': False
+                        })
+                    else:
+                        self.get_logger().info(f"go_to: x={x}, y={y}")
+                        self.queues['STM'].append({
+                            'command': 'go_to',
+                            'params': [x, y, 700.0, {'from_pathfinding': True}],  # Mark as from pathfinding
+                            'wait': False
+                        })
 
-            last_cmd = cmd
-        if success and goal_angle is not None:
-            self.queues['STM'].append({
-                'command': 'orientate',
-                'params': [goal_angle, 0.0],  # List format: [angle, is_radian]
-            })
-            if self.last_task_command=='pick_up' and found_goal_batch:
-                if self.last_task_device == 'ESP_front' :
-                    self.queues['STM'].append({
-                        'command': 'go_to',
-                        'params': [self.global_pos_x, self.global_pos_y, 1100.0, 1.0, {'from_pathfinding': True}],  # Mark as from pathfinding
-                        'wait': False
-                    })
-                    self.get_logger().info(f"Added go_to command with global position: x={self.global_pos_x}, y={self.global_pos_y} (last command after pathfinding )")
-                elif self.last_task_device == 'ESP_back' :
-                    self.queues['STM'].append({
-                        'command': 'go_to_backwards',
-                        'params': [self.global_pos_x, self.global_pos_y, 1100.0, 1.0, {'from_pathfinding': True}],  # Mark as from pathfinding
-                        'wait': False
-                    })
-        n=len((self.queues["STM"]))
-        executor_module.SYSTEMS_IDLE_COUNT=0
-        self.get_logger().info(f"✅ Path planning complete! Added {len(self.queues['STM'])} commands to queue")
-        # Resume task execution
-        executor_module.replanning = False
-        self.is_replanning = False
-        return True
+                last_cmd = cmd
+            if success and goal_angle is not None:
+                self.queues['STM'].append({
+                    'command': 'orientate',
+                    'params': [goal_angle, 0.0],  # List format: [angle, is_radian]
+                })
+                if self.last_task_command=='pick_up' and found_goal_batch:
+                    if self.last_task_device == 'ESP_front' :
+                        self.queues['STM'].append({
+                            'command': 'go_to',
+                            'params': [self.global_pos_x, self.global_pos_y, 1100.0, 1.0, {'from_pathfinding': True}],  # Mark as from pathfinding
+                            'wait': False
+                        })
+                        self.get_logger().info(f"Added go_to command with global position: x={self.global_pos_x}, y={self.global_pos_y} (last command after pathfinding )")
+                    elif self.last_task_device == 'ESP_back' :
+                        self.queues['STM'].append({
+                            'command': 'go_to_backwards',
+                            'params': [self.global_pos_x, self.global_pos_y, 1100.0, 1.0, {'from_pathfinding': True}],  # Mark as from pathfinding
+                            'wait': False
+                        })
+            n=len((self.queues["STM"]))
+            executor_module.SYSTEMS_IDLE_COUNT=0
+            self.get_logger().info(f"✅ Path planning complete! Added {len(self.queues['STM'])} commands to queue (success={success})")
+            # Resume task execution
+            executor_module.replanning = False
+            self.is_replanning = False
+        return success
     def handle_global_goal(self, x, y, angle):
         global found_goal_batch
         pos = Point()
@@ -228,56 +229,56 @@ class StrategyManager(Node):
             command = cmd.get('command')
             params = cmd.get('params', {})
             wait = cmd.get('wait', False)
-            
-            self.get_logger().info(f"⚙️  [{idx+1}/{len(task['sequence'])}] {device} -> {command}")
-            executor_module.SYSTEMS_IDLE_COUNT=0
-            # Check if next command is pick_up for ESP_front or ESP_back
-            if idx + 1 < len(task['sequence']):
-                next_cmd = task['sequence'][idx + 1]
-                next_device = next_cmd.get('device')
-                next_command = next_cmd.get('command')
-                
-                if next_command in ['pick_up', 'put_down'] and next_device in ['ESP_front', 'ESP_back']:
-                    prepare_cmd = {
-                        'device': next_device,
-                        'command': 'prepare',
-                        'params': {'action': next_command},
-                        'wait': False
-                    }
-                    self.queues[next_device].append(prepare_cmd)
-                    self.get_logger().info(f"      🔧 Adding prepare command for {next_device} with action: {next_command}")
-
-            # Add command to device queue
-            if device in self.queues:
-                if(device == "ESP_front" ) :
-                    executor_module.ESP_FRONT_IDLE=False
-                if(device == "ESP_back" ) :
-                    executor_module.ESP_BACK_IDLE=False
-                if(device == "STM" and command !="set_position"):
-                    executor_module.IDLE_FOR_SYSTEMS=False
+            if not self.end_game:
+                self.get_logger().info(f"⚙️  [{idx+1}/{len(task['sequence'])}] {device} -> {command}")
+                executor_module.SYSTEMS_IDLE_COUNT=0
+                # Check if next command is pick_up for ESP_front or ESP_back
+                if idx + 1 < len(task['sequence']):
+                    next_cmd = task['sequence'][idx + 1]
+                    next_device = next_cmd.get('device')
+                    next_command = next_cmd.get('command')
                     
-                if wait :
-                    self.get_logger().info(f"      ⏳ Waiting for dependencies...")
-                    if(device == "STM"):
-                        while not executor_module.ESP_FRONT_IDLE or not executor_module.ESP_BACK_IDLE:
-                            time.sleep(0.1)
-                    if(device == "ESP_front" or device == "ESP_back"):
-                        executor_module.SYSTEMS_IDLE_COUNT=0
-                        n=len((self.queues["STM"]))
-                        if executor_module.IDLE_FOR_SYSTEMS and not executor_module.IDLE:
-                            executor_module.SYSTEMS_IDLE_COUNT=1
-                        while executor_module.SYSTEMS_IDLE_COUNT !=n :
-                            self.get_logger().debug(f"Waiting for STM commands to be sent... STM queue size: {n}, SYSTEMS_IDLE_COUNT: {executor_module.SYSTEMS_IDLE_COUNT}")
-                            time.sleep(0.1)
-                if device =="STM" and command =="set_position":
-                    self.queues["RASP_PI"].append(cmd)
+                    if next_command in ['pick_up', 'put_down'] and next_device in ['ESP_front', 'ESP_back']:
+                        prepare_cmd = {
+                            'device': next_device,
+                            'command': 'prepare',
+                            'params': {'action': next_command},
+                            'wait': False
+                        }
+                        self.queues[next_device].append(prepare_cmd)
+                        self.get_logger().info(f"      🔧 Adding prepare command for {next_device} with action: {next_command}")
+
+                # Add command to device queue
+                if device in self.queues:
+                    if(device == "ESP_front" ) :
+                        executor_module.ESP_FRONT_IDLE=False
+                    if(device == "ESP_back" ) :
+                        executor_module.ESP_BACK_IDLE=False
+                    if(device == "STM" and command !="set_position"):
+                        executor_module.IDLE_FOR_SYSTEMS=False
+                        
+                    if wait :
+                        self.get_logger().info(f"      ⏳ Waiting for dependencies...")
+                        if(device == "STM"):
+                            while not executor_module.ESP_FRONT_IDLE or not executor_module.ESP_BACK_IDLE:
+                                time.sleep(0.1)
+                        if(device == "ESP_front" or device == "ESP_back"):
+                            executor_module.SYSTEMS_IDLE_COUNT=0
+                            n=len((self.queues["STM"]))
+                            if executor_module.IDLE_FOR_SYSTEMS and not executor_module.IDLE:
+                                executor_module.SYSTEMS_IDLE_COUNT=1
+                            while executor_module.SYSTEMS_IDLE_COUNT !=n :
+                                self.get_logger().debug(f"Waiting for STM commands to be sent... STM queue size: {n}, SYSTEMS_IDLE_COUNT: {executor_module.SYSTEMS_IDLE_COUNT}")
+                                time.sleep(0.1)
+                    if device =="STM" and command =="set_position":
+                        self.queues["RASP_PI"].append(cmd)
+                    else:
+                        if device =="RASP_PI" and command=="Wait for manual start":
+                            executor_module.WAITING_TIRETTE=True
+                        self.queues[device].append(cmd)
+                    
                 else:
-                    if device =="RASP_PI" and command=="Wait for manual start":
-                        executor_module.WAITING_TIRETTE=True
-                    self.queues[device].append(cmd)
-                
-            else:
-                self.get_logger().warn(f"      ⚠ Unknown device: {device}")
+                    self.get_logger().warn(f"      ⚠ Unknown device: {device}")
         
         return True
     
@@ -417,6 +418,13 @@ def main(args=None):
         daemon=True
     )
     lidar_thread.start()
+    
+    path_planning_thread = threading.Thread(
+        target=path_planning_task,
+        args=(strategy, lidar, strategy.round),
+        daemon=True
+    )
+    path_planning_thread.start()
     
     stm32_thread = threading.Thread(
         target=stm32_task,

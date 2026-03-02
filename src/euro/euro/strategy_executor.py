@@ -41,6 +41,97 @@ SHUTDOWN_REQUESTED = False  # Global shutdown flag
 WAITING_TIRETTE=False
 replanning=False
 last_stm_command=""
+path_found=True
+REPLANNING_REQUESTED = False  # Flag to trigger replanning
+REPLANNING_IN_PROGRESS = False  # Flag to indicate replanning is ongoing
+def path_planning_task(strategy, lidar, round_timer):
+    """Dedicated thread for handling pathfinding/replanning"""
+    global REPLANNING_REQUESTED
+    global REPLANNING_IN_PROGRESS
+    global SHUTDOWN_REQUESTED
+    global replanning
+    global last_stm_command
+    global IDLE
+    global IDLE_FOR_SYSTEMS
+    global SYSTEMS_IDLE_COUNT
+    global path_found
+    strategy.get_logger().info("🗺️  Path planning thread started")
+    return_home_triggered = False
+    
+    while rclpy.ok() and not SHUTDOWN_REQUESTED:
+        # Check if only 15 seconds remain (85s elapsed out of 100s)
+        if round_timer.time() >= 85.0 and not return_home_triggered:
+            return_home_triggered = True
+            strategy.end_game = True
+            strategy.get_logger().warning("⏰ Only 15 seconds left! Returning home to (250, 225)...")
+            
+            # Clear all device queues except STM
+            strategy.queues['ESP_front'].clear()
+            strategy.queues['ESP_back'].clear()
+            strategy.queues['RASP_PI'].clear()
+            strategy.queues['STM'].clear()
+            strategy.get_logger().info("🗑️  Cleared all task queues for return home")
+            
+            # Set goal to home position (250mm, 225mm)
+            strategy.handle_global_goal(0.25, 0.225, 0.0)  # Convert mm to meters
+            strategy.get_logger().info("🏠 Home goal set: (250mm, 225mm)")
+            
+            # Trigger path planning for home
+            REPLANNING_REQUESTED = True
+            strategy.get_logger().info("🗺️  Triggering path planning to return home")
+        
+        if REPLANNING_REQUESTED and not REPLANNING_IN_PROGRESS:
+            REPLANNING_IN_PROGRESS = True
+            strategy.get_logger().info("🔄 Replanning requested - starting path search loop")
+            
+            path_found = False
+            attempt_count = 0
+            
+            # Keep trying until we find a path
+            while not path_found and not SHUTDOWN_REQUESTED:
+                attempt_count += 1
+                strategy.get_logger().info(f"🗺️  Path planning attempt #{attempt_count}")
+                
+                # Re-set the goal before replanning
+                if strategy.global_pos_x is not None and strategy.global_pos_y is not None and strategy.global_pos_angle is not None:
+                    strategy.handle_global_goal(float(strategy.global_pos_x)/1000, float(strategy.global_pos_y)/1000, float(strategy.global_pos_angle))
+                    strategy.get_logger().info(f"✓ Re-set goal for replanning: ({float(strategy.global_pos_x)}, {float(strategy.global_pos_y)}, {float(strategy.global_pos_angle)}°)")
+                else:
+                    strategy.get_logger().error("❌ Cannot replan: no global goal stored!")
+                    break
+                
+                # Call strategy.path() once
+                strategy.get_logger().info(f"🔄 Calling strategy.path() (attempt {attempt_count})...")
+                path_found = strategy.path()
+                
+                # Check if path was found using return value from strategy.path()
+                if path_found:
+                    strategy.get_logger().info(f"✅ Path found on attempt #{attempt_count}! Queue has {len(strategy.queues['STM'])} commands")
+                else:
+                    strategy.get_logger().warning(f"⚠️ Attempt #{attempt_count} failed - pathfinding returned False. Retrying...")
+                    time.sleep(0.5)  # Wait before retry
+            
+            if path_found:
+                # Cleanup after successful replanning
+                strategy.get_logger().info("✓ Replanning completed successfully")
+                last_stm_command = "replanned"
+                SYSTEMS_IDLE_COUNT = 0
+                IDLE = True
+                IDLE_FOR_SYSTEMS = True
+                lidar.clear_on = True
+                lidar.clear_goto_target()
+                lidar.generate_path = 0
+                replanning = False
+                strategy.get_logger().info(f"✓ Replanning cleanup done - IDLE={IDLE}, IDLE_FOR_SYSTEMS={IDLE_FOR_SYSTEMS}")
+            else:
+                strategy.get_logger().error("❌ Replanning failed - no path found")
+            
+            # Reset flags
+            REPLANNING_REQUESTED = False
+            REPLANNING_IN_PROGRESS = False
+        
+        time.sleep(0.1)  # 100ms
+
 def robot_status(strategy, stm32, lidar):
     """Runs every 100ms to check STM32 movement status and lidar obstacles"""
     global IDLE
@@ -60,7 +151,7 @@ def robot_status(strategy, stm32, lidar):
         
         # Only check if robot is idle when we think it's busy
         if not IDLE:
-            if not IDLE_FOR_SYSTEMS :
+            if not IDLE_FOR_SYSTEMS and last_stm_command != "emergency":
                 success, is_completed, _ = stm32.IDLE_FOR_SYSTEMS(1.0)
                 #strategy.get_logger().info(f"idle for systems  : {is_completed}")
             else:
@@ -85,9 +176,7 @@ def robot_status(strategy, stm32, lidar):
                     if IDLE != old_idle:
                         strategy.get_logger().info(f"🔄 IDLE changed: {old_idle} → {IDLE} (last_stm_command={last_stm_command})")
                         
-            if  IDLE_FOR_SYSTEMS ==True and PREVIOUS_IDLE_FOR_SYSTEMS==False and last_stm_command=="navigation":
-                SYSTEMS_IDLE_COUNT+=1
-                strategy.get_logger().info(f"📊 SYSTEMS_IDLE_COUNT incremented to {SYSTEMS_IDLE_COUNT}")
+            # Note: SYSTEMS_IDLE_COUNT is now incremented in stm32_task when navigation completes successfully
             PREVIOUS_IDLE_FOR_SYSTEMS=IDLE_FOR_SYSTEMS
         else:
             # Log periodically when robot is idle to confirm the thread is running
@@ -278,6 +367,8 @@ def stm32_task(strategy, stm32,lidar):
     global EMERGENCY_STOP
     global last_stm_command
     global replanning
+    global REPLANNING_REQUESTED
+    global REPLANNING_IN_PROGRESS
     # Import Vector3 for publishing target position
     from geometry_msgs.msg import Vector3
     
@@ -330,8 +421,26 @@ def stm32_task(strategy, stm32,lidar):
             
             # Wait for command completion with emergency handling
             loop_iteration = 0
+            emergency_stuck_iterations = 0  # Track how long stuck in EMERGENCY+IDLE
             while ((not IDLE and not SHUTDOWN_REQUESTED) or (EMERGENCY_STOP) or last_stm_command=="emergency") and last_stm_command != "replanned":
                 loop_iteration += 1
+                
+                # Detect if stuck in emergency state (IDLE + EMERGENCY + was_in_emergency for too long)
+                if IDLE and EMERGENCY_STOP and was_in_emergency:
+                    emergency_stuck_iterations += 1
+                    if emergency_stuck_iterations >= 10:  # 1 second stuck
+                        if not replanning:
+                            strategy.get_logger().error(f"🚨 STUCK in emergency for 1s! Robot IDLE but emergency won't clear. Forcing replanning...")
+                            # Directly trigger replanning instead of just restarting collision check
+                            replanning = True
+                            REPLANNING_REQUESTED = True
+                            strategy.get_logger().info("🗺️  FORCED replanning - path_planning_task will handle it")
+                            emergency_stuck_iterations = 0  # Reset counter
+                        elif emergency_stuck_iterations >= 30:  # 3 seconds total (1s + another 2s)
+                            strategy.get_logger().warning(f"💀 CRITICAL: Still stuck after replanning! May need escape maneuver.")
+                            emergency_stuck_iterations = 20  # Keep logging but don't spam
+                else:
+                    emergency_stuck_iterations = 0  # Reset if not stuck
                 
                 # Log state every 20 iterations (2 seconds)
                 if loop_iteration % 20 == 0:
@@ -343,7 +452,7 @@ def stm32_task(strategy, stm32,lidar):
                     stm32.stop()
                     last_stm_command="emergency"
                     IDLE=False
-                    IDLE_FOR_SYSTEMS=False
+                    IDLE_FOR_SYSTEMS=True
                     was_in_emergency = True
                     strategy.get_logger().info("⏸️  Waiting for STM32 to report IDLE after emergency stop...")
                     
@@ -374,31 +483,23 @@ def stm32_task(strategy, stm32,lidar):
                     
                 elif lidar.get_path_status() and replanning==False :
                     strategy.get_logger().warning(f"⚠️ Lidar requesting replanning - current state: IDLE={IDLE}, EMERGENCY_STOP={EMERGENCY_STOP}")
-                    replanning=True
-                    #time.sleep(3.0)  # Wait for 3 seconds before attempting to replan
-                    strategy.get_logger().info(f"🗺️  Starting pathfinding after lidar detection")
+                    replanning = True
                     
-                    # Re-set the goal before replanning (goal was cleared after previous navigation)
-                    if strategy.global_pos_x is not None and strategy.global_pos_y is not None and strategy.global_pos_angle is not None:
-                        strategy.handle_global_goal(float(strategy.global_pos_x/1000), float(strategy.global_pos_y/1000), float(strategy.global_pos_angle))
-                        strategy.get_logger().info(f"✓ Re-set goal for replanning: ({float(strategy.global_pos_x)}, {float(strategy.global_pos_y)}, {float(strategy.global_pos_angle)}°)")
-                    else:
-                        strategy.get_logger().error("❌ Cannot replan: no global goal stored!")
+                    # Trigger replanning in the dedicated thread
                     
-                    strategy.get_logger().info("🔄 Calling strategy.path() for replanning...")
-                    strategy.path()
-                    strategy.get_logger().info("✓ Replanning completed")
-                    last_stm_command="replanned"  # Set to "replanned" so queue is NOT popped - new commands need to execute
-                    SYSTEMS_IDLE_COUNT=0
-                    IDLE=True
-                    IDLE_FOR_SYSTEMS=True
-                    lidar.clear_on=True
-                    lidar.clear_goto_target()
-                    lidar.generate_path = 0  # Reset generate_path flag after triggering replanning
-                    strategy.end_game=False  # Reset end_game flag so ESP tasks can continue
-                    strategy.get_logger().info(f"✓ Replanning cleanup done - IDLE={IDLE}, IDLE_FOR_SYSTEMS={IDLE_FOR_SYSTEMS}")
-                    # Note: replanning=False is set by strategy_manager.path() function
-                    #strategy.end_game=True
+                    REPLANNING_REQUESTED = True
+                    strategy.get_logger().info("🗺️  Replanning requested - path_planning_task will handle it")
+                    
+                    # Wait for replanning to complete
+                    
+                    wait_count = 0
+                    while (REPLANNING_REQUESTED or REPLANNING_IN_PROGRESS) and not SHUTDOWN_REQUESTED:
+                        wait_count += 1
+                        if wait_count % 10 == 0:  # Log every second
+                            strategy.get_logger().info(f"⏳ Waiting for replanning... (REQUESTED={REPLANNING_REQUESTED}, IN_PROGRESS={REPLANNING_IN_PROGRESS})")
+                        time.sleep(0.1)
+                    
+                    strategy.get_logger().info("✅ Replanning completed by path_planning_task")
                 
                 time.sleep(0.1)
             
@@ -425,10 +526,16 @@ def stm32_task(strategy, stm32,lidar):
                 strategy.pathfinder.clear_goal()
                 strategy.queues['STM'].popleft()
                 strategy.get_logger().info(f"🗑️  Removed command from queue - {len(strategy.queues['STM'])} commands remaining")
+                # Increment SYSTEMS_IDLE_COUNT only when navigation completes successfully
+                SYSTEMS_IDLE_COUNT += 1
+                strategy.get_logger().info(f"📊 SYSTEMS_IDLE_COUNT incremented to {SYSTEMS_IDLE_COUNT} (navigation completed)")
             elif last_stm_command=="replanned":
                 # After replanning, don't pop - let outer loop execute new commands
                 strategy.get_logger().info(f"✓ Replanning complete - new commands ready to execute ({len(strategy.queues['STM'])} commands in queue)")
                 # Don't pop from queue - commands were just added and need to be executed
+                # Increment SYSTEMS_IDLE_COUNT since a command was processed (even though it was replanned)
+                SYSTEMS_IDLE_COUNT += 1
+                strategy.get_logger().info(f"📊 SYSTEMS_IDLE_COUNT incremented to {SYSTEMS_IDLE_COUNT} (replanning completed)")
         else:
             # Log why we're not processing commands (every 50 iterations to avoid spam)
             if main_loop_count % 50 == 0:
