@@ -44,7 +44,7 @@ last_stm_command=""
 path_found=True
 REPLANNING_REQUESTED = False  # Flag to trigger replanning
 REPLANNING_IN_PROGRESS = False  # Flag to indicate replanning is ongoing
-def path_planning_task(strategy, lidar, round_timer):
+def path_planning_task(strategy, lidar, round_timer, pneumatic_controller=None, front_controller=None, back_controller=None):
     """Dedicated thread for handling pathfinding/replanning"""
     global REPLANNING_REQUESTED
     global REPLANNING_IN_PROGRESS
@@ -65,6 +65,19 @@ def path_planning_task(strategy, lidar, round_timer):
             strategy.end_game = True
             strategy.get_logger().warning("⏰ Only 15 seconds left! Returning home to (250, 225)...")
             
+            # Reset systems without stopping STM32 (like at start)
+            if pneumatic_controller and front_controller and back_controller:
+                strategy.get_logger().info("🔄 Resetting pneumatic and ESP systems for return home...")
+                pneumatic_controller.front(16)
+                pneumatic_controller.back(16)
+                front_controller.kabech(0)
+                back_controller.kabech(0)
+                front_controller.dawer(0)
+                back_controller.dawer(0)
+                front_controller.n20(0)
+                back_controller.n20(0)
+                time.sleep(0.2)
+            
             # Clear all device queues except STM
             strategy.queues['ESP_front'].clear()
             strategy.queues['ESP_back'].clear()
@@ -72,8 +85,8 @@ def path_planning_task(strategy, lidar, round_timer):
             strategy.queues['STM'].clear()
             strategy.get_logger().info("🗑️  Cleared all task queues for return home")
             
-            # Set goal to home position (250mm, 225mm)
-            strategy.handle_global_goal(0.25, 0.225, 0.0)  # Convert mm to meters
+            # Set goal to home position (250mm, 225mm) - use pathfinder directly
+            strategy.pathfinder.set_goal(0.25, 0.225, 0.0)  # Convert mm to meters
             strategy.get_logger().info("🏠 Home goal set: (250mm, 225mm)")
             
             # Trigger path planning for home
@@ -88,27 +101,38 @@ def path_planning_task(strategy, lidar, round_timer):
             attempt_count = 0
             
             # Keep trying until we find a path
-            while not path_found and not SHUTDOWN_REQUESTED:
+            while not path_found and not SHUTDOWN_REQUESTED :
                 attempt_count += 1
                 strategy.get_logger().info(f"🗺️  Path planning attempt #{attempt_count}")
                 
                 # Re-set the goal before replanning
-                if strategy.global_pos_x is not None and strategy.global_pos_y is not None and strategy.global_pos_angle is not None:
-                    strategy.handle_global_goal(float(strategy.global_pos_x)/1000, float(strategy.global_pos_y)/1000, float(strategy.global_pos_angle))
-                    strategy.get_logger().info(f"✓ Re-set goal for replanning: ({float(strategy.global_pos_x)}, {float(strategy.global_pos_y)}, {float(strategy.global_pos_angle)}°)")
+                if return_home_triggered:
+                    # Always re-set home goal (may have been cleared after previous command)
+                    strategy.pathfinder.set_goal(0.25, 0.225, 0.0)
+                    strategy.get_logger().info(f"🏠 Return home replanning - re-set home goal (250mm, 225mm)")
                 else:
-                    strategy.get_logger().error("❌ Cannot replan: no global goal stored!")
-                    break
+                    if strategy.global_pos_x is not None and strategy.global_pos_y is not None and strategy.global_pos_angle is not None:
+                        strategy.handle_global_goal(float(strategy.global_pos_x)/1000, float(strategy.global_pos_y)/1000, float(strategy.global_pos_angle))
+                        strategy.get_logger().info(f"✓ Re-set goal for replanning: ({float(strategy.global_pos_x)}, {float(strategy.global_pos_y)}, {float(strategy.global_pos_angle)}°)")
+                    else:
+                        strategy.get_logger().error("❌ Cannot replan: no global goal stored!")
+                        break
                 
                 # Call strategy.path() once
                 strategy.get_logger().info(f"🔄 Calling strategy.path() (attempt {attempt_count})...")
-                path_found = strategy.path()
+                path_found = strategy.path(end_game=return_home_triggered)
                 
                 # Check if path was found using return value from strategy.path()
                 if path_found:
                     strategy.get_logger().info(f"✅ Path found on attempt #{attempt_count}! Queue has {len(strategy.queues['STM'])} commands")
                 else:
                     strategy.get_logger().warning(f"⚠️ Attempt #{attempt_count} failed - pathfinding returned False. Retrying...")
+                    
+                    # Check if we need to abort replanning to trigger return home
+                    if round_timer.time() >= 85.0 and not return_home_triggered:
+                        strategy.get_logger().warning(f"⏰ Time reached 85s during replanning - aborting to trigger return home")
+                        break
+                    
                     time.sleep(0.5)  # Wait before retry
             
             if path_found:
@@ -441,7 +465,6 @@ def stm32_task(strategy, stm32,lidar):
                             emergency_stuck_iterations = 20  # Keep logging but don't spam
                 else:
                     emergency_stuck_iterations = 0  # Reset if not stuck
-                
                 # Log state every 20 iterations (2 seconds)
                 if loop_iteration % 20 == 0:
                     strategy.get_logger().info(f"🔄 Wait loop iteration {loop_iteration}: IDLE={IDLE}, EMERGENCY_STOP={EMERGENCY_STOP}, was_in_emergency={was_in_emergency}, replanning={replanning}, last_stm_command={last_stm_command}")
@@ -524,8 +547,10 @@ def stm32_task(strategy, stm32,lidar):
                     #correct_bezier(strategy, stm32, params)
                 lidar.clear_goto_target()
                 strategy.pathfinder.clear_goal()
-                strategy.queues['STM'].popleft()
-                strategy.get_logger().info(f"🗑️  Removed command from queue - {len(strategy.queues['STM'])} commands remaining")
+                # Check if queue not empty before popping (race condition with queue.clear())
+                if len(strategy.queues['STM']) > 0:
+                    strategy.queues['STM'].popleft()
+                    strategy.get_logger().info(f"🗑️  Removed command from queue - {len(strategy.queues['STM'])} commands remaining")
                 # Increment SYSTEMS_IDLE_COUNT only when navigation completes successfully
                 SYSTEMS_IDLE_COUNT += 1
                 strategy.get_logger().info(f"📊 SYSTEMS_IDLE_COUNT incremented to {SYSTEMS_IDLE_COUNT} (navigation completed)")
@@ -559,7 +584,13 @@ def handle_color_pattner(strategy,front):
     known_id = ''
 
     color_pattern, success, direction, batch_center, batch_known_id = strategy.pathfinder.get_batch_color(known_id, pos)
-    strategy.get_logger().info(f"pattern received from beacon: {color_pattern} ")
+    
+    # Default to "yyyy" if no pattern received or failed
+    if not color_pattern or not success:
+        color_pattern = "yyyy"
+        strategy.get_logger().info(f"⚠️  No batch found or failed - defaulting to pattern: {color_pattern}")
+    else:
+        strategy.get_logger().info(f"pattern received from beacon: {color_pattern} ")
     
     # Delete the batch after successfully retrieving its color pattern
     if success and batch_known_id:
@@ -778,7 +809,9 @@ def front_task(strategy, front_controller=None,pneumatic_controller=None):
                 put_down(front_controller,pneumatic_controller,strategy,True)
             elif command =='pick_up':
                 pick_up(front_controller,pneumatic_controller,strategy,True)
-            strategy.queues['ESP_front'].popleft()
+            # Check if queue not empty before popping (race condition with queue.clear())
+            if len(strategy.queues['ESP_front']) > 0:
+                strategy.queues['ESP_front'].popleft()
         
         time.sleep(0.1)  # 100ms
 
@@ -810,8 +843,9 @@ def back_task(strategy, back_controller=None,pneumatic_controller=None):
                 put_down(back_controller,pneumatic_controller,strategy,False)
             elif command =='pick_up':
                 pick_up(back_controller,pneumatic_controller,strategy,False)
-               
-            strategy.queues['ESP_back'].popleft()
+            # Check if queue not empty before popping (race condition with queue.clear())
+            if len(strategy.queues['ESP_back']) > 0:
+                strategy.queues['ESP_back'].popleft()
         
         time.sleep(0.1)  # 100ms
 def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=None, front_controller=None, back_controller=None, pneumatic_controller=None, pami_controller=None):
@@ -906,8 +940,9 @@ def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=No
             else:
                 strategy.get_logger().warn(f"Unknown RASP_PI command: {command}")
             
-            # Remove command from queue after execution
-            strategy.queues['RASP_PI'].popleft()
+            # Remove command from queue after execution (if queue not cleared by another thread)
+            if len(strategy.queues['RASP_PI']) > 0:
+                strategy.queues['RASP_PI'].popleft()
             
         
         time.sleep(0.1)  # 100ms

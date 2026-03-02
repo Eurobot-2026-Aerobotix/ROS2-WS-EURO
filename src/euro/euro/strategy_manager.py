@@ -84,7 +84,7 @@ class StrategyManager(Node):
         self.latest_robot_pose_beacon = msg
         #self.get_logger().info(f"aruco mapper callback")
         self.latest_robot_pose_beacon_count += 1
-    def path(self):
+    def path(self, end_game=False):
         """Plan path from current position to stored goal and load commands into queue"""
         self.get_logger().info(f"🗺️  Planning path to stored goal in pathfinder")
         global n 
@@ -130,7 +130,7 @@ class StrategyManager(Node):
                         })
 
                 last_cmd = cmd
-            if success and goal_angle is not None:
+            if success and goal_angle is not None and not end_game:
                 self.queues['STM'].append({
                     'command': 'orientate',
                     'params': [goal_angle, 0.0],  # List format: [angle, is_radian]
@@ -275,7 +275,8 @@ class StrategyManager(Node):
                     else:
                         if device =="RASP_PI" and command=="Wait for manual start":
                             executor_module.WAITING_TIRETTE=True
-                        self.queues[device].append(cmd)
+                        if not self.end_game:
+                            self.queues[device].append(cmd)
                     
                 else:
                     self.get_logger().warn(f"      ⚠ Unknown device: {device}")
@@ -421,7 +422,7 @@ def main(args=None):
     
     path_planning_thread = threading.Thread(
         target=path_planning_task,
-        args=(strategy, lidar, strategy.round),
+        args=(strategy, lidar, strategy.round, pneumatic, front, back),
         daemon=True
     )
     path_planning_thread.start()
@@ -484,6 +485,11 @@ def main(args=None):
         )
         rasp_pi_thread.start()
         #pami_ctrl.load_and_publish_pami_strategies()
+        
+        # Spin executor briefly to initialize publishers before sending reset
+        for _ in range(10):
+            executor.spin_once(timeout_sec=0.01)
+        
         reset_systems(pneumatic,front,back,None,strategy,True,False)
         time.sleep(2)
 
