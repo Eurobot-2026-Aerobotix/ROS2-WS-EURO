@@ -51,7 +51,13 @@ def robot_status(strategy, stm32, lidar):
     global PREVIOUS_IDLE_FOR_SYSTEMS
     global SYSTEMS_IDLE_COUNT
     global last_stm_command
+    
+    strategy.get_logger().info("🤖 Robot status monitoring started")
+    status_loop_count = 0
+    
     while rclpy.ok() and not SHUTDOWN_REQUESTED:
+        status_loop_count += 1
+        
         # Only check if robot is idle when we think it's busy
         if not IDLE:
             if not IDLE_FOR_SYSTEMS :
@@ -67,11 +73,26 @@ def robot_status(strategy, stm32, lidar):
                 if not IDLE_FOR_SYSTEMS and not EMERGENCY_STOP:
                     PREVIOUS_IDLE_FOR_SYSTEMS=IDLE_FOR_SYSTEMS
                     IDLE_FOR_SYSTEMS = is_completed
+                    
+                    # Log state changes for IDLE_FOR_SYSTEMS
+                    if IDLE_FOR_SYSTEMS != PREVIOUS_IDLE_FOR_SYSTEMS:
+                        strategy.get_logger().info(f"🔄 IDLE_FOR_SYSTEMS changed: {PREVIOUS_IDLE_FOR_SYSTEMS} → {IDLE_FOR_SYSTEMS}")
                 else:
+                    old_idle = IDLE
                     IDLE = is_completed
+                    
+                    # Log state changes for IDLE
+                    if IDLE != old_idle:
+                        strategy.get_logger().info(f"🔄 IDLE changed: {old_idle} → {IDLE} (last_stm_command={last_stm_command})")
+                        
             if  IDLE_FOR_SYSTEMS ==True and PREVIOUS_IDLE_FOR_SYSTEMS==False and last_stm_command=="navigation":
                 SYSTEMS_IDLE_COUNT+=1
+                strategy.get_logger().info(f"📊 SYSTEMS_IDLE_COUNT incremented to {SYSTEMS_IDLE_COUNT}")
             PREVIOUS_IDLE_FOR_SYSTEMS=IDLE_FOR_SYSTEMS
+        else:
+            # Log periodically when robot is idle to confirm the thread is running
+            if status_loop_count % 100 == 0:  # Every 10 seconds
+                strategy.get_logger().info(f"✓ Robot status monitor: IDLE={IDLE}, EMERGENCY_STOP={EMERGENCY_STOP}")
         
         time.sleep(0.1)  # 100ms
 
@@ -81,12 +102,25 @@ def lidar_status(strategy, stm32, lidar, round_timer):
     global SHUTDOWN_REQUESTED
     first_emergency = True
     
+    strategy.get_logger().info("🔍 Lidar status monitoring started")
+    lidar_loop_count = 0
+    
     while rclpy.ok() and not SHUTDOWN_REQUESTED:
+        lidar_loop_count += 1
+        
         # Update lidar with current round time
         lidar.set_round_time(round_timer.time())
         
         # Check emergency stop from lidar
+        old_emergency = EMERGENCY_STOP
         EMERGENCY_STOP = lidar.getstatus()
+        
+        # Log when emergency state changes
+        if EMERGENCY_STOP != old_emergency:
+            if EMERGENCY_STOP:
+                strategy.get_logger().warning(f"🚨 EMERGENCY_STOP activated by lidar! (first_emergency={first_emergency})")
+            else:
+                strategy.get_logger().info(f"✅ EMERGENCY_STOP cleared by lidar (first_emergency={first_emergency})")
         
         # Handle emergency stop
         if EMERGENCY_STOP and first_emergency:
@@ -96,7 +130,13 @@ def lidar_status(strategy, stm32, lidar, round_timer):
         
         # Reset flag when emergency is cleared
         if not EMERGENCY_STOP:
+            if not first_emergency:
+                strategy.get_logger().info("🔄 Emergency flag reset - ready for next emergency")
             first_emergency = True
+        
+        # Periodic status check
+        if lidar_loop_count % 100 == 0:  # Every 10 seconds
+            strategy.get_logger().info(f"✓ Lidar monitor: EMERGENCY_STOP={EMERGENCY_STOP}, round_time={round_timer.time():.1f}s")
         
         time.sleep(0.01)  # 10ms
 
@@ -246,7 +286,17 @@ def stm32_task(strategy, stm32,lidar):
     last_params = None
     global SYSTEMS_IDLE_COUNT
     was_in_emergency = False
+    
+    strategy.get_logger().info("🚀 STM32 task started")
+    
+    main_loop_count = 0
     while rclpy.ok() and not SHUTDOWN_REQUESTED:
+        main_loop_count += 1
+        
+        # Log main loop status every 50 iterations (5 seconds)
+        if main_loop_count % 50 == 0:
+            strategy.get_logger().info(f"🔁 STM32 main loop #{main_loop_count}: queue_size={len(strategy.queues['STM'])}, IDLE={IDLE}, EMERGENCY_STOP={EMERGENCY_STOP}")
+        
         # Check if there are commands in the queue and robot is idle
         if len(strategy.queues['STM']) > 0 and IDLE:
             cmd = strategy.queues['STM'][0]  # Peek at first command
@@ -271,40 +321,62 @@ def stm32_task(strategy, stm32,lidar):
             last_stm_command=""
             
             # Execute command using handler function
+            strategy.get_logger().info(f"🎯 Executing STM command: {command} with params: {params[:3] if len(params) > 3 else params}")
             handle_stm32_command(command, params, stm32, lidar, strategy)
             if command !="set_position":
                 last_stm_command="navigation"
             
+            strategy.get_logger().info(f"⏳ Entering wait loop - IDLE={IDLE}, EMERGENCY_STOP={EMERGENCY_STOP}, last_stm_command={last_stm_command}")
+            
             # Wait for command completion with emergency handling
+            loop_iteration = 0
             while ((not IDLE and not SHUTDOWN_REQUESTED) or (EMERGENCY_STOP) or last_stm_command=="emergency") and last_stm_command != "replanned":
+                loop_iteration += 1
+                
+                # Log state every 20 iterations (2 seconds)
+                if loop_iteration % 20 == 0:
+                    strategy.get_logger().info(f"🔄 Wait loop iteration {loop_iteration}: IDLE={IDLE}, EMERGENCY_STOP={EMERGENCY_STOP}, was_in_emergency={was_in_emergency}, replanning={replanning}, last_stm_command={last_stm_command}")
+                
                 # Check for emergency stop
                 if EMERGENCY_STOP and not was_in_emergency and not replanning :
-                    strategy.get_logger().warning("🚨 Emergency detected during movement - stopping STM32")
+                    strategy.get_logger().warning(f"🚨 Emergency detected during movement - stopping STM32 (IDLE={IDLE}, IDLE_FOR_SYSTEMS={IDLE_FOR_SYSTEMS})")
                     stm32.stop()
                     last_stm_command="emergency"
                     IDLE=False
                     IDLE_FOR_SYSTEMS=False
                     was_in_emergency = True
+                    strategy.get_logger().info("⏸️  Waiting for STM32 to report IDLE after emergency stop...")
+                    
+                    idle_wait_count = 0
                     while(not IDLE and not SHUTDOWN_REQUESTED):
-                        strategy.get_logger().info(f"IDLE: {IDLE}")
+                        idle_wait_count += 1
+                        if idle_wait_count % 10 == 0:  # Log every 0.5 seconds
+                            strategy.get_logger().info(f"⏸️  Still waiting for IDLE... (count={idle_wait_count}, IDLE={IDLE})")
                         time.sleep(0.05)  # Wait until STM32 reports idle after stop
+                    
+                    strategy.get_logger().info(f"✓ STM32 now IDLE after emergency stop (waited {idle_wait_count * 0.05:.2f}s)")
                     lidar.start_enemy_collision_check()  # Start waiting period before rechecking obstacle
+                    strategy.get_logger().info("🔍 Started enemy collision check - waiting for obstacle to clear")
                     #strategy.pathfinder.update_map()
                     #IDLE = True  # Mark as idle to prevent status checks
                 
                 # Check if emergency cleared
                 elif not EMERGENCY_STOP and was_in_emergency  :
-                    strategy.get_logger().info("✅ Emergency cleared - resuming command")
+                    strategy.get_logger().info(f"✅ Emergency cleared - resuming command: {last_command}")
+                    strategy.get_logger().info(f"📊 State before resume: IDLE={IDLE}, IDLE_FOR_SYSTEMS={IDLE_FOR_SYSTEMS}")
                     # Resend the last command using handler function
                     handle_stm32_command(last_command, last_params, stm32, lidar, strategy)
                     last_stm_command="navigation"
                     was_in_emergency = False
                     IDLE = False  # Back to moving
                     IDLE_FOR_SYSTEMS = False
+                    strategy.get_logger().info(f"🚀 Command resumed - IDLE={IDLE}, IDLE_FOR_SYSTEMS={IDLE_FOR_SYSTEMS}, last_stm_command={last_stm_command}")
+                    
                 elif lidar.get_path_status() and replanning==False :
+                    strategy.get_logger().warning(f"⚠️ Lidar requesting replanning - current state: IDLE={IDLE}, EMERGENCY_STOP={EMERGENCY_STOP}")
                     replanning=True
                     #time.sleep(3.0)  # Wait for 3 seconds before attempting to replan
-                    strategy.get_logger().info(f"pathfinding after lidar: ")
+                    strategy.get_logger().info(f"🗺️  Starting pathfinding after lidar detection")
                     
                     # Re-set the goal before replanning (goal was cleared after previous navigation)
                     if strategy.global_pos_x is not None and strategy.global_pos_y is not None and strategy.global_pos_angle is not None:
@@ -313,7 +385,9 @@ def stm32_task(strategy, stm32,lidar):
                     else:
                         strategy.get_logger().error("❌ Cannot replan: no global goal stored!")
                     
+                    strategy.get_logger().info("🔄 Calling strategy.path() for replanning...")
                     strategy.path()
+                    strategy.get_logger().info("✓ Replanning completed")
                     last_stm_command="replanned"  # Set to "replanned" so queue is NOT popped - new commands need to execute
                     SYSTEMS_IDLE_COUNT=0
                     IDLE=True
@@ -322,12 +396,17 @@ def stm32_task(strategy, stm32,lidar):
                     lidar.clear_goto_target()
                     lidar.generate_path = 0  # Reset generate_path flag after triggering replanning
                     strategy.end_game=False  # Reset end_game flag so ESP tasks can continue
+                    strategy.get_logger().info(f"✓ Replanning cleanup done - IDLE={IDLE}, IDLE_FOR_SYSTEMS={IDLE_FOR_SYSTEMS}")
                     # Note: replanning=False is set by strategy_manager.path() function
                     #strategy.end_game=True
+                
                 time.sleep(0.1)
+            
+            # Exited wait loop
+            strategy.get_logger().info(f"🏁 Exited wait loop - IDLE={IDLE}, EMERGENCY_STOP={EMERGENCY_STOP}, was_in_emergency={was_in_emergency}, last_stm_command={last_stm_command}")
+            
             if  last_stm_command!="navigation": 
-                strategy.get_logger().info(f"idle : {IDLE} :  EMERGENCY_STOP : {EMERGENCY_STOP}"  )
-                strategy.get_logger().info( last_stm_command  )
+                strategy.get_logger().info(f"⚠️ Command ended with non-navigation state: idle={IDLE}, EMERGENCY_STOP={EMERGENCY_STOP}, last_stm_command='{last_stm_command}'")
                 # Reset emergency flag when command completes normally
                 was_in_emergency = False
                 
@@ -335,19 +414,28 @@ def stm32_task(strategy, stm32,lidar):
                 
                 # Remove command from queue after execution
             if last_stm_command=="navigation":
+                strategy.get_logger().info(f"✓ Navigation completed successfully for command: {command}")
                 # Correct position using beacon after bezier curves
                 if command == 'bezier' or command == 'bezier_backwards':
-                    strategy.get_logger().info("correcting bezier ")
+                    strategy.get_logger().info("📍 Correcting bezier position")
                     
                     strategy.latest_robot_pose_beacon_count = 0
                     #correct_bezier(strategy, stm32, params)
                 lidar.clear_goto_target()
                 strategy.pathfinder.clear_goal()
                 strategy.queues['STM'].popleft()
+                strategy.get_logger().info(f"🗑️  Removed command from queue - {len(strategy.queues['STM'])} commands remaining")
             elif last_stm_command=="replanned":
                 # After replanning, don't pop - let outer loop execute new commands
-                strategy.get_logger().info("✓ Replanning complete - new commands ready to execute")
+                strategy.get_logger().info(f"✓ Replanning complete - new commands ready to execute ({len(strategy.queues['STM'])} commands in queue)")
                 # Don't pop from queue - commands were just added and need to be executed
+        else:
+            # Log why we're not processing commands (every 50 iterations to avoid spam)
+            if main_loop_count % 50 == 0:
+                if len(strategy.queues['STM']) == 0:
+                    strategy.get_logger().info("⏸️  STM queue empty - waiting for commands")
+                elif not IDLE:
+                    strategy.get_logger().info(f"⏸️  Robot not IDLE - waiting (IDLE={IDLE}, IDLE_FOR_SYSTEMS={IDLE_FOR_SYSTEMS}, EMERGENCY_STOP={EMERGENCY_STOP})")
         
         time.sleep(0.1)  # 100ms
 def handle_color_pattner(strategy,front):
