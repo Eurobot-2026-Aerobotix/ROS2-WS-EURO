@@ -921,15 +921,23 @@ class MapManager:
                 self.baselines_locked = True
                 self.node.get_logger().info(f"✅ Baseline patterns locked! Received {num_batches} locked batches")
                 
+                # Track the locked batch IDs
+                locked_batch_ids = set()
+                
                 # Update batches with locked patterns
                 with self.batches_lock:
                     for batch in response.stable_state.batches:
+                        locked_batch_ids.add(batch.known_id)
                         if batch.known_id.startswith('s'):
                             self.batches_sx[batch.known_id] = batch
                             self.node.get_logger().info(f"   🔒 Locked SX pattern: {batch.known_id} = '{batch.pattern}'")
                         elif batch.known_id.startswith('f'):
                             self.batches_fx[batch.known_id] = batch
                             self.node.get_logger().info(f"   🔒 Locked FX pattern: {batch.known_id} = '{batch.pattern}'")
+                
+                # CRITICAL: Add locked batches to active_batch_ids to prevent them from being removed
+                self.active_batch_ids.update(locked_batch_ids)
+                self.node.get_logger().info(f"   📌 Added {len(locked_batch_ids)} locked batches to active tracking")
             else:
                 self.node.get_logger().error("❌ Failed to lock baseline patterns: no response")
         except Exception as e:
