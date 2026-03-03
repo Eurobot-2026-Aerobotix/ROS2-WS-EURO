@@ -58,6 +58,9 @@ class StrategyManager(Node):
         # Track last pick_up/put_down command and device from task
         self.last_task_command = None
         self.last_task_device = None
+        # Storage for prepared path commands
+        self.prepared_commands = []
+        self.prepared_goal_angle = None
         # Create Round timer instance
         from euro.strategy_executor import Round
         self.round = Round()
@@ -84,78 +87,120 @@ class StrategyManager(Node):
         self.latest_robot_pose_beacon = msg
         #self.get_logger().info(f"aruco mapper callback")
         self.latest_robot_pose_beacon_count += 1
-    def path(self, end_game=False):
-        """Plan path from current position to stored goal and load commands into queue"""
-        self.get_logger().info(f"🗺️  Planning path to stored goal in pathfinder")
+    def path(self, end_game=False, prepare=False):
+        """Plan path from current position to stored goal.
+        
+        Args:
+            end_game: Whether this is for end game return home
+            prepare: If True, generate and store path without loading to queue.
+                    If False, load previously prepared path to queue without generating new path.
+        
+        Returns:
+            bool: Success status
+        """
         global n 
         global found_goal_batch
-        # Set flag to prevent task loading during replanning
-        self.is_replanning = True
-        # Clear the STM32 queue
-        self.queues['STM'].clear()
-        executor_module.SYSTEMS_IDLE_COUNT=0
-        # Use pathfinder's path method (it uses stored goal and latest robot pose)
-        stm32_commands, success = self.pathfinder.path()
         
-        # while not success:
-        #     self.get_logger().error("❌ Path planning failed!")
-        #     self.is_replanning = True
-        #     stm32_commands, success = self.pathfinder.path()
-        #     time.sleep(2)
-        # Get goal from pathfinder for orientation command
-        if success:
-            goal_angle = self.pathfinder.goal_angle
+        if prepare:
+            # PREPARE MODE: Generate path and store it, don't load to queue yet
+            self.get_logger().info(f"🗺️  Preparing path (searching only, not loading to queue)")
             
-            # Process commands and add to queue
-            last_cmd = None
-            for cmd in stm32_commands:
-                values = cmd.replace('go_to(', '').replace(')', '').split(',')
-                x = float(values[0].strip())
-                y = float(values[1].strip())
-                speed = int(values[2].strip())
-                if cmd != last_cmd:
-                    if self.last_task_device=="ESP_back":
-                        self.get_logger().info(f"go_to_backwards: x={x}, y={y}")
-                        self.queues['STM'].append({
-                            'command': 'go_to_backwards',
-                            'params': [x, y, 700.0, {'from_pathfinding': True}],  # Mark as from pathfinding
-                            'wait': False
-                        })
-                    else:
-                        self.get_logger().info(f"go_to: x={x}, y={y}")
-                        self.queues['STM'].append({
-                            'command': 'go_to',
-                            'params': [x, y, 700.0, {'from_pathfinding': True}],  # Mark as from pathfinding
-                            'wait': False
-                        })
+            # Use pathfinder's path method (it uses stored goal and latest robot pose)
+            stm32_commands, success = self.pathfinder.path()
+            
+            if success:
+                # Store commands and goal angle for later execution
+                self.prepared_commands = stm32_commands
+                self.prepared_goal_angle = self.pathfinder.goal_angle
+                self.get_logger().info(f"✅ Path prepared! {len(stm32_commands)} waypoints found (not loaded to queue yet)")
+            else:
+                self.prepared_commands = []
+                self.prepared_goal_angle = None
+                self.get_logger().warning("⚠️ Path preparation failed")
+            
+            return success
+        
+        else:
+            # EXECUTE MODE: Load prepared path to queue (or generate if none prepared)
+            self.get_logger().info(f"🚀 Loading path to queue for execution")
+            
+            # Set flag to prevent task loading during replanning
+            self.is_replanning = True
+            
+            
+            # Check if we have a prepared path
+            if self.prepared_commands:
+                self.get_logger().info(f"✓ Using prepared path with {len(self.prepared_commands)} waypoints")
+                stm32_commands = self.prepared_commands
+                goal_angle = self.prepared_goal_angle
+                success = True
+                # Clear prepared commands after use
+                self.prepared_commands = []
+                self.prepared_goal_angle = None
+            else:
+                # No prepared path - generate one now (fallback)
+                self.get_logger().warning("⚠️ No prepared path available - generating now as fallback")
+                stm32_commands, success = self.pathfinder.path()
+                goal_angle = self.pathfinder.goal_angle if success else None
+            
+            # Load commands to queue
+            if success:
+                # Clear the STM32 queue
+                self.queues['STM'].clear()
+                executor_module.SYSTEMS_IDLE_COUNT=0
+                # Process commands and add to queue
+                last_cmd = None
+                for cmd in stm32_commands:
+                    values = cmd.replace('go_to(', '').replace(')', '').split(',')
+                    x = float(values[0].strip())
+                    y = float(values[1].strip())
+                    speed = int(values[2].strip())
+                    if cmd != last_cmd:
+                        if self.last_task_device=="ESP_back":
+                            self.get_logger().info(f"go_to_backwards: x={x}, y={y}")
+                            self.queues['STM'].append({
+                                'command': 'go_to_backwards',
+                                'params': [x, y, 1100.0, {'from_pathfinding': True}],  # Mark as from pathfinding
+                                'wait': False
+                            })
+                        else:
+                            self.get_logger().info(f"go_to: x={x}, y={y}")
+                            self.queues['STM'].append({
+                                'command': 'go_to',
+                                'params': [x, y, 1100.0, {'from_pathfinding': True}],  # Mark as from pathfinding
+                                'wait': False
+                            })
 
-                last_cmd = cmd
-            if success and goal_angle is not None and not end_game:
-                self.queues['STM'].append({
-                    'command': 'orientate',
-                    'params': [goal_angle, 0.0],  # List format: [angle, is_radian]
-                })
-                if self.last_task_command=='pick_up' and found_goal_batch:
-                    if self.last_task_device == 'ESP_front' :
-                        self.queues['STM'].append({
-                            'command': 'go_to',
-                            'params': [self.global_pos_x, self.global_pos_y, 1100.0, 1.0, {'from_pathfinding': True}],  # Mark as from pathfinding
-                            'wait': False
-                        })
-                        self.get_logger().info(f"Added go_to command with global position: x={self.global_pos_x}, y={self.global_pos_y} (last command after pathfinding )")
-                    elif self.last_task_device == 'ESP_back' :
-                        self.queues['STM'].append({
-                            'command': 'go_to_backwards',
-                            'params': [self.global_pos_x, self.global_pos_y, 1100.0, 1.0, {'from_pathfinding': True}],  # Mark as from pathfinding
-                            'wait': False
-                        })
-            n=len((self.queues["STM"]))
-            executor_module.SYSTEMS_IDLE_COUNT=0
-            self.get_logger().info(f"✅ Path planning complete! Added {len(self.queues['STM'])} commands to queue (success={success})")
-            # Resume task execution
-            executor_module.replanning = False
-            self.is_replanning = False
-        return success
+                    last_cmd = cmd
+                    
+                if success and goal_angle is not None and not end_game:
+                    self.queues['STM'].append({
+                        'command': 'orientate',
+                        'params': [goal_angle, 0.0],  # List format: [angle, is_radian]
+                    })
+                    if self.last_task_command=='pick_up' and found_goal_batch:
+                        if self.last_task_device == 'ESP_front' :
+                            self.queues['STM'].append({
+                                'command': 'go_to',
+                                'params': [self.global_pos_x, self.global_pos_y, 1100.0, 1.0, {'from_pathfinding': True}],  # Mark as from pathfinding
+                                'wait': False
+                            })
+                            self.get_logger().info(f"Added go_to command with global position: x={self.global_pos_x}, y={self.global_pos_y} (last command after pathfinding )")
+                        elif self.last_task_device == 'ESP_back' :
+                            self.queues['STM'].append({
+                                'command': 'go_to_backwards',
+                                'params': [self.global_pos_x, self.global_pos_y, 1100.0, 1.0, {'from_pathfinding': True}],  # Mark as from pathfinding
+                                'wait': False
+                            })
+                            
+                n=len((self.queues["STM"]))
+                executor_module.SYSTEMS_IDLE_COUNT=0
+                self.get_logger().info(f"✅ Path loaded to queue! {len(self.queues['STM'])} commands ready for execution")
+                # Resume task execution
+                executor_module.replanning = False
+                self.is_replanning = False
+                
+            return success
     def handle_global_goal(self, x, y, angle):
         global found_goal_batch
         pos = Point()

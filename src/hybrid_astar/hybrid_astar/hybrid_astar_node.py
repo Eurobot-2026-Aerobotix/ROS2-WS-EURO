@@ -76,14 +76,21 @@ class HybridAStarNode(Node):
         # Load all parameters
         self.load_parameters()
         
-        # Create clients for GetStableBatches service
+        # Create ReentrantCallbackGroup to allow parallel service/client execution
+        # This fixes multithreading deadlock when update_map calls get_stable_batches
+        from rclpy.callback_groups import ReentrantCallbackGroup
+        self.reentrant_group = ReentrantCallbackGroup()
+        
+        # Create clients for GetStableBatches service with reentrant callback group
         # 1. Web handler service (for pathfinding simulation batches)
         self.get_stable_batches_client_web = self.create_client(
-            GetStableBatches, '/aruco_mapper/get_stable_batches_web')
+            GetStableBatches, '/aruco_mapper/get_stable_batches_web',
+            callback_group=self.reentrant_group)
         
         # 2. ArUco mapper service (for real robot batches)
         self.get_stable_batches_client = self.create_client(
-            GetStableBatches, '/aruco_mapper/get_stable_batches')
+            GetStableBatches, '/aruco_mapper/get_stable_batches',
+            callback_group=self.reentrant_group)
         
         # Initialize map manager (handles obstacles, batches, and topics)
         # Pass both clients - web client has priority
@@ -93,23 +100,28 @@ class HybridAStarNode(Node):
             self.get_stable_batches_client_web
         )
         
-        # Create services
+        # Create services with reentrant callback group for parallel execution
         self.path_service = self.create_service(
-            ComputePath, '/compute_path', self.handle_compute_path)
+            ComputePath, '/compute_path', self.handle_compute_path,
+            callback_group=self.reentrant_group)
         
         self.batch_color_service = self.create_service(
-            GetBatchColorPattern, '/get_batch_color_pattern', self.handle_get_batch_color_pattern)
+            GetBatchColorPattern, '/get_batch_color_pattern', self.handle_get_batch_color_pattern,
+            callback_group=self.reentrant_group)
         
         self.delete_batch_service = self.create_service(
-            DeleteBatch, '/delete_batch', self.handle_delete_batch)
+            DeleteBatch, '/delete_batch', self.handle_delete_batch,
+            callback_group=self.reentrant_group)
         
         # Delegate update_map service to MapManager
         self.update_map_service = self.create_service(
-            Trigger, '/update_map', self.map_manager.handle_update_map)
+            Trigger, '/update_map', self.map_manager.handle_update_map,
+            callback_group=self.reentrant_group)
         
         # Delegate clear_map service to MapManager
         self.clear_map_service = self.create_service(
-            Trigger, '/clear_map', self.map_manager.handle_clear_map)
+            Trigger, '/clear_map', self.map_manager.handle_clear_map,
+            callback_group=self.reentrant_group)
         
         # Initialize pathfinder
         grid_width = int(self.params['map']['width_mm'] / 
@@ -1071,11 +1083,17 @@ def main(args=None):
     rclpy.init(args=args)
     node = HybridAStarNode()
     
+    # Use MultiThreadedExecutor to handle multiple service requests simultaneously
+    from rclpy.executors import MultiThreadedExecutor
+    executor = MultiThreadedExecutor(num_threads=4)  # 4 threads for parallel requests
+    executor.add_node(node)
+    
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
+        executor.shutdown()
         node.destroy_node()
         rclpy.shutdown()
 

@@ -238,7 +238,7 @@ class PamiController(Node):
         self.get_logger().info(f"✓ Loaded and published {matched_count} matching PAMI strategies")
         self.get_logger().info(f"{'='*60}\n")
     
-    def start_pami(self, number: int, max_retries: int = 10):
+    def start_pami(self, number: int, max_retries: int = 3):
         """
         Send start signal to a specific PAMI robot and retry until status returns False
         
