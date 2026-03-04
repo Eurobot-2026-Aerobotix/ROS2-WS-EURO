@@ -532,12 +532,12 @@ def main(args=None):
         #pami_ctrl.load_and_publish_pami_strategies()
         
         # Spin executor briefly to initialize publishers before sending reset
-        for _ in range(10):
+        for _ in range(5):
             executor.spin_once(timeout_sec=0.01)
         
         reset_systems(pneumatic,front,back,None,strategy,True,False)
         time.sleep(2)
-
+        strategy.pathfinder.update_map()
         # Execute tasks sequentially
         # Start a thread to execute tasks one by one
         def execute_tasks_sequentially():
