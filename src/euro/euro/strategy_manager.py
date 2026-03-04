@@ -47,6 +47,8 @@ class StrategyManager(Node):
         
         # Flag to pause task loading during pathfinding
         self.is_replanning = False
+        # Task ID to prevent cross-task interference (incremented on each replanning)
+        self.current_task_id = 0
         # Global goal position storage
         self.global_pos_x = None
         self.global_pos_y = None
@@ -87,6 +89,87 @@ class StrategyManager(Node):
         self.latest_robot_pose_beacon = msg
         #self.get_logger().info(f"aruco mapper callback")
         self.latest_robot_pose_beacon_count += 1
+    
+    def create_path_task(self, stm32_commands, goal_angle, end_game=False):
+        """Create a dynamic task structure from path commands.
+        
+        Args:
+            stm32_commands: List of command strings from pathfinder
+            goal_angle: Final orientation angle
+            end_game: Whether this is for end game
+        
+        Returns:
+            dict: Task structure compatible with load_task_to_queues()
+        """
+        sequence = []
+        last_cmd = None
+        
+        # Add movement commands
+        for cmd in stm32_commands:
+            values = cmd.replace('go_to(', '').replace(')', '').split(',')
+            x = float(values[0].strip())
+            y = float(values[1].strip())
+            speed = int(values[2].strip())
+            
+            if cmd != last_cmd:
+                if self.last_task_device == "ESP_back":
+                    sequence.append({
+                        'device': 'STM',
+                        'command': 'go_to_backwards',
+                        'params': [x, y, 1100.0, {'from_pathfinding': True}],
+                        'wait': False
+                    })
+                else:
+                    sequence.append({
+                        'device': 'STM',
+                        'command': 'go_to',
+                        'params': [x, y, 1100.0, {'from_pathfinding': True}],
+                        'wait': False
+                    })
+            last_cmd = cmd
+        
+        # Add final orientation or position command
+        if goal_angle is not None and not end_game:
+            if self.last_task_command == 'put_down' and found_goal_batch:
+                sequence.append({
+                    'device': 'STM',
+                    'command': 'orientate',
+                    'params': [goal_angle, 0.0],
+                    'wait': False
+                })
+            elif self.last_task_command == 'pick_up' and found_goal_batch:
+                if self.last_task_device == 'ESP_front':
+                    sequence.append({
+                        'device': 'STM',
+                        'command': 'go_to',
+                        'params': [self.global_pos_x, self.global_pos_y, 1100.0, 1.0, {'from_pathfinding': True}],
+                        'wait': False
+                    })
+                elif self.last_task_device == 'ESP_back':
+                    sequence.append({
+                        'device': 'STM',
+                        'command': 'go_to_backwards',
+                        'params': [self.global_pos_x, self.global_pos_y, 1100.0, 1.0, {'from_pathfinding': True}],
+                        'wait': False
+                    })
+        
+        # Add final ESP action with wait=True
+        if self.last_task_command and self.last_task_device:
+            sequence.append({
+                'device': self.last_task_device,
+                'command': self.last_task_command,
+                'params': {},
+                'wait': True
+            })
+        
+        # Build task structure
+        task = {
+            'name': '__dynamic_path_task__',
+            'sequence': sequence,
+            'global_goal': None
+        }
+        
+        return task
     def path(self, end_game=False, prepare=False):
         """Plan path from current position to stored goal.
         
@@ -121,12 +204,11 @@ class StrategyManager(Node):
             return success
         
         else:
-            # EXECUTE MODE: Load prepared path to queue (or generate if none prepared)
-            self.get_logger().info(f"🚀 Loading path to queue for execution")
+            # EXECUTE MODE: Create and execute path as a dynamic task
+            self.get_logger().info(f"🚀 Creating dynamic path task for execution")
             
-            # Set flag to prevent task loading during replanning
+            # Set flag to prevent other task loading during replanning
             self.is_replanning = True
-            
             
             # Check if we have a prepared path
             if self.prepared_commands:
@@ -143,62 +225,29 @@ class StrategyManager(Node):
                 stm32_commands, success = self.pathfinder.path()
                 goal_angle = self.pathfinder.goal_angle if success else None
             
-            # Load commands to queue
             if success:
-                # Clear the STM32 queue
+                # Create dynamic task from path commands
+                path_task = self.create_path_task(stm32_commands, goal_angle, end_game)
+                
+                # Clear queues and reset counters before loading new task
                 self.queues['STM'].clear()
-                executor_module.SYSTEMS_IDLE_COUNT=0
-                # Process commands and add to queue
-                last_cmd = None
-                for cmd in stm32_commands:
-                    values = cmd.replace('go_to(', '').replace(')', '').split(',')
-                    x = float(values[0].strip())
-                    y = float(values[1].strip())
-                    speed = int(values[2].strip())
-                    if cmd != last_cmd:
-                        if self.last_task_device=="ESP_back":
-                            self.get_logger().info(f"go_to_backwards: x={x}, y={y}")
-                            self.queues['STM'].append({
-                                'command': 'go_to_backwards',
-                                'params': [x, y, 1100.0, {'from_pathfinding': True}],  # Mark as from pathfinding
-                                'wait': False
-                            })
-                        else:
-                            self.get_logger().info(f"go_to: x={x}, y={y}")
-                            self.queues['STM'].append({
-                                'command': 'go_to',
-                                'params': [x, y, 1100.0, {'from_pathfinding': True}],  # Mark as from pathfinding
-                                'wait': False
-                            })
-
-                    last_cmd = cmd
-                    
-                if success and goal_angle is not None and not end_game:
-                    self.queues['STM'].append({
-                        'command': 'orientate',
-                        'params': [goal_angle, 0.0],  # List format: [angle, is_radian]
-                    })
-                    if self.last_task_command=='pick_up' and found_goal_batch:
-                        if self.last_task_device == 'ESP_front' :
-                            self.queues['STM'].append({
-                                'command': 'go_to',
-                                'params': [self.global_pos_x, self.global_pos_y, 1100.0, 1.0, {'from_pathfinding': True}],  # Mark as from pathfinding
-                                'wait': False
-                            })
-                            self.get_logger().info(f"Added go_to command with global position: x={self.global_pos_x}, y={self.global_pos_y} (last command after pathfinding )")
-                        elif self.last_task_device == 'ESP_back' :
-                            self.queues['STM'].append({
-                                'command': 'go_to_backwards',
-                                'params': [self.global_pos_x, self.global_pos_y, 1100.0, 1.0, {'from_pathfinding': True}],  # Mark as from pathfinding
-                                'wait': False
-                            })
-                            
-                n=len((self.queues["STM"]))
-                executor_module.SYSTEMS_IDLE_COUNT=0
-                self.get_logger().info(f"✅ Path loaded to queue! {len(self.queues['STM'])} commands ready for execution")
-                # Resume task execution
+                self.queues['ESP_front'].clear()
+                self.queues['ESP_back'].clear()
+                executor_module.SYSTEMS_IDLE_COUNT = 0
+                
+                self.get_logger().info(f"✅ Dynamic task created with {len(path_task['sequence'])} commands")
+                
+                # Increment task ID to invalidate old task's wait loops
+                self.current_task_id += 1
+                task_id = self.current_task_id
+                
+                # Clear emergency and replanning flags so STM can execute new commands
+                executor_module.EMERGENCY_STOP = 0
                 executor_module.replanning = False
                 self.is_replanning = False
+                
+                # Execute the dynamic task using standard task loading
+                self.load_task_to_queues(path_task['name'], dynamic_task=path_task, task_id=task_id)
                 
             return success
     def handle_global_goal(self, x, y, angle):
@@ -254,19 +303,35 @@ class StrategyManager(Node):
         quat.w = math.cos(yaw / 2.0)
         return quat
     
-    def load_task_to_queues(self, task_name: str):
-        """Load a task's commands into device queues"""
+    def load_task_to_queues(self, task_name: str, dynamic_task=None, task_id=None):
+        """Load a task's commands into device queues.
+        
+        Args:
+            task_name: Name of task to load
+            dynamic_task: Optional dynamic task dict (bypasses task lookup)
+            task_id: Task ID for dynamic tasks (prevents old task interference)
+        """
         # Find the task
         global n
-        task = None
-        for t in self.tasks:
-            if t['name'] == task_name:
-                task = t
-                break
         
-        if not task:
-            self.get_logger().error(f"Task '{task_name}' not found!")
-            return False
+        # Capture task ID at start (for wait loop validation)
+        my_task_id = task_id if task_id else self.current_task_id
+        
+        if dynamic_task:
+            # Use provided dynamic task
+            task = dynamic_task
+            self.get_logger().info(f"🔧 Loading dynamic task: {task_name} (ID={my_task_id})")
+        else:
+            # Search in loaded tasks
+            task = None
+            for t in self.tasks:
+                if t['name'] == task_name:
+                    task = t
+                    break
+            
+            if not task:
+                self.get_logger().error(f"Task '{task_name}' not found!")
+                return False
         
         # Iterate through sequence and add to queues
         for idx, cmd in enumerate(task['sequence']):
@@ -291,6 +356,10 @@ class StrategyManager(Node):
                         self.get_logger().info(f"      ⏳ Waiting for dependencies...")
                         if(device == "STM"):
                             while not executor_module.ESP_FRONT_IDLE or not executor_module.ESP_BACK_IDLE:
+                                # Exit if this task becomes obsolete (superseded by new task)
+                                if my_task_id != self.current_task_id:
+                                    self.get_logger().info(f"⚠️ Task obsolete (my_id={my_task_id}, current_id={self.current_task_id}) - exiting ESP wait loop")
+                                    return True
                                 time.sleep(0.1)
                         if(device == "ESP_front" or device == "ESP_back"):
                             executor_module.SYSTEMS_IDLE_COUNT=0
@@ -301,7 +370,12 @@ class StrategyManager(Node):
                             # Track if prepare command has been added
                             prepare_added = False
                             
-                            while executor_module.SYSTEMS_IDLE_COUNT !=n :
+                            while executor_module.SYSTEMS_IDLE_COUNT != n:
+                                # Exit if this task becomes obsolete (superseded by new task)
+                                if my_task_id != self.current_task_id:
+                                    self.get_logger().info(f"⚠️ Task obsolete (my_id={my_task_id}, current_id={self.current_task_id}) - exiting STM wait loop")
+                                    return True
+                                
                                 # Add prepare command when on second-to-last STM command
                                 if not prepare_added and executor_module.SYSTEMS_IDLE_COUNT == n-1:
                                     prepare_cmd = {
