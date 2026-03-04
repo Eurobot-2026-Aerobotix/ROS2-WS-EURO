@@ -277,21 +277,6 @@ class StrategyManager(Node):
             if not self.end_game:
                 self.get_logger().info(f"⚙️  [{idx+1}/{len(task['sequence'])}] {device} -> {command}")
                 executor_module.SYSTEMS_IDLE_COUNT=0
-                # Check if next command is pick_up for ESP_front or ESP_back
-                if idx + 1 < len(task['sequence']):
-                    next_cmd = task['sequence'][idx + 1]
-                    next_device = next_cmd.get('device')
-                    next_command = next_cmd.get('command')
-                    
-                    if next_command in ['pick_up', 'put_down'] and next_device in ['ESP_front', 'ESP_back']:
-                        prepare_cmd = {
-                            'device': next_device,
-                            'command': 'prepare',
-                            'params': {'action': next_command},
-                            'wait': False
-                        }
-                        self.queues[next_device].append(prepare_cmd)
-                        self.get_logger().info(f"      🔧 Adding prepare command for {next_device} with action: {next_command}")
 
                 # Add command to device queue
                 if device in self.queues:
@@ -312,7 +297,22 @@ class StrategyManager(Node):
                             n=len((self.queues["STM"]))
                             if executor_module.IDLE_FOR_SYSTEMS and not executor_module.IDLE:
                                 executor_module.SYSTEMS_IDLE_COUNT=1
+                            
+                            # Track if prepare command has been added
+                            prepare_added = False
+                            
                             while executor_module.SYSTEMS_IDLE_COUNT !=n :
+                                # Add prepare command when on second-to-last STM command
+                                if not prepare_added and executor_module.SYSTEMS_IDLE_COUNT == n-1:
+                                    prepare_cmd = {
+                                        'command': 'prepare',
+                                        'params': {'action': command},
+                                        'wait': False
+                                    }
+                                    self.queues[device].append(prepare_cmd)
+                                    self.get_logger().info(f"      🔧 Adding prepare command for {device} with action: {command} (STM at {n-1}/{n})")
+                                    prepare_added = True
+                                
                                 self.get_logger().debug(f"Waiting for STM commands to be sent... STM queue size: {n}, SYSTEMS_IDLE_COUNT: {executor_module.SYSTEMS_IDLE_COUNT}")
                                 time.sleep(0.1)
                     if device =="STM" and command =="set_position":

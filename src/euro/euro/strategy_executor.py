@@ -190,9 +190,9 @@ def execute_prepared_path(strategy, lidar):
             # The new command will set its own target when executed
             # NOTE: Don't set replanning=False here - let main loop handle it after command completes
             last_stm_command = "replanned"
-            SYSTEMS_IDLE_COUNT = 0
-            IDLE = True
-            IDLE_FOR_SYSTEMS = True
+            #SYSTEMS_IDLE_COUNT = 0
+            #IDLE = True
+            #IDLE_FOR_SYSTEMS = True
             PATH_PREPARED = False
             
             # Clear lidar's replanning request flag to prevent double-trigger
@@ -215,9 +215,9 @@ def execute_prepared_path(strategy, lidar):
                 # NOTE: Don't clear lidar target - let new command set its own target
                 # Don't set replanning=False here - let main loop handle it
                 last_stm_command = "replanned"
-                SYSTEMS_IDLE_COUNT = 0
-                IDLE = True
-                IDLE_FOR_SYSTEMS = True
+                #SYSTEMS_IDLE_COUNT = 0
+                #IDLE = True
+                #IDLE_FOR_SYSTEMS = True
                 PATH_PREPARED = False
                 
                 # Clear lidar's replanning request flag
@@ -278,8 +278,7 @@ def robot_status(strategy, stm32, lidar):
         else:
             # Log periodically when robot is idle to confirm the thread is running
             if status_loop_count % 100 == 0:  # Every 10 seconds
-                strategy.get_logger().info(f"✓ Robot status monitor: IDLE={IDLE}, EMERGENCY_STOP={EMERGENCY_STOP}")
-        
+                strategy.get_logger().info(f"✓ Robot status monitor: IDLE={IDLE}, EMERGENCY_STOP={EMERGENCY_STOP}")        
         time.sleep(0.1)  # 100ms
 
 def lidar_status(strategy, stm32, lidar, round_timer):
