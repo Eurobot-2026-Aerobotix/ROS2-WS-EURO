@@ -66,7 +66,7 @@ class StrategyManager(Node):
         # Create Round timer instance
         from euro.strategy_executor import Round
         self.round = Round()
-        
+        self.lidar=None
         self.create_subscription(
             Vector3,
             '/robot_pose_raw',
@@ -241,8 +241,13 @@ class StrategyManager(Node):
                 self.current_task_id += 1
                 task_id = self.current_task_id
                 
-                # Clear emergency and replanning flags so STM can execute new commands
-                executor_module.EMERGENCY_STOP = 0
+                # Clear old lidar target so emergency can clear
+                # New commands will set their own targets when executed
+                self.lidar.clear_goto_target()
+                self.lidar.clear_on = True
+                self.get_logger().info("🎯 Cleared old lidar target for replanning - emergency should clear")
+                
+                # Reset replanning flags (don't touch EMERGENCY_STOP - it's controlled by lidar)
                 executor_module.replanning = False
                 self.is_replanning = False
                 
@@ -478,6 +483,9 @@ def main(args=None):
     lidar = Lidar()
     # Create strategy manager
     strategy = StrategyManager()
+    
+    # Store lidar reference in strategy for replanning
+    strategy.lidar = lidar
    
     front= FrontSystemsController()
     back= BackSystemsController()
