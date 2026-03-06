@@ -315,7 +315,6 @@ class StrategyManager(Node):
                                     prepare_added = True
                                 
                                 self.get_logger().debug(f"Waiting for STM commands to be sent... STM queue size: {n}, SYSTEMS_IDLE_COUNT: {executor_module.SYSTEMS_IDLE_COUNT}")
- empty"""
         for queue in self.queues.values():
             if len(queue) > 0:
                 return False
