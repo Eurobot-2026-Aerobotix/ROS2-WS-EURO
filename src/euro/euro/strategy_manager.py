@@ -358,7 +358,7 @@ def reset_systems(pneumatic_controller,front_controller,back_controller,stm32_co
             if xd:
                 stm32_controller.stop(timeout=2.0)
                 time.sleep(0.5)
-            #stm32_controller.reset(timeout=2.0)
+                stm32_controller.reset(timeout=2.0)
         
         # Reset pneumatic and ESP controllers
         pneumatic_controller.front(16)
