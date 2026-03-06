@@ -29,6 +29,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/ComputePath.srv"
   "srv/GetBatchColorPattern.srv"
   "srv/DeleteBatch.srv"
+  "srv/GetActiveBatches.srv"
   DEPENDENCIES std_msgs geometry_msgs nav_msgs builtin_interfaces aruco_mapper_msgs
 )
 

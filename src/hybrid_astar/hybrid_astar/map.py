@@ -1306,6 +1306,58 @@ class MapManager:
             enemy_count = sum(1 for v in self.obstacle_sources.values() if v == 'enemy')
             return {'fx': fx_count, 'sx': sx_count, 'enemy': enemy_count}
     
+    def get_active_batches_info(self) -> Dict[str, list]:
+        """
+        Get information about all active batches
+        
+        Returns:
+            Dictionary with arrays for each field:
+            - known_ids: List of batch known_ids (e.g., 's1', 'f_batch_1')
+            - batch_types: List of batch types ('fx', 'sx', 'gx')
+            - member_counts: List of member counts
+            - directions: List of directions ('horizontal', 'vertical', or '')
+            - centers: List of Point objects (batch centers)
+            - qualities: List of quality indicators (all 1 for now)
+        """
+        with self.batches_lock:
+            known_ids = []
+            batch_types = []
+            member_counts = []
+            directions = []
+            centers = []
+            qualities = []
+            
+            # Process FX batches
+            for known_id, batch in self.batches_fx.items():
+                # Only include active batches (not manually deleted)
+                if known_id not in self.deleted_batch_ids:
+                    known_ids.append(known_id)
+                    batch_types.append('fx')
+                    member_counts.append(len(batch.members) if batch.members else 0)
+                    directions.append(batch.direction if batch.direction else '')
+                    centers.append(batch.center)
+                    qualities.append(1)  # Always 1 for now
+            
+            # Process SX batches
+            for known_id, batch in self.batches_sx.items():
+                # Only include active batches (not manually deleted)
+                if known_id not in self.deleted_batch_ids:
+                    known_ids.append(known_id)
+                    batch_types.append('sx')
+                    member_counts.append(len(batch.members) if batch.members else 0)
+                    directions.append(batch.direction if batch.direction else '')
+                    centers.append(batch.center)
+                    qualities.append(1)  # Always 1 for now
+            
+            return {
+                'known_ids': known_ids,
+                'batch_types': batch_types,
+                'member_counts': member_counts,
+                'directions': directions,
+                'centers': centers,
+                'qualities': qualities
+            }
+    
     @staticmethod
     def parse_pattern_colors(pattern_str: str) -> List[str]:
         """Parse pattern string (e.g., 'ybyb', 'yybb') into color list"""

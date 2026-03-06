@@ -6,7 +6,7 @@ from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped, Point,Vector3
 from nav_msgs.msg import Path
 
-from hybrid_astar.srv import ComputePath, GetBatchColorPattern, DeleteBatch
+from hybrid_astar.srv import ComputePath, GetBatchColorPattern, DeleteBatch, GetActiveBatches
 from std_srvs.srv import Trigger
 
 class PathfinderClient(Node):
@@ -47,6 +47,11 @@ class PathfinderClient(Node):
         self.clear_map_client = self.create_client(
             Trigger,
             '/clear_map'
+        )
+        
+        self.get_active_batches_client = self.create_client(
+            GetActiveBatches,
+            '/pathfinder/get_active_batches'
         )
 
         # Don't block on wait_for_service - it will timeout if service isn't available
@@ -456,6 +461,56 @@ class PathfinderClient(Node):
         else:
             self.get_logger().warning(f'⚠️  Failed to delete batch "{known_id}": {response.message}')
             return False
+    
+    def get_active_batches(self):
+        """
+        Get information about all active batches
+        
+        Returns:
+            Dictionary with batch information arrays or None on error:
+            {
+                'known_ids': List[str],
+                'batch_types': List[str],  # 'fx', 'sx', 'gx'
+                'member_counts': List[int],
+                'directions': List[str],  # 'horizontal', 'vertical', or ''
+                'centers': List[Point],
+                'qualities': List[int]
+            }
+        """
+        request = GetActiveBatches.Request()
+        
+        future = self.get_active_batches_client.call_async(request)
+        
+        # Wait for future to complete with proper spinning
+        rclpy.spin_until_future_complete(self, future, timeout_sec=5.0)
+        
+        if not future.done():
+            self.get_logger().error(f'❌ Get active batches service call timed out after 5s')
+            return None
+        
+        if not future.result():
+            self.get_logger().error('❌ Get active batches service call failed')
+            return None
+        
+        response = future.result()
+        
+        # Convert response to dictionary
+        batch_info = {
+            'known_ids': list(response.known_ids),
+            'batch_types': list(response.batch_types),
+            'member_counts': list(response.member_counts),
+            'directions': list(response.directions),
+            'centers': list(response.centers),
+            'qualities': list(response.qualities)
+        }
+        
+        self.get_logger().info(
+            f'📊 Retrieved {len(batch_info["known_ids"])} active batches: '
+            f'FX={batch_info["batch_types"].count("fx")}, '
+            f'SX={batch_info["batch_types"].count("sx")}'
+        )
+        
+        return batch_info
 
 
 def main(args=None):

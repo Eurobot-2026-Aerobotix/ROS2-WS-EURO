@@ -39,7 +39,7 @@ from visualization_msgs.msg import Marker, MarkerArray
 from hybrid_astar.msg import Obstacle, ObstacleArray, ColorCommand
 from aruco_mapper_msgs.msg import ArucoMapperState, Batch, BatchMember
 from aruco_mapper_msgs.srv import GetStableBatches
-from hybrid_astar.srv import ComputePath, GetBatchColorPattern, DeleteBatch, DeleteBatch
+from hybrid_astar.srv import ComputePath, GetBatchColorPattern, DeleteBatch, DeleteBatch, GetActiveBatches
 
 # Import the pathfinding algorithm
 from hybrid_astar.hybrid_astar import HybridAStarPathfinder
@@ -121,6 +121,11 @@ class HybridAStarNode(Node):
         # Delegate clear_map service to MapManager
         self.clear_map_service = self.create_service(
             Trigger, '/clear_map', self.map_manager.handle_clear_map,
+            callback_group=self.reentrant_group)
+        
+        # Get active batches service
+        self.get_active_batches_service = self.create_service(
+            GetActiveBatches, '/pathfinder/get_active_batches', self.handle_get_active_batches,
             callback_group=self.reentrant_group)
         
         # Initialize pathfinder
@@ -1033,6 +1038,40 @@ class HybridAStarNode(Node):
             f"center=({batch.center.x:.1f}, {batch.center.y:.1f})"
         )
 
+        return response
+    
+    def handle_get_active_batches(self, request: GetActiveBatches.Request, response: GetActiveBatches.Response) -> GetActiveBatches.Response:
+        """
+        Service handler: Get information about all active batches
+        Returns arrays of batch information (known_id, batch_type, member_count, direction, center, quality)
+        """
+        try:
+            # Get batch info from map manager
+            batch_info = self.map_manager.get_active_batches_info()
+            
+            # Populate response arrays
+            response.known_ids = batch_info['known_ids']
+            response.batch_types = batch_info['batch_types']
+            response.member_counts = batch_info['member_counts']
+            response.directions = batch_info['directions']
+            response.centers = batch_info['centers']
+            response.qualities = batch_info['qualities']
+            
+            self.get_logger().info(
+                f"📊 Active batches query: {len(response.known_ids)} batches "
+                f"(FX: {response.batch_types.count('fx')}, SX: {response.batch_types.count('sx')})"
+            )
+            
+        except Exception as e:
+            self.get_logger().error(f"❌ Error getting active batches: {e}")
+            # Return empty arrays on error
+            response.known_ids = []
+            response.batch_types = []
+            response.member_counts = []
+            response.directions = []
+            response.centers = []
+            response.qualities = []
+        
         return response
     
     def handle_delete_batch(self, request, response):
