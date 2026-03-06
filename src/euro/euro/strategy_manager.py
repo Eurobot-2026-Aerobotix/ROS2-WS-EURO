@@ -47,6 +47,11 @@ class StrategyManager(Node):
         
         # Flag to pause task loading during pathfinding
         self.is_replanning = False
+        # Flag to interrupt waiting loops (for enemy detection handling)
+        self.interrupt_wait = False
+        # Flags to track which wait loops were interrupted
+        self.load_task_to_queues_ended = False
+        self.stm32_task_wait_ended = False
         # Global goal position storage
         self.global_pos_x = None
         self.global_pos_y = None
@@ -292,6 +297,10 @@ class StrategyManager(Node):
                         self.get_logger().info(f"      ⏳ Waiting for dependencies...")
                         if(device == "STM"):
                             while not executor_module.ESP_FRONT_IDLE or not executor_module.ESP_BACK_IDLE:
+                                if self.interrupt_wait:
+                                    self.get_logger().warning("🛑 ESP wait interrupted")
+                                    self.load_task_to_queues_ended = True
+                                    return False
                                 time.sleep(0.1)
                         if(device == "ESP_front" or device == "ESP_back"):
                             executor_module.SYSTEMS_IDLE_COUNT=0
@@ -303,6 +312,12 @@ class StrategyManager(Node):
                             prepare_added = False
                             
                             while executor_module.SYSTEMS_IDLE_COUNT !=n :
+                                # Check for interrupt
+                                if self.interrupt_wait:
+                                    self.get_logger().warning("🛑 SYSTEMS_IDLE_COUNT wait interrupted")
+                                    self.load_task_to_queues_ended = True
+                                    return False
+                                
                                 # Add prepare command when on second-to-last STM command
                                 if not prepare_added and executor_module.SYSTEMS_IDLE_COUNT == n-1:
                                     prepare_cmd = {
@@ -315,13 +330,14 @@ class StrategyManager(Node):
                                     prepare_added = True
                                 
                                 self.get_logger().debug(f"Waiting for STM commands to be sent... STM queue size: {n}, SYSTEMS_IDLE_COUNT: {executor_module.SYSTEMS_IDLE_COUNT}")
+                                time.sleep(0.1)
         for queue in self.queues.values():
             if len(queue) > 0:
                 return False
         return True
     
     def wait_for_all_queues_empty(self):
-        """Wait until all device queues are empty (unless replanning)"""
+        """Wait until all device queues are empty (unless replanning or interrupted)"""
         
         while (not (self.are_all_queues_empty() or(  executor_module.ESP_FRONT_IDLE==True and executor_module.ESP_BACK_IDLE==True ))) or (not executor_module.IDLE) or executor_module.WAITING_TIRETTE or len(self.queues["STM"])!=0 or len(self.queues["RASP_PI"])!=0 or executor_module.replanning or self.end_game==True:
             # Check if shutdown is requested
@@ -342,6 +358,20 @@ class StrategyManager(Node):
     def display_queue_contents(self):
         """Display the full contents of all queues with parameters"""
         pass
+    
+    def interrupt_waiting(self):
+        """Set flag to interrupt all waiting loops.
+        This allows stopping wait_for_all_queues_empty() and other blocking operations
+        to handle emergency situations like enemy detection."""
+        self.interrupt_wait = True
+        self.get_logger().info("🛑 Wait interrupt triggered - will exit waiting loops")
+    
+    def clear_interrupt(self):
+        """Clear the interrupt flag after handling emergency."""
+        self.interrupt_wait = False
+        self.load_task_to_queues_ended = False
+        self.stm32_task_wait_ended = False
+        self.get_logger().info("✅ Wait interrupt cleared")
 
 def reset_systems(pneumatic_controller,front_controller,back_controller,stm32_controller=None,strategy=None,immediate=False,xd=True):
     """Reset all systems - can queue or execute immediately"""

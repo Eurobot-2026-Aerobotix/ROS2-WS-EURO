@@ -519,6 +519,12 @@ def stm32_task(strategy, stm32,lidar):
             while ((not IDLE and not SHUTDOWN_REQUESTED) or (EMERGENCY_STOP) or last_stm_command=="emergency") and last_stm_command != "replanned":
                 loop_iteration += 1
                 
+                # Check for interrupt from strategy manager
+                if strategy.interrupt_wait:
+                    strategy.get_logger().warning("🛑 STM32 command wait interrupted - exiting loop")
+                    strategy.stm32_task_wait_ended = True
+                    break
+                
                 # Detect if stuck in emergency state (IDLE + EMERGENCY + was_in_emergency for too long)
                 if IDLE and EMERGENCY_STOP and was_in_emergency:
                     emergency_stuck_iterations += 1
