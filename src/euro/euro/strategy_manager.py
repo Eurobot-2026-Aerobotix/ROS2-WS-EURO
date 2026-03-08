@@ -278,7 +278,6 @@ class StrategyManager(Node):
                 self.get_logger().info(f"⚙️  [{idx+1}/{len(task['sequence'])}] {device} -> {command}")
                 executor_module.SYSTEMS_IDLE_COUNT=0
 
-
                 # Add command to device queue
                 if device in self.queues:
                     if(device == "ESP_front" ) :
@@ -315,10 +314,25 @@ class StrategyManager(Node):
                                     prepare_added = True
                                 
                                 self.get_logger().debug(f"Waiting for STM commands to be sent... STM queue size: {n}, SYSTEMS_IDLE_COUNT: {executor_module.SYSTEMS_IDLE_COUNT}")
+                                time.sleep(0.1)
+                    if device =="STM" and command =="set_position":
+                        self.queues["RASP_PI"].append(cmd)
+                    else:
+                        if device =="RASP_PI" and command=="Wait for manual start":
+                            executor_module.WAITING_TIRETTE=True
+                        if not self.end_game:
+                            self.queues[device].append(cmd)
+                    
+                else:
+                    self.get_logger().warn(f"      ⚠ Unknown device: {device}")
+        
+        return True
+    def are_all_queues_empty(self) -> bool:
+        """Check if all device queues are empty"""
         for queue in self.queues.values():
             if len(queue) > 0:
                 return False
-        return True
+            return True
     
     def wait_for_all_queues_empty(self):
         """Wait until all device queues are empty (unless replanning)"""
@@ -367,8 +381,8 @@ def reset_systems(pneumatic_controller,front_controller,back_controller,stm32_co
         back_controller.kabech(0)
         front_controller.dawer(0)
         back_controller.dawer(0)
-        front_controller.n20(0)
-        back_controller.n20(0)
+        front_controller.n20(20)
+        back_controller.n20(20)
         # Allow time for messages to be sent
         time.sleep(0.2)
     
