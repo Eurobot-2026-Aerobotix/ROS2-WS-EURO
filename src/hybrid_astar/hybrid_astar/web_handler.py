@@ -508,20 +508,6 @@ class WebHandlerNode(Node):
             self.get_logger().error(f"❌ Error processing batches: {e}")
             import traceback
             self.get_logger().error(traceback.format_exc())
-            response.stable_state = aruco_state
-            self.get_logger().info(f"✅ Returning {len(aruco_state.batches)} batches to caller")
-            return response
-            
-        except requests.RequestException as e:
-            self.get_logger().error(f"❌ Error fetching batches from web server: {e}")
-            response.stable_state = ArucoMapperState()
-            response.stable_state.stamp = self.get_clock().now().to_msg()
-            response.stable_state.initialized = False
-            return response
-        except Exception as e:
-            self.get_logger().error(f"❌ Error processing batches: {e}")
-            import traceback
-            self.get_logger().error(traceback.format_exc())
             response.stable_state = ArucoMapperState()
             response.stable_state.stamp = self.get_clock().now().to_msg()
             response.stable_state.initialized = False
