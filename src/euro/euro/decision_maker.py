@@ -146,7 +146,7 @@ class DecisionMaker:
         Returns:
             List of pickup pose dictionaries or None if not found
         """
-        return PICKUP_POSES.get(known_id)
+        return PICKUP_POSES.get(known_id.upper())
     
     def choose_best_pickup_pose(self, known_id: str) -> Optional[Dict]:
         """
@@ -424,7 +424,7 @@ class DecisionMaker:
                 task_sequence.append({
                     'device': 'STM',
                     'command': stm32_cmd,
-                    'params': [x, y, 1100.0, {'from_pathfinding': True}],
+                    'params': [x * 1000, y * 1000, 1100.0, {'from_pathfinding': True}],
                     'wait': False
                 })
             last_cmd = cmd
@@ -445,21 +445,21 @@ class DecisionMaker:
                 task_sequence.append({
                     'device': 'STM',
                     'command': 'go_to',
-                    'params': [pickup_x_mm / 1000.0, pickup_y_mm / 1000.0, 1100.0, 1.0, {'from_pathfinding': True}],
+                    'params': [pickup_x_mm, pickup_y_mm, 1100.0, 1.0, {'from_pathfinding': True}],
                     'wait': False
                 })
                 self.strategy.get_logger().info(
-                    f'📍 Added final go_to after orientate: x={pickup_x_mm/1000.0:.3f}m, y={pickup_y_mm/1000.0:.3f}m'
+                    f'📍 Added final go_to after orientate: x={pickup_x_mm:.0f}mm, y={pickup_y_mm:.0f}mm'
                 )
             elif device == 'ESP_back':
                 task_sequence.append({
                     'device': 'STM',
                     'command': 'go_to_backwards',
-                    'params': [pickup_x_mm / 1000.0, pickup_y_mm / 1000.0, 1100.0, 1.0, {'from_pathfinding': True}],
+                    'params': [pickup_x_mm, pickup_y_mm, 1100.0, 1.0, {'from_pathfinding': True}],
                     'wait': False
                 })
                 self.strategy.get_logger().info(
-                    f'📍 Added final go_to_backwards after orientate: x={pickup_x_mm/1000.0:.3f}m, y={pickup_y_mm/1000.0:.3f}m'
+                    f'📍 Added final go_to_backwards after orientate: x={pickup_x_mm:.0f}mm, y={pickup_y_mm:.0f}mm'
                 )
         
         # Add ESP pick_up command at the end
