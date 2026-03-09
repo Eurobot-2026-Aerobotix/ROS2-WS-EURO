@@ -241,12 +241,14 @@ class DecisionMaker:
         Get pickup poses for a specific batch by known_id
         
         Args:
-            known_id: Batch known_id (e.g., 'S1', 'S2', etc.)
+            known_id: Batch known_id (e.g., 'S1', 'S2', 'S1_WEB', etc.)
         
         Returns:
             List of pickup pose dictionaries or None if not found
         """
-        return PICKUP_POSES.get(known_id.upper())
+        # Strip _WEB suffix for simulation batches (S1_WEB → S1)
+        base_id = known_id.upper().replace('_WEB', '')
+        return PICKUP_POSES.get(base_id)
     
     def choose_best_pickup_pose(self, known_id: str) -> Optional[Dict]:
         """

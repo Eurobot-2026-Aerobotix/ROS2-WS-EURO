@@ -24,13 +24,183 @@ import math
 import json
 import requests
 from typing import List, Dict, Optional
+import sys
+import os
 
 # ROS2 messages
 from std_msgs.msg import String
 from geometry_msgs.msg import PoseStamped, Quaternion, Point
 from aruco_mapper_msgs.msg import ArucoMapperState, Batch, BatchMember
 from aruco_mapper_msgs.srv import GetStableBatches
-from hybrid_astar.srv import ComputePath, GetBatchColorPattern
+from hybrid_astar.srv import ComputePath, GetBatchColorPattern, GetActiveBatches
+
+# Import DecisionMaker from euro package
+try:
+    from euro.decision_maker import DecisionMaker
+except ImportError:
+    # Fallback: try adding to path if import fails (development mode)
+    import sys
+    import os
+    euro_path = os.path.join(os.path.dirname(__file__), '../../../euro/euro')
+    if os.path.exists(euro_path):
+        sys.path.insert(0, euro_path)
+    from decision_maker import DecisionMaker
+
+
+class RobotPose:
+    """Simple robot pose container for DecisionMaker"""
+    def __init__(self, x=0.0, y=0.0, z=0.0):
+        self.x = x  # meters
+        self.y = y  # meters
+        self.z = z  # radians or degrees
+
+
+class PathfinderAdapter:
+    """Adapter to make WebHandler compatible with DecisionMaker's pathfinder interface"""
+    def __init__(self, web_handler, callback_group=None):
+        self.web_handler = web_handler
+        self.goal_angle = None
+        
+        # Create service clients with callback group for concurrent execution
+        self.get_active_batches_client = web_handler.create_client(
+            GetActiveBatches,
+            '/pathfinder/get_active_batches',
+            callback_group=callback_group
+        )
+        
+        self.compute_path_client = web_handler.create_client(
+            ComputePath,
+            '/compute_path',
+            callback_group=callback_group
+        )
+        
+    def set_goal(self, x, y, theta):
+        """Set goal pose (x, y in meters, theta in radians)"""
+        self.web_handler.goal_pose = {
+            'x_mm': x * 1000.0,
+            'y_mm': y * 1000.0,
+            'theta_deg': math.degrees(theta)
+        }
+        self.goal_angle = theta
+        
+    def path(self):
+        """Generate path - returns (stm32_commands, success)"""
+        if not self.compute_path_client.service_is_ready():
+            self.web_handler.get_logger().error('❌ /compute_path service not ready')
+            return [], False
+        
+        # Get start pose from web_handler
+        if not self.web_handler.start_pose:
+            self.web_handler.get_logger().error('❌ Start pose not set')
+            return [], False
+        
+        if not self.web_handler.goal_pose:
+            self.web_handler.get_logger().error('❌ Goal pose not set')
+            return [], False
+        
+        try:
+            # Create service request
+            request = ComputePath.Request()
+            
+            # Start pose
+            request.start_pose = PoseStamped()
+            request.start_pose.header.frame_id = 'map'
+            request.start_pose.header.stamp = self.web_handler.get_clock().now().to_msg()
+            request.start_pose.pose.position.x = self.web_handler.mm_to_m(self.web_handler.start_pose['x_mm'])
+            request.start_pose.pose.position.y = self.web_handler.mm_to_m(self.web_handler.start_pose['y_mm'])
+            request.start_pose.pose.position.z = 0.0
+            request.start_pose.pose.orientation = self.web_handler.euler_to_quaternion(
+                self.web_handler.deg_to_rad(self.web_handler.start_pose['theta_deg'])
+            )
+            
+            # Goal pose
+            request.goal_pose = PoseStamped()
+            request.goal_pose.header.frame_id = 'map'
+            request.goal_pose.header.stamp = self.web_handler.get_clock().now().to_msg()
+            request.goal_pose.pose.position.x = self.web_handler.mm_to_m(self.web_handler.goal_pose['x_mm'])
+            request.goal_pose.pose.position.y = self.web_handler.mm_to_m(self.web_handler.goal_pose['y_mm'])
+            request.goal_pose.pose.position.z = 0.0
+            request.goal_pose.pose.orientation = self.web_handler.euler_to_quaternion(
+                self.web_handler.deg_to_rad(self.web_handler.goal_pose['theta_deg'])
+            )
+            
+            # Call service
+            future = self.compute_path_client.call_async(request)
+            
+            # Use proper spinning
+            import rclpy
+            rclpy.spin_until_future_complete(self.web_handler, future, timeout_sec=10.0)
+            
+            if not future.done():
+                self.web_handler.get_logger().error('❌ Path computation timeout')
+                return [], False
+            
+            response = future.result()
+            
+            if not response.success:
+                self.web_handler.get_logger().error(f'❌ Path computation failed: {response.message}')
+                return [], False
+            
+            # Extract STM32 commands from response
+            stm32_commands = list(response.stm32_commands)
+            
+            self.web_handler.get_logger().info(
+                f'✅ Path computed: {response.num_waypoints} waypoints, {response.path_length_m:.2f}m'
+            )
+            
+            return stm32_commands, True
+            
+        except Exception as e:
+            self.web_handler.get_logger().error(f'❌ Error calling compute_path: {e}')
+            import traceback
+            self.web_handler.get_logger().error(traceback.format_exc())
+            return [], False
+    
+    def get_active_batches(self):
+        """
+        Get information about all active batches via ROS2 service
+        
+        Returns:
+            Dictionary with batch information arrays or None on error
+        """
+        if not self.get_active_batches_client.service_is_ready():
+            self.web_handler.get_logger().warning('⚠️ /pathfinder/get_active_batches service not ready')
+            return None
+        
+        request = GetActiveBatches.Request()
+        
+        try:
+            # Call service and spin until complete (allows executor to process)
+            future = self.get_active_batches_client.call_async(request)
+            
+            import rclpy
+            rclpy.spin_until_future_complete(self.web_handler, future, timeout_sec=5.0)
+            
+            if not future.done():
+                self.web_handler.get_logger().error('❌ Get active batches timeout')
+                return None
+            
+            response = future.result()
+            
+            # Convert response to dictionary
+            batch_info = {
+                'known_ids': list(response.known_ids),
+                'batch_types': list(response.batch_types),
+                'member_counts': list(response.member_counts),
+                'directions': list(response.directions),
+                'centers': list(response.centers),
+                'qualities': list(response.qualities)
+            }
+            
+            self.web_handler.get_logger().info(
+                f'📊 Retrieved {len(batch_info["known_ids"])} active batches'
+            )
+            
+            return batch_info
+            
+        except Exception as e:
+            self.web_handler.get_logger().error(f'❌ Error calling get_active_batches: {e}')
+            return None
 
 
 class WebHandlerNode(Node):
@@ -44,16 +214,22 @@ class WebHandlerNode(Node):
         /web/enemy_pose: Receive enemy pose from web (JSON string)
         /web/compute_path: Trigger path computation (JSON string)
         /web/get_batch_color: Query batch color pattern (JSON string)
+        /web/steal_batch: Trigger batch stealing via DecisionMaker (JSON string)
     
     Publishes:
         /aruco_mapper/state_fx: Send batches to hybrid_astar_node
         /obstacle_relative: Send enemy obstacles to hybrid_astar_node (PoseStamped)
         /web/path_result: Return path to web (JSON string)
         /web/batch_color_result: Return batch color to web (JSON string)
+        /web/steal_batch_result: Return steal batch result to web (JSON string)
     """
     
     def __init__(self):
         super().__init__('web_handler_node')
+        
+        # Create reentrant callback group for concurrent service calls
+        from rclpy.callback_groups import ReentrantCallbackGroup
+        self.reentrant_group = ReentrantCallbackGroup()
         
         # Publishers
         self.aruco_state_pub = self.create_publisher(
@@ -71,6 +247,12 @@ class WebHandlerNode(Node):
         self.batch_color_result_pub = self.create_publisher(
             String,
             '/web/batch_color_result',
+            10
+        )
+        
+        self.steal_batch_result_pub = self.create_publisher(
+            String,
+            '/web/steal_batch_result',
             10
         )
         
@@ -123,6 +305,14 @@ class WebHandlerNode(Node):
             10
         )
         
+        self.create_subscription(
+            String,
+            '/web/steal_batch',
+            self.handle_steal_batch_request,
+            10,
+            callback_group=self.reentrant_group
+        )
+        
         # Service clients
         self.path_service_client = self.create_client(
             ComputePath,
@@ -162,6 +352,13 @@ class WebHandlerNode(Node):
         self.goal_pose: Optional[Dict] = None
         self.enemy_pose: Optional[Dict] = None
         
+        # Robot pose tracking for DecisionMaker
+        self.latest_robot_pose = RobotPose()
+        
+        # Initialize DecisionMaker with reentrant callback group
+        pathfinder_adapter = PathfinderAdapter(self, callback_group=self.reentrant_group)
+        self.decision_maker = DecisionMaker(self, pathfinder_adapter)
+        
         self.get_logger().info("=" * 60)
         self.get_logger().info("🌐 Web Handler Node Ready!")
         self.get_logger().info("=" * 60)
@@ -172,6 +369,7 @@ class WebHandlerNode(Node):
         self.get_logger().info("   - /web/goal_pose")
         self.get_logger().info("   - /web/enemy_pose → /obstacle_relative")
         self.get_logger().info("   - /web/compute_path")
+        self.get_logger().info("   - /web/steal_batch (DecisionMaker)")
         self.get_logger().info("   Services:")
         self.get_logger().info("   - /aruco_mapper/get_stable_batches_web (provides batches to map)")
         self.get_logger().info("=" * 60)
@@ -409,6 +607,68 @@ class WebHandlerNode(Node):
             
         except Exception as e:
             self.get_logger().error(f"❌ Error parsing batch color request: {e}")
+    
+    def handle_steal_batch_request(self, msg: String):
+        """
+        Handle steal batch request from web
+        
+        Expected JSON: {
+            "batch_type": "fx" or "sx" or null,
+            "device": "ESP_front" or "ESP_back" or null,
+            "min_members": 1
+        }
+        """
+        try:
+            data = json.loads(msg.data)
+            batch_type = data.get('batch_type', None)
+            device = data.get('device', None)
+            min_members = data.get('min_members', 1)
+            
+            self.get_logger().info(
+                f"🎯 Steal batch requested: type={batch_type or 'any'}, "
+                f"device={device or 'auto'}, min_members={min_members}"
+            )
+            
+            # Update robot pose from start pose if available
+            if self.start_pose:
+                self.latest_robot_pose.x = self.mm_to_m(self.start_pose['x_mm'])
+                self.latest_robot_pose.y = self.mm_to_m(self.start_pose['y_mm'])
+                self.latest_robot_pose.z = self.deg_to_rad(self.start_pose['theta_deg'])
+            
+            # Call DecisionMaker to steal batch
+            task = self.decision_maker.steal_batch(
+                batch_type=batch_type,
+                device=device,
+                min_members=min_members
+            )
+            
+            if task:
+                result = {
+                    "success": True,
+                    "message": f"Batch steal task generated: {task['name']}",
+                    "task": task
+                }
+                self.get_logger().info(f"✅ Steal batch successful: {task['name']}")
+            else:
+                result = {
+                    "success": False,
+                    "message": "No available batches to steal or path generation failed",
+                    "task": None
+                }
+                self.get_logger().warning("⚠️ Steal batch failed")
+            
+            # Publish result
+            self.publish_steal_batch_result(result)
+            
+        except Exception as e:
+            self.get_logger().error(f"❌ Error handling steal batch: {e}")
+            import traceback
+            self.get_logger().error(traceback.format_exc())
+            self.publish_steal_batch_result({
+                "success": False,
+                "message": f"Error: {str(e)}",
+                "task": None
+            })
     
     # ========================================================================
     # Service Calls
@@ -678,6 +938,13 @@ class WebHandlerNode(Node):
         msg.data = json.dumps(result)
         self.batch_color_result_pub.publish(msg)
         self.get_logger().info("📤 Batch color result sent to web")
+    
+    def publish_steal_batch_result(self, result: Dict):
+        """Publish steal batch result to web dashboard"""
+        msg = String()
+        msg.data = json.dumps(result)
+        self.steal_batch_result_pub.publish(msg)
+        self.get_logger().info("📤 Steal batch result sent to web")
 
 
 def main(args=None):

@@ -491,8 +491,30 @@ class HybridAStarPathfinder:
                 continue
             closed_set.add(current_discrete)
             
-            # Expand forward only (rotate-in-place handles orientation changes)
-            for is_forward in [True]:
+            # Determine if robot should move forward or backward based on orientation to goal
+            # Calculate angle to goal from current position
+            dx_to_goal = goal_x - current_x
+            dy_to_goal = goal_y - current_y
+            angle_to_goal = math.atan2(dy_to_goal, dx_to_goal)
+            
+            # Calculate angle difference (how much robot is facing away from goal)
+            angle_diff = angle_to_goal - current_theta
+            # Normalize to [-pi, pi]
+            while angle_diff > math.pi:
+                angle_diff -= 2 * math.pi
+            while angle_diff < -math.pi:
+                angle_diff += 2 * math.pi
+            
+            # If robot is facing significantly away from goal (> 90°), allow backward movement
+            # This helps when starting at 180° from goal direction
+            allow_backward = abs(angle_diff) > math.radians(90)
+            
+            # Expand both forward and (optionally) backward
+            directions = [True]
+            if allow_backward:
+                directions.append(False)
+            
+            for is_forward in directions:
                 for new_x, new_y, new_theta, move_cost in self.get_motion_primitives(
                     current_x, current_y, current_theta, grid_resolution, is_forward
                 ):
