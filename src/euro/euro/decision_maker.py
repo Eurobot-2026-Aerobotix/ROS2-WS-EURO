@@ -20,6 +20,24 @@ from geometry_msgs.msg import Point
 import time
 
 
+def circular_angle_difference(angle1: float, angle2: float) -> float:
+    """
+    Calculate the minimum angular difference between two angles in degrees.
+    Handles wrap-around at ±180°.
+    
+    Args:
+        angle1: First angle in degrees
+        angle2: Second angle in degrees
+    
+    Returns:
+        Minimum absolute difference in degrees (0-180)
+    """
+    diff = abs(angle1 - angle2)
+    if diff > 180:
+        diff = 360 - diff
+    return diff
+
+
 # Predefined pickup poses for SX batches (positions in mm)
 PICKUP_POSES = {
     'S1': [{'x': 800, 'y': 400, 'theta': [90, -90]}],
@@ -87,7 +105,8 @@ class DecisionMaker:
     
     def get_available_device(self) -> Optional[str]:
         """
-        Get an available device (front or back) for pickup
+        Get an available device (front or back) for pickup.
+        Simple fallback when no angle optimization is possible.
         
         Returns:
             'ESP_front' or 'ESP_back' if available, None if both full
@@ -99,6 +118,87 @@ class DecisionMaker:
         else:
             self.strategy.get_logger().warning("⚠️ Both front and back pickers are full!")
             return None
+    
+    def get_optimal_device_from_path(self, stm32_commands: List[str]) -> Optional[str]:
+        """
+        Select the optimal device (front or back) based on actual path trajectory.
+        Analyzes the initial direction of movement to minimize rotations.
+        
+        Args:
+            stm32_commands: List of path waypoint commands from pathfinder
+        
+        Returns:
+            'ESP_front', 'ESP_back', or None if both full
+        """
+        # Get current robot pose
+        robot_pose = self.strategy.latest_robot_pose
+        if robot_pose is None:
+            self.strategy.get_logger().warning('⚠️ Robot pose unavailable - using simple device selection')
+            return self.get_available_device()
+        
+        if not stm32_commands:
+            self.strategy.get_logger().warning('⚠️ No path waypoints - using simple device selection')
+            return self.get_available_device()
+        
+        # Parse first waypoint to determine initial movement direction
+        first_cmd = stm32_commands[0]
+        values = first_cmd.replace('go_to(', '').replace(')', '').split(',')
+        first_waypoint_x = float(values[0].strip())
+        first_waypoint_y = float(values[1].strip())
+        
+        # Calculate direction vector from robot to first waypoint
+        dx = first_waypoint_x - robot_pose.x * 1000  # Convert to mm
+        dy = first_waypoint_y - robot_pose.y * 1000
+        
+        # Calculate angle to first waypoint
+        target_direction = math.degrees(math.atan2(dy, dx))
+        
+        # Get robot's current orientation
+        robot_theta_deg = math.degrees(robot_pose.z) if robot_pose.z < 6.28 else robot_pose.z
+        
+        # Calculate how much the robot needs to rotate
+        angle_to_waypoint = circular_angle_difference(robot_theta_deg, target_direction)
+        
+        # Determine which device requires less rotation:
+        # - Front picker: efficient when robot is facing toward path (angle < 90°)
+        # - Back picker: efficient when robot is facing away from path (angle > 90°)
+        prefer_back = angle_to_waypoint > 90
+        
+        # Check availability with preference
+        front_available = self.is_front_available()
+        back_available = self.is_back_available()
+        
+        if not front_available and not back_available:
+            self.strategy.get_logger().warning("⚠️ Both front and back pickers are full!")
+            return None
+        
+        # Apply preference based on path direction
+        if prefer_back:
+            if back_available:
+                self.strategy.get_logger().info(
+                    f'🎯 Back picker selected (path angle={angle_to_waypoint:.1f}° > 90°, '
+                    f'robot={robot_theta_deg:.1f}°, path_dir={target_direction:.1f}°) - backwards motion optimal'
+                )
+                return 'ESP_back'
+            elif front_available:
+                self.strategy.get_logger().info(
+                    f'🔄 Front picker selected (back preferred but unavailable, path angle={angle_to_waypoint:.1f}°)'
+                )
+                return 'ESP_front'
+        else:
+            if front_available:
+                self.strategy.get_logger().info(
+                    f'🎯 Front picker selected (path angle={angle_to_waypoint:.1f}° ≤ 90°, '
+                    f'robot={robot_theta_deg:.1f}°, path_dir={target_direction:.1f}°) - forward motion optimal'
+                )
+                return 'ESP_front'
+            elif back_available:
+                self.strategy.get_logger().info(
+                    f'🔄 Back picker selected (front preferred but unavailable, path angle={angle_to_waypoint:.1f}°)'
+                )
+                return 'ESP_back'
+        
+        return None
     
     def update_available_batches(self):
         """Update list of available batches from pathfinder/map"""
@@ -308,13 +408,6 @@ class DecisionMaker:
             f'(type={batch_type or "any"}, min_members={min_members})'
         )
         
-        # Auto-select device if not specified
-        if device is None:
-            device = self.get_available_device()
-            if device is None:
-                self.strategy.get_logger().error('❌ No available device (both front and back are full)')
-                return None
-        
         # Get optimal batch
         optimal_batch = self.get_optimal_batch(batch_type, min_members)
         
@@ -335,7 +428,8 @@ class DecisionMaker:
         robot_pose = self.strategy.latest_robot_pose
         if robot_pose and len(pickup_angles) > 1:
             robot_theta_deg = math.degrees(robot_pose.z) if robot_pose.z < 6.28 else robot_pose.z
-            angle_diffs = [abs(robot_theta_deg - angle) for angle in pickup_angles]
+            # Use circular difference to handle wrap-around (e.g., -179° vs 179°)
+            angle_diffs = [circular_angle_difference(robot_theta_deg, angle) for angle in pickup_angles]
             pickup_theta = pickup_angles[angle_diffs.index(min(angle_diffs))]
         else:
             pickup_theta = pickup_angles[0]
@@ -345,11 +439,10 @@ class DecisionMaker:
             f'pos=({pickup_x_mm}mm, {pickup_y_mm}mm), '
             f'angle={pickup_theta}°, '
             f'members={optimal_batch["member_count"]}, '
-            f'distance={optimal_batch["distance_mm"]:.0f}mm, '
-            f'device={device}'
+            f'distance={optimal_batch["distance_mm"]:.0f}mm'
         )
         
-        # Generate path using pathfinder (like path() in strategy_manager)
+        # Generate path using pathfinder BEFORE selecting device
         self.strategy.get_logger().info('🗺️  Generating path to batch...')
         
         # Get batch direction and center for proper approach positioning
@@ -390,7 +483,9 @@ class DecisionMaker:
             )
         
         # Set goal for pathfinder with adjusted position
-        self.pathfinder.set_goal(adjusted_x, adjusted_y, pickup_theta)
+        # Convert pickup_theta from degrees to radians (pathfinder expects radians)
+        pickup_theta_rad = math.radians(pickup_theta)
+        self.pathfinder.set_goal(adjusted_x, adjusted_y, pickup_theta_rad)
         
         # Get path waypoints from pathfinder
         stm32_commands, path_success = self.pathfinder.path()
@@ -400,6 +495,14 @@ class DecisionMaker:
             return None
         
         self.strategy.get_logger().info(f'✅ Path generated: {len(stm32_commands)} waypoints')
+        
+        # NOW select device based on actual path trajectory (if not manually specified)
+        if device is None:
+            device = self.get_optimal_device_from_path(stm32_commands)
+            if device is None:
+                self.strategy.get_logger().error('❌ No available device (both front and back are full)')
+                return None
+            self.strategy.get_logger().info(f'🔧 Selected device: {device}')
         
         # Build task sequence with STM32 waypoints + ESP command (like static YAML tasks)
         task_sequence = []
@@ -471,8 +574,8 @@ class DecisionMaker:
         })
         
         self.strategy.get_logger().info(
-            f'📋 Task sequence: {len([c for c in task_sequence if c["device"] == "STM"])} STM32 commands + '
-            f'1 {device} command'
+            f'📋 Task sequence for {device}: {len([c for c in task_sequence if c["device"] == "STM"])} STM32 commands + '
+            f'1 {device} pickup command'
         )
         
         # Create task structure (compatible with load_task_to_queues)
@@ -486,11 +589,9 @@ class DecisionMaker:
             }
         }
         
-        # Mark device as full after pickup
-        if device == 'ESP_front':
-            self.set_front_status(True)
-        elif device == 'ESP_back':
-            self.set_back_status(True)
+        # NOTE: Picker status should be updated by the executor after successful pickup,
+        # not here during task generation. Premature status updates can cause stale state
+        # if the task fails or is interrupted.
         
         self.strategy.get_logger().info(f'✅ Generated steal task: {task["name"]}')
         return task
@@ -583,11 +684,9 @@ class DecisionMaker:
             }
         }
         
-        # Mark device as empty after put_down
-        if device == 'ESP_front':
-            self.set_front_status(False)
-        elif device == 'ESP_back':
-            self.set_back_status(False)
+        # NOTE: Picker status should be updated by the executor after successful put_down,
+        # not here during task generation. Premature status updates can cause stale state
+        # if the task fails or is interrupted.
         
         self.strategy.get_logger().info(f'✅ Generated put_down task: {task["name"]}')
         return task
