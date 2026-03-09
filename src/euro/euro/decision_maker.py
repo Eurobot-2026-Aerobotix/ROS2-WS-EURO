@@ -424,7 +424,7 @@ class DecisionMaker:
                 task_sequence.append({
                     'device': 'STM',
                     'command': stm32_cmd,
-                    'params': [x * 1000, y * 1000, 1100.0, {'from_pathfinding': True}],
+                    'params': [x, y, 1100.0, {'from_pathfinding': True}],
                     'wait': False
                 })
             last_cmd = cmd

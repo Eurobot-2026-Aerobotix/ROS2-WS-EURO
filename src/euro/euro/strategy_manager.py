@@ -574,101 +574,12 @@ def main(args=None):
         # Execute tasks sequentially
         # Start a thread to execute tasks one by one
         def execute_tasks_sequentially():
+            # Execute all static tasks first
             for idx, task in enumerate(strategy.tasks):
                 # Check if shutdown was requested
                 if executor_module.SHUTDOWN_REQUESTED:
                     strategy.get_logger().info("Shutdown requested, stopping task execution")
                     return
-                
-                # Check if NEXT task contains wait_end_game (to skip current task if needed)
-                next_task_has_wait_end_game = False
-                if idx + 1 < len(strategy.tasks):
-                    next_task = strategy.tasks[idx + 1]
-                    if next_task.get('sequence'):
-                        for cmd in next_task['sequence']:
-                            if cmd.get('command') == 'wait_end_game' and cmd.get('device') == 'RASP_PI':
-                                next_task_has_wait_end_game = True
-                                strategy.get_logger().info(
-                                    f"⏭️ Next task has wait_end_game - skipping current task '{task['name']}'"
-                                )
-                                break
-                
-                # Skip this task if next one has wait_end_game
-                if next_task_has_wait_end_game:
-                    continue
-                
-                # Check if THIS task contains wait_end_game command
-                has_wait_end_game = False
-                if task.get('sequence'):
-                    for cmd in task['sequence']:
-                        if cmd.get('command') == 'wait_end_game' and cmd.get('device') == 'RASP_PI':
-                            has_wait_end_game = True
-                            strategy.get_logger().info(
-                                f"🎯 Detected wait_end_game in task '{task['name']}' - "
-                                f"skipping this task and all remaining tasks, starting batch stealing"
-                            )
-                            break
-                
-                # If task has wait_end_game, skip it and ALL remaining tasks, then start stealing
-                if has_wait_end_game:
-                    strategy.get_logger().info("🏴‍☠️ Starting batch stealing loop...")
-                    
-                    stolen_count = 0
-                    while not executor_module.SHUTDOWN_REQUESTED:
-                        # Check if game is about to end (leave time to finish current task)
-                        if strategy.round.time() >= 95.0:
-                            strategy.get_logger().info(f"⏰ Game ending soon ({strategy.round.time():.1f}s) - stopping batch stealing")
-                            break
-                        
-                        # Generate steal task
-                        steal_task = strategy.decision_maker.steal_batch()
-                        
-                        if steal_task is None:
-                            strategy.get_logger().info("ℹ️ No more batches available to steal - ending batch stealing loop")
-                            break
-                        
-                        stolen_count += 1
-                        strategy.get_logger().info(f"🏴‍☠️ Stealing batch #{stolen_count}: {steal_task['name']}")
-                        
-                        # Extract last command info
-                        if steal_task.get('sequence') and len(steal_task['sequence']) > 0:
-                            last_cmd = steal_task['sequence'][-1]
-                            last_command = last_cmd.get('command')
-                            last_device = last_cmd.get('device')
-                            
-                            if last_command in ['pick_up', 'put_down']:
-                                strategy.last_task_command = last_command
-                                strategy.last_task_device = last_device
-                        
-                        # Store global goal
-                        global_goal = steal_task.get('global_goal')
-                        if global_goal:
-                            strategy.global_pos_x = float(global_goal.get('x'))
-                            strategy.global_pos_y = float(global_goal.get('y'))
-                            strategy.global_pos_angle = float(global_goal.get('theta'))
-                        
-                        # Add to tasks list temporarily
-                        strategy.tasks.append(steal_task)
-                        
-                        # Load and execute the steal task
-                        success = strategy.load_task_to_queues(steal_task['name'])
-                        
-                        if success:
-                            # Wait for completion
-                            strategy.wait_for_all_queues_empty()
-                            strategy.get_logger().info(f"✅ Stolen batch #{stolen_count} completed")
-                        else:
-                            strategy.get_logger().error(f"❌ Failed to steal batch #{stolen_count}")
-                        
-                        # Remove from tasks list
-                        if steal_task in strategy.tasks:
-                            strategy.tasks.remove(steal_task)
-                    
-                    strategy.get_logger().info(f"🏴‍☠️ Batch stealing ended - {stolen_count} batches stolen")
-                    # Break out of the task loop - don't execute any remaining tasks
-                    break
-                
-                # Normal task execution (not wait_end_game)
                 # Check last command in task sequence
                 if task.get('sequence') and len(task['sequence']) > 0:
                     last_cmd = task['sequence'][-1]
@@ -711,6 +622,69 @@ def main(args=None):
                 
                 # Wait for all commands to complete
                 strategy.wait_for_all_queues_empty()
+            
+            # After all static tasks complete, start batch stealing
+            strategy.get_logger().info("✅ All static tasks completed - starting batch stealing loop...")
+            
+            stolen_count = 0
+            while not executor_module.SHUTDOWN_REQUESTED:
+                # Check if game is about to end (leave time to finish current task)
+                if strategy.round.time() >= 95.0:
+                    strategy.get_logger().info(f"⏰ Game ending soon ({strategy.round.time():.1f}s) - stopping batch stealing")
+                    break
+                
+                # Generate steal task
+                steal_task = strategy.decision_maker.steal_batch()
+                
+                if steal_task is None:
+                    strategy.get_logger().info("ℹ️ No more batches available to steal - ending batch stealing loop")
+                    break
+                
+                stolen_count += 1
+                strategy.get_logger().info(f"🏴‍☠️ Stealing batch #{stolen_count}: {steal_task['name']}")
+                
+                # Extract last command info
+                if steal_task.get('sequence') and len(steal_task['sequence']) > 0:
+                    last_cmd = steal_task['sequence'][-1]
+                    last_command = last_cmd.get('command')
+                    last_device = last_cmd.get('device')
+                    
+                    if last_command in ['pick_up', 'put_down']:
+                        strategy.last_task_command = last_command
+                        strategy.last_task_device = last_device
+                
+                # Store global goal
+                global_goal = steal_task.get('global_goal')
+                if global_goal:
+                    strategy.global_pos_x = float(global_goal.get('x'))
+                    strategy.global_pos_y = float(global_goal.get('y'))
+                    strategy.global_pos_angle = float(global_goal.get('theta'))
+                    
+                    # Set goal in pathfinder
+                    strategy.handle_global_goal(
+                        strategy.global_pos_x / 1000, 
+                        strategy.global_pos_y / 1000, 
+                        strategy.global_pos_angle
+                    )
+                
+                # Add to tasks list temporarily
+                strategy.tasks.append(steal_task)
+                
+                # Load and execute the steal task
+                success = strategy.load_task_to_queues(steal_task['name'])
+                
+                if success:
+                    # Wait for completion
+                    strategy.wait_for_all_queues_empty()
+                    strategy.get_logger().info(f"✅ Stolen batch #{stolen_count} completed")
+                else:
+                    strategy.get_logger().error(f"❌ Failed to steal batch #{stolen_count}")
+                
+                # Remove from tasks list
+                if steal_task in strategy.tasks:
+                    strategy.tasks.remove(steal_task)
+            
+            strategy.get_logger().info(f"🏴‍☠️ Batch stealing ended - {stolen_count} batches stolen")
         
         # Start task execution in a background thread
         task_executor_thread = threading.Thread(
