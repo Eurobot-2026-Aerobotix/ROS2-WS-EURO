@@ -271,9 +271,9 @@ def robot_status(strategy, stm32, lidar):
                     
                     # Log state changes for IDLE
                     if IDLE != old_idle:
-                        strategy.get_logger().info(f"🔄 IDLE changed: {old_idle} → {IDLE} (last_stm_command={last_stm_command})")
-                        
-            # Note: SYSTEMS_IDLE_COUNT is now incremented in stm32_task when navigation completes successfully
+                        strategy.get_logger().info(f"🔄 IDLE changed: {old_idle} → {IDLE} (last_stm_command={last_stm_command})")   
+            if  IDLE_FOR_SYSTEMS ==True and PREVIOUS_IDLE_FOR_SYSTEMS==False and last_stm_command!="emergency" :
+                SYSTEMS_IDLE_COUNT+=1
             PREVIOUS_IDLE_FOR_SYSTEMS=IDLE_FOR_SYSTEMS
         else:
             # Log periodically when robot is idle to confirm the thread is running
@@ -629,18 +629,12 @@ def stm32_task(strategy, stm32,lidar):
                 if len(strategy.queues['STM']) > 0:
                     strategy.queues['STM'].popleft()
                     strategy.get_logger().info(f"🗑️  Removed command from queue - {len(strategy.queues['STM'])} commands remaining")
-                # Increment SYSTEMS_IDLE_COUNT only when navigation completes successfully
-                SYSTEMS_IDLE_COUNT += 1
-                strategy.get_logger().info(f"📊 SYSTEMS_IDLE_COUNT incremented to {SYSTEMS_IDLE_COUNT} (navigation completed)")
             elif last_stm_command=="replanned":
                 # After replanning, don't pop - let outer loop execute new commands
                 strategy.get_logger().info(f"✓ Replanning complete - new commands ready to execute ({len(strategy.queues['STM'])} commands in queue)")
                 # Don't pop from queue - commands were just added and need to be executed
                 # Reset replanning flag now that we're back in main loop
                 replanning = False
-                # Increment SYSTEMS_IDLE_COUNT since a command was processed (even though it was replanned)
-                SYSTEMS_IDLE_COUNT += 1
-                strategy.get_logger().info(f"📊 SYSTEMS_IDLE_COUNT incremented to {SYSTEMS_IDLE_COUNT} (replanning completed)")
         else:
             # Log why we're not processing commands (every 50 iterations to avoid spam)
             if main_loop_count % 50 == 0:
