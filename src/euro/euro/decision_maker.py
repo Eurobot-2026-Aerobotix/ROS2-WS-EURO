@@ -669,10 +669,12 @@ class DecisionMaker:
         # Add final orientation command if goal angle is available
         goal_angle = self.pathfinder.goal_angle
         if goal_angle is not None:
+            # Convert from radians to degrees
+            goal_angle_deg = math.degrees(goal_angle)
             task_sequence.append({
                 'device': 'STM',
                 'command': 'orientate',
-                'params': [goal_angle, 0.0],  # [angle, is_radian]
+                'params': [goal_angle_deg, 0.0],  # [angle_in_degrees, is_radian=False]
                 'wait': False
             })
             
@@ -835,12 +837,14 @@ class DecisionMaker:
         # Add final orientation
         goal_angle = self.pathfinder.goal_angle
         if goal_angle is not None:
-            task_sequence.append({
-                'device': 'STM',
-                'command': 'orientate',
-                'params': [goal_angle, 0.0],
-                'wait': False
-            })
+            # # Convert from radians to degrees
+            # goal_angle_deg = math.degrees(goal_angle)
+            # task_sequence.append({
+            #     'device': 'STM',
+            #     'command': 'orientate',
+            #     'params': [goal_angle_deg, 0.0],  # [angle_in_degrees, is_radian=False]
+            #     'wait': False
+            # })
             
             # Add final movement to putdown position
             if device == 'ESP_front':
