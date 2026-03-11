@@ -56,6 +56,18 @@ PICKUP_POSES = {
     'S8': [{'x': 800, 'y': 2600, 'theta': [0, 180]}]
 }
 
+# Predefined putdown poses for FX zones (positions in mm)
+PUTDOWN_POSES = {
+    'fx1': {'x': 1200, 'y': 100, 'type': 'A'},
+    'fx2': {'x': 1900, 'y': 700, 'type': 'A'},
+    'fx3': {'x': 1200, 'y': 800, 'type': 'B'},
+    'fx5': {'x': 1200, 'y': 1500, 'type': 'B'},
+    'fx6': {'x': 1900, 'y': 1500, 'type': 'A'},
+    'fx8': {'x': 1200, 'y': 2200, 'type': 'B'},
+    'fx9': {'x': 1900, 'y': 2300, 'type': 'A'},
+    'fx10': {'x': 1200, 'y': 2900, 'type': 'A'}
+}
+
 
 class DecisionMaker:
     """
@@ -250,6 +262,70 @@ class DecisionMaker:
         base_id = known_id.upper().replace('_WEB', '')
         return PICKUP_POSES.get(base_id)
     
+    def find_optimal_putdown_position(self, center_x: float, center_y: float, 
+                                      reference_x: float = None, reference_y: float = None) -> Optional[Dict]:
+        """
+        Find optimal putdown position within 30cm radius circle of a type B zone.
+        The putdown point is positioned to approach the center point.
+        
+        Args:
+            center_x: Center x coordinate in mm
+            center_y: Center y coordinate in mm
+            reference_x: Reference x position (e.g., pickup position) in mm, or None to use robot pose
+            reference_y: Reference y position (e.g., pickup position) in mm, or None to use robot pose
+        
+        Returns:
+            Dictionary with 'x', 'y', 'theta' for putdown position, or None if no reference available
+        """
+        # Use provided reference position, otherwise fall back to robot pose
+        if reference_x is not None and reference_y is not None:
+            robot_x_mm = reference_x
+            robot_y_mm = reference_y
+            self.strategy.get_logger().info(
+                f'📍 Using reference position: ({robot_x_mm:.0f}mm, {robot_y_mm:.0f}mm)'
+            )
+        else:
+            robot_pose = self.strategy.latest_robot_pose
+            if robot_pose is None:
+                self.strategy.get_logger().warning('⚠️ Robot pose not available for putdown optimization')
+                return None
+            robot_x_mm = robot_pose.x * 1000
+            robot_y_mm = robot_pose.y * 1000
+        
+        # Calculate vector from center to robot
+        dx = robot_x_mm - center_x
+        dy = robot_y_mm - center_y
+        distance = math.sqrt(dx*dx + dy*dy)
+        
+        # If robot is very close to center, use a default position
+        if distance < 50:  # Less than 5cm
+            self.strategy.get_logger().warning('⚠️ Robot too close to center, using default offset')
+            dx = 300
+            dy = 0
+            distance = 300
+        
+        # Normalize direction vector
+        dx_norm = dx / distance
+        dy_norm = dy / distance
+        
+        # Place putdown point 30cm (300mm) from center toward robot's direction
+        putdown_x = center_x + dx_norm * 300
+        putdown_y = center_y + dy_norm * 300
+        
+        # Calculate angle pointing toward center
+        angle_to_center = math.degrees(math.atan2(-dy_norm, -dx_norm))
+        
+        self.strategy.get_logger().info(
+            f'📍 Optimal putdown: ({putdown_x:.0f}mm, {putdown_y:.0f}mm, {angle_to_center:.1f}°) '
+            f'from center ({center_x:.0f}mm, {center_y:.0f}mm)'
+        )
+        
+        return {
+            'x': putdown_x,
+            'y': putdown_y,
+            'theta': angle_to_center
+        }
+    
     def choose_best_pickup_pose(self, known_id: str) -> Optional[Dict]:
         """
         Choose the best pickup pose for a batch based on robot position
@@ -290,6 +366,62 @@ class DecisionMaker:
             f'(distance: {distance(best_pose):.0f}mm)'
         )
         return best_pose
+    
+    def choose_best_putdown_zone(self, reference_x: float = None, reference_y: float = None) -> Optional[Tuple[str, Dict]]:
+        """
+        Choose the best putdown zone from available type B zones based on proximity.
+        Type A zones are skipped for now.
+        
+        Args:
+            reference_x: Reference x position (e.g., pickup position) in mm, or None to use robot pose
+            reference_y: Reference y position (e.g., pickup position) in mm, or None to use robot pose
+        
+        Returns:
+            Tuple of (zone_name, zone_dict) with zone information, or None if no reference available
+        """
+        # Use provided reference position, otherwise fall back to robot pose
+        if reference_x is not None and reference_y is not None:
+            robot_x_mm = reference_x
+            robot_y_mm = reference_y
+            self.strategy.get_logger().info(
+                f'🎯 Selecting putdown zone from reference: ({robot_x_mm:.0f}mm, {robot_y_mm:.0f}mm)'
+            )
+        else:
+            robot_pose = self.strategy.latest_robot_pose
+            if robot_pose is None:
+                self.strategy.get_logger().warning('⚠️ Robot pose not available for putdown zone selection')
+                return None
+            robot_x_mm = robot_pose.x * 1000
+            robot_y_mm = robot_pose.y * 1000
+        
+        # Filter for type B zones only
+        type_b_zones = {name: zone for name, zone in PUTDOWN_POSES.items() if zone['type'] == 'B'}
+        
+        if not type_b_zones:
+            self.strategy.get_logger().warning('⚠️ No type B putdown zones available')
+            return None
+        
+        # Find closest type B zone
+        best_zone = None
+        best_distance = float('inf')
+        best_name = None
+        
+        for zone_name, zone in type_b_zones.items():
+            dx = zone['x'] - robot_x_mm
+            dy = zone['y'] - robot_y_mm
+            distance = math.sqrt(dx*dx + dy*dy)
+            
+            if distance < best_distance:
+                best_distance = distance
+                best_zone = zone
+                best_name = zone_name
+        
+        self.strategy.get_logger().info(
+            f'🎯 Selected putdown zone: {best_name} at ({best_zone["x"]}mm, {best_zone["y"]}mm) '
+            f'- distance: {best_distance:.0f}mm'
+        )
+        
+        return (best_name, best_zone)
     
     def get_optimal_batch(self, batch_type: Optional[str] = None, 
                           min_members: int = 1) -> Optional[Dict]:
@@ -393,9 +525,9 @@ class DecisionMaker:
     
     def steal_batch(self, batch_type: Optional[str] = None, 
                     device: Optional[str] = None,
-                    min_members: int = 1) -> Optional[Dict]:
+                    min_members: int = 1) -> Optional[List[Dict]]:
         """
-        Generate a complete task to steal a batch (like static YAML tasks)
+        Generate complete tasks to steal a batch: pickup task + putdown task
         
         Args:
             batch_type: Type of batch to steal ('fx', 'sx'), or None for any
@@ -403,7 +535,7 @@ class DecisionMaker:
             min_members: Minimum number of members required
         
         Returns:
-            Task dictionary compatible with load_task_to_queues, or None if no batch available
+            List containing [pickup_task, putdown_task], or None if generation fails
         """
         self.strategy.get_logger().info(
             f'🎯 steal_batch() called - searching for optimal batch '
@@ -580,8 +712,8 @@ class DecisionMaker:
             f'1 {device} pickup command'
         )
         
-        # Create task structure (compatible with load_task_to_queues)
-        task = {
+        # Create pickup task structure (compatible with load_task_to_queues)
+        pickup_task = {
             'name': f'steal_{known_id}_{device.split("_")[1]}',
             'sequence': task_sequence,
             'global_goal': {
@@ -595,8 +727,47 @@ class DecisionMaker:
         # not here during task generation. Premature status updates can cause stale state
         # if the task fails or is interrupted.
         
-        self.strategy.get_logger().info(f'✅ Generated steal task: {task["name"]}')
-        return task
+        self.strategy.get_logger().info(f'✅ Generated pickup task: {pickup_task["name"]}')
+        
+        # ========== NOW CREATE PUTDOWN TASK ==========
+        
+        # Select best putdown zone (type B only for now) based on pickup position
+        putdown_zone_result = self.choose_best_putdown_zone(
+            reference_x=pickup_x_mm,
+            reference_y=pickup_y_mm
+        )
+        if putdown_zone_result is None:
+            self.strategy.get_logger().warning('⚠️ No putdown zone available, returning pickup task only')
+            return [pickup_task]
+        
+        zone_name, zone = putdown_zone_result
+        
+        # Calculate optimal putdown position within 30cm radius circle
+        # Use pickup position as reference (robot will be there after pickup)
+        putdown_pos = self.find_optimal_putdown_position(
+            zone['x'], 
+            zone['y'],
+            reference_x=pickup_x_mm,
+            reference_y=pickup_y_mm
+        )
+        if putdown_pos is None:
+            self.strategy.get_logger().warning('⚠️ Could not calculate putdown position, returning pickup task only')
+            return [pickup_task]
+        
+        # Create putdown task using the same device
+        putdown_task = self.create_put_down_task(
+            device=device,
+            target_x=putdown_pos['x'],
+            target_y=putdown_pos['y'],
+            target_theta=putdown_pos['theta']
+        )
+        
+        if putdown_task is None:
+            self.strategy.get_logger().warning('⚠️ Failed to generate putdown task, returning pickup task only')
+            return [pickup_task]
+        
+        self.strategy.get_logger().info(f'✅ Generated complete steal sequence: pickup + putdown at {zone_name}')
+        return [pickup_task, putdown_task]
     
     def create_put_down_task(self, device: str, target_x: float, target_y: float, 
                             target_theta: float) -> Optional[Dict]:
@@ -617,11 +788,14 @@ class DecisionMaker:
             f'target=({target_x}mm, {target_y}mm, {target_theta}°)'
         )
         
+        # Convert theta from degrees to radians for pathfinder
+        target_theta_rad = math.radians(target_theta)
+        
         # Generate path using pathfinder
         self.pathfinder.set_goal(
             target_x / 1000.0,
             target_y / 1000.0,
-            target_theta
+            target_theta_rad
         )
         
         # Get path waypoints
@@ -667,6 +841,28 @@ class DecisionMaker:
                 'params': [goal_angle, 0.0],
                 'wait': False
             })
+            
+            # Add final movement to putdown position
+            if device == 'ESP_front':
+                task_sequence.append({
+                    'device': 'STM',
+                    'command': 'go_to',
+                    'params': [target_x, target_y, 1100.0, 1.0, {'from_pathfinding': True}],
+                    'wait': False
+                })
+                self.strategy.get_logger().info(
+                    f'📍 Added final go_to after orientate: x={target_x:.0f}mm, y={target_y:.0f}mm'
+                )
+            elif device == 'ESP_back':
+                task_sequence.append({
+                    'device': 'STM',
+                    'command': 'go_to_backwards',
+                    'params': [target_x, target_y, 1100.0, 1.0, {'from_pathfinding': True}],
+                    'wait': False
+                })
+                self.strategy.get_logger().info(
+                    f'📍 Added final go_to_backwards after orientate: x={target_x:.0f}mm, y={target_y:.0f}mm'
+                )
         
         # Add ESP put_down command
         task_sequence.append({

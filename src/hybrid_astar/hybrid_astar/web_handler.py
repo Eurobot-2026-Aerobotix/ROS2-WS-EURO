@@ -636,24 +636,28 @@ class WebHandlerNode(Node):
                 self.latest_robot_pose.z = self.deg_to_rad(self.start_pose['theta_deg'])
             
             # Call DecisionMaker to steal batch
-            task = self.decision_maker.steal_batch(
+            tasks = self.decision_maker.steal_batch(
                 batch_type=batch_type,
                 device=device,
                 min_members=min_members
             )
             
-            if task:
+            if tasks:
+                # steal_batch now returns a list of tasks [pickup_task, putdown_task]
+                task_names = [task['name'] for task in tasks]
                 result = {
                     "success": True,
-                    "message": f"Batch steal task generated: {task['name']}",
-                    "task": task
+                    "message": f"Batch steal tasks generated: {', '.join(task_names)}",
+                    "tasks": tasks,  # Array of tasks
+                    "task_count": len(tasks)
                 }
-                self.get_logger().info(f"✅ Steal batch successful: {task['name']}")
+                self.get_logger().info(f"✅ Steal batch successful: {len(tasks)} tasks generated")
             else:
                 result = {
                     "success": False,
                     "message": "No available batches to steal or path generation failed",
-                    "task": None
+                    "tasks": None,
+                    "task_count": 0
                 }
                 self.get_logger().warning("⚠️ Steal batch failed")
             
@@ -667,7 +671,8 @@ class WebHandlerNode(Node):
             self.publish_steal_batch_result({
                 "success": False,
                 "message": f"Error: {str(e)}",
-                "task": None
+                "tasks": None,
+                "task_count": 0
             })
     
     # ========================================================================
