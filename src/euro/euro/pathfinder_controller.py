@@ -41,7 +41,7 @@ class PathfinderClient(Node):
         
         self.reset_stability_client = self.create_client(
             Trigger,
-            '/aruco_mapper/reset_stability'
+            '/reset_map'
         )
         
         self.clear_map_client = self.create_client(
@@ -74,11 +74,11 @@ class PathfinderClient(Node):
         else:
             self.get_logger().info('✅ /update_map service is ready')
         
-        self.get_logger().info('Waiting for /aruco_mapper/reset_stability service...')
+        self.get_logger().info('Waiting for /reset_map service...')
         if not self.reset_stability_client.wait_for_service(timeout_sec=5.0):
-            self.get_logger().warning('⚠️  /aruco_mapper/reset_stability service not available after 5 seconds')
+            self.get_logger().warning('⚠️  /reset_map service not available after 5 seconds')
         else:
-            self.get_logger().info('✅ /aruco_mapper/reset_stability service is ready')
+            self.get_logger().info('✅ /reset_map service is ready')
         
         self.get_logger().info('Waiting for /clear_map service...')
         if not self.clear_map_client.wait_for_service(timeout_sec=5.0):
@@ -301,7 +301,7 @@ class PathfinderClient(Node):
     # =========================================================
     def reset_stability(self):
         """
-        Reset ArUco mapper stability tracking
+        Trigger /reset_map on pathfinder map manager
         
         Returns:
             success (bool): Whether the reset succeeded
@@ -309,10 +309,10 @@ class PathfinderClient(Node):
         """
         # Check if service is available
         if not self.reset_stability_client.service_is_ready():
-            self.get_logger().error('❌ /aruco_mapper/reset_stability service is not available!')
+            self.get_logger().error('❌ /reset_map service is not available!')
             return False, 'Service not available'
 
-        self.get_logger().info('🔄 Calling reset_stability service...')
+        self.get_logger().info('🔄 Calling /reset_map service...')
 
         request = Trigger.Request()
         future = self.reset_stability_client.call_async(request)

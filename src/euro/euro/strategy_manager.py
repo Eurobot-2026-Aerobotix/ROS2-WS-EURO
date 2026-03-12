@@ -375,8 +375,8 @@ def reset_systems(pneumatic_controller,front_controller,back_controller,stm32_co
                 stm32_controller.reset(timeout=2.0)
         
         # Reset pneumatic and ESP controllers
-        pneumatic_controller.front(16)
-        pneumatic_controller.back(16)
+        pneumatic_controller.front(20)
+        pneumatic_controller.back(20)
         front_controller.kabech(0)
         back_controller.kabech(0)
         front_controller.dawer(0)
@@ -466,7 +466,7 @@ def main(args=None):
     
     path_planning_thread = threading.Thread(
         target=path_planning_task,
-        args=(strategy, lidar, strategy.round, pneumatic, front, back),
+        args=(strategy, lidar, strategy.round, pneumatic, front, back,stm32),
         daemon=True
     )
     path_planning_thread.start()

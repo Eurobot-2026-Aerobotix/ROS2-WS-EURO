@@ -123,6 +123,11 @@ class HybridAStarNode(Node):
             Trigger, '/clear_map', self.map_manager.handle_clear_map,
             callback_group=self.reentrant_group)
         
+        # Delegate reset_map service to MapManager (same as update_map but with 'rrr' types_filter)
+        self.reset_map_service = self.create_service(
+            Trigger, '/reset_map', self.map_manager.handle_reset_map,
+            callback_group=self.reentrant_group)
+        
         # Initialize pathfinder
         grid_width = int(self.params['map']['width_mm'] / 
                         self.params['grid']['resolution_mm'])

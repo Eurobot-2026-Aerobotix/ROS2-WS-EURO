@@ -43,24 +43,28 @@ replanning=False
 last_stm_command=""
 PATH_PREPARED = False  # Flag indicating path is prepared in background
 PREPARING_PATH = False  # Flag indicating path preparation is in progress
-def path_planning_task(strategy, lidar, round_timer, pneumatic_controller=None, front_controller=None, back_controller=None):
-    """Dedicated thread for handling return home at 85s"""
+return_home_triggered = False  # Flag to ensure return home logic only triggers once
+def path_planning_task(strategy, lidar, round_timer, pneumatic_controller=None, front_controller=None, back_controller=None,stm32_controller=None):
+    """Dedicated thread for handling return home at 90s"""
     global SHUTDOWN_REQUESTED
     global last_stm_command
     global IDLE
     global IDLE_FOR_SYSTEMS
     global SYSTEMS_IDLE_COUNT
     global replanning
-    
+    global return_home_triggered
     strategy.get_logger().info("🏠 Return home monitor thread started")
     return_home_triggered = False
     
     while rclpy.ok() and not SHUTDOWN_REQUESTED:
-        # Check if only 15 seconds remain (85s elapsed out of 100s)
-        if round_timer.time() >= 85.0 and not return_home_triggered:
+        # Check if only 10 seconds remain (90s elapsed out of 100s)
+        if round_timer.time()>=100.0:
+            strategy.get_logger().info("⏰ Game time reached 100s -    resetting stm")
+            stm32_controller.reset()
+        if round_timer.time() >= 90.0 and round_timer.time() <= 100.0 and not return_home_triggered:
             return_home_triggered = True
             strategy.end_game = True
-            strategy.get_logger().warning("⏰ Only 15 seconds left! Returning home to (250, 225)...")
+            strategy.get_logger().warning("⏰ Only 10 seconds left! Returning home to (250, 225)...")
             
             # Reset systems without stopping STM32 (like at start)
             if pneumatic_controller and front_controller and back_controller:
@@ -928,6 +932,7 @@ def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=No
     global WAITING_TIRETTE
     global IDLE
     global IDLE_FOR_SYSTEMS
+    global return_home_triggered
     while rclpy.ok() and not SHUTDOWN_REQUESTED:
         # Check if there are commands in the queue
         if len(strategy.queues['RASP_PI']) > 0:
@@ -1002,6 +1007,7 @@ def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=No
                 # Wait until game time reaches 1.25s + duration
                 duration = float(params[0]) if params else 0
                 target_time = 85 + duration
+                return_home_triggered=True
                 strategy.get_logger().info(f"⏳ Waiting until game time reaches {target_time}s (85s + {duration}s)")
                 
                 while rclpy.ok() and not SHUTDOWN_REQUESTED:
