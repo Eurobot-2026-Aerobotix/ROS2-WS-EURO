@@ -912,7 +912,31 @@ class DecisionMaker:
             return [pickup_task]
         
         zone_name, zone = putdown_zone_result
-        
+
+        # If the selected zone has an fx batch with enemy-majority members,
+        # untrack it so the pathfinder ignores it as an obstacle during putdown path planning.
+        putdown_zone_fx_batch_id = zone_name.replace('fx', 'f', 1)
+        putdown_zone_fx_untracked = False
+        putdown_zone_batch = self.available_batches.get(putdown_zone_fx_batch_id)
+        if putdown_zone_batch is not None and putdown_zone_batch.get('member_count', 0) > 0:
+            from geometry_msgs.msg import Point as _Point
+            team_color_char = 'y' if getattr(self.strategy, 'color', None) == 'yellow' else 'b'
+            color_pattern, cp_success, _, _, _ = self.pathfinder.get_batch_color(
+                putdown_zone_fx_batch_id, _Point()
+            )
+            if cp_success and color_pattern:
+                our_count = color_pattern.lower().count(team_color_char)
+                majority_ours = our_count > len(color_pattern) / 2
+            else:
+                majority_ours = False  # unknown -> treat as enemy, untrack it
+            if not majority_ours and hasattr(self.pathfinder, 'add_untracked_batch'):
+                self.pathfinder.add_untracked_batch(putdown_zone_fx_batch_id)
+                putdown_zone_fx_untracked = True
+                self.strategy.get_logger().info(
+                    f'🙈 Untracking enemy batch {putdown_zone_fx_batch_id} at putdown zone {zone_name} '
+                    f'for path planning (pattern="{color_pattern}")'
+                )
+
         # Calculate optimal putdown position within 30cm radius circle
         # Use pickup position as reference (robot will be there after pickup)
         putdown_pos = self.find_optimal_putdown_position(
@@ -925,6 +949,8 @@ class DecisionMaker:
             self.strategy.get_logger().warning('⚠️ Could not calculate putdown position, returning pickup task only')
             if hasattr(self.pathfinder, 'remove_untracked_batch'):
                 self.pathfinder.remove_untracked_batch(known_id)
+            if putdown_zone_fx_untracked and hasattr(self.pathfinder, 'remove_untracked_batch'):
+                self.pathfinder.remove_untracked_batch(putdown_zone_fx_batch_id)
             return [pickup_task]
         
         # Create putdown task using the same device
@@ -933,6 +959,8 @@ class DecisionMaker:
             target_x=putdown_pos['x'],
             target_y=putdown_pos['y'],
             target_theta=putdown_pos['theta'],
+            center_x=zone['x'],
+            center_y=zone['y'],
             start_x=pickup_x_mm,
             start_y=pickup_y_mm,
             start_theta=pickup_theta
@@ -942,17 +970,25 @@ class DecisionMaker:
             self.strategy.get_logger().warning('⚠️ Failed to generate putdown task, returning pickup task only')
             if hasattr(self.pathfinder, 'remove_untracked_batch'):
                 self.pathfinder.remove_untracked_batch(known_id)
+            if putdown_zone_fx_untracked and hasattr(self.pathfinder, 'remove_untracked_batch'):
+                self.pathfinder.remove_untracked_batch(putdown_zone_fx_batch_id)
             return [pickup_task]
 
         # Putdown task is now generated. Restore default obstacle tracking for future planning calls.
         if hasattr(self.pathfinder, 'remove_untracked_batch'):
             self.pathfinder.remove_untracked_batch(known_id)
+        if putdown_zone_fx_untracked and hasattr(self.pathfinder, 'remove_untracked_batch'):
+            self.pathfinder.remove_untracked_batch(putdown_zone_fx_batch_id)
+            self.strategy.get_logger().info(
+                f'👁️ Restored tracking of batch {putdown_zone_fx_batch_id} after putdown path planning'
+            )
         
         self.strategy.get_logger().info(f'✅ Generated complete steal sequence: pickup + putdown at {zone_name}')
         return [pickup_task, putdown_task]
     
     def create_put_down_task(self, device: str, target_x: float, target_y: float,
-                            target_theta: float, start_x: Optional[float] = None,
+                            target_theta: float, center_x: Optional[float] = None,
+                            center_y: Optional[float] = None, start_x: Optional[float] = None,
                             start_y: Optional[float] = None, start_theta: Optional[float] = None) -> Optional[Dict]:
         """
         Create a put_down task to drop batch at target location
@@ -962,6 +998,8 @@ class DecisionMaker:
             target_x: Target x coordinate in mm
             target_y: Target y coordinate in mm
             target_theta: Target orientation in degrees
+            center_x: Optional putdown zone center x in mm (for diameter clearing sweep)
+            center_y: Optional putdown zone center y in mm (for diameter clearing sweep)
             start_x: Optional start x in mm (if provided, overrides live robot pose)
             start_y: Optional start y in mm (if provided, overrides live robot pose)
             start_theta: Optional start theta in degrees (if provided, overrides live robot pose)
@@ -1039,6 +1077,34 @@ class DecisionMaker:
                 'params': [goal_angle_deg, 0.0],  # [angle_in_degrees, is_radian=False]
                 'wait': False
             })
+
+        # Optional clearing sweep along putdown circle diameter:
+        # target point -> opposite diameter point -> back to target point
+        if center_x is not None and center_y is not None:
+            opposite_x = (2.0 * center_x) - target_x
+            opposite_y = (2.0 * center_y) - target_y
+
+            first_cmd = 'go_to_backwards' if device == 'ESP_back' else 'go_to'
+            second_cmd = 'go_to' if first_cmd == 'go_to_backwards' else 'go_to_backwards'
+
+            task_sequence.append({
+                'device': 'STM',
+                'command': first_cmd,
+                'params': [opposite_x, opposite_y, 1100.0, {'from_pathfinding': True, 'clear_zone_sweep': True}],
+                'wait': False
+            })
+            task_sequence.append({
+                'device': 'STM',
+                'command': second_cmd,
+                'params': [target_x, target_y, 1100.0, {'from_pathfinding': True, 'clear_zone_sweep': True}],
+                'wait': False
+            })
+
+            self.strategy.get_logger().info(
+                f'🧹 Added putdown clearing sweep via diameter: '
+                f'({target_x:.0f},{target_y:.0f}) -> ({opposite_x:.0f},{opposite_y:.0f}) -> ({target_x:.0f},{target_y:.0f}) '
+                f'using {first_cmd} then {second_cmd}'
+            )
         
         # Add ESP put_down command
         task_sequence.append({
