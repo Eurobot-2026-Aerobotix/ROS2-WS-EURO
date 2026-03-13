@@ -503,12 +503,23 @@ class DecisionMaker:
             self.strategy.get_logger().warning('⚠️ No type B putdown zones available')
             return None
         
-        # Find closest type B zone
+        # Find closest type B zone that is free of fx obstacles
+        # Zone names are 'fxN' -> corresponding fx batch id is 'fN'
         best_zone = None
         best_distance = float('inf')
         best_name = None
         
         for zone_name, zone in type_b_zones.items():
+            # Derive fx batch id from zone name: 'fx3' -> 'f3'
+            fx_batch_id = zone_name.replace('fx', 'f', 1)
+            batch = self.available_batches.get(fx_batch_id)
+            if batch is not None and batch.get('member_count', 0) > 0:
+                self.strategy.get_logger().info(
+                    f'⚠️ Putdown zone {zone_name} blocked by batch {fx_batch_id} '
+                    f'({batch["member_count"]} members), skipping'
+                )
+                continue
+
             dx = zone['x'] - robot_x_mm
             dy = zone['y'] - robot_y_mm
             distance = math.sqrt(dx*dx + dy*dy)
@@ -518,6 +529,10 @@ class DecisionMaker:
                 best_zone = zone
                 best_name = zone_name
         
+        if best_zone is None:
+            self.strategy.get_logger().warning('⚠️ All type B putdown zones are blocked by obstacles')
+            return None
+
         self.strategy.get_logger().info(
             f'🎯 Selected putdown zone: {best_name} at ({best_zone["x"]}mm, {best_zone["y"]}mm) '
             f'- distance: {best_distance:.0f}mm'

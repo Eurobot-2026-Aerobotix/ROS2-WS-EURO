@@ -98,14 +98,30 @@ class PathfinderAdapter:
         }
         self.goal_angle = theta
         
-    def path(self):
-        """Generate path - returns (stm32_commands, success)"""
+    def path(self, start_x=None, start_y=None, start_theta=None):
+        """Generate path - returns (stm32_commands, success)
+        
+        Args:
+            start_x: Optional start x in meters (overrides web_handler.start_pose)
+            start_y: Optional start y in meters (overrides web_handler.start_pose)
+            start_theta: Optional start theta in radians (overrides web_handler.start_pose)
+        """
         if not self.compute_path_client.service_is_ready():
             self.web_handler.get_logger().error('❌ /compute_path service not ready')
             return [], False
-        
+
+        # Build effective start pose: use provided values or fall back to web_handler.start_pose
+        if start_x is not None and start_y is not None and start_theta is not None:
+            effective_start = {
+                'x_mm': start_x * 1000.0,
+                'y_mm': start_y * 1000.0,
+                'theta_deg': math.degrees(start_theta)
+            }
+        else:
+            effective_start = self.web_handler.start_pose
+
         # Get start pose from web_handler
-        if not self.web_handler.start_pose:
+        if not effective_start:
             self.web_handler.get_logger().error('❌ Start pose not set')
             return [], False
         
@@ -121,11 +137,11 @@ class PathfinderAdapter:
             request.start_pose = PoseStamped()
             request.start_pose.header.frame_id = 'map'
             request.start_pose.header.stamp = self.web_handler.get_clock().now().to_msg()
-            request.start_pose.pose.position.x = self.web_handler.mm_to_m(self.web_handler.start_pose['x_mm'])
-            request.start_pose.pose.position.y = self.web_handler.mm_to_m(self.web_handler.start_pose['y_mm'])
+            request.start_pose.pose.position.x = self.web_handler.mm_to_m(effective_start['x_mm'])
+            request.start_pose.pose.position.y = self.web_handler.mm_to_m(effective_start['y_mm'])
             request.start_pose.pose.position.z = 0.0
             request.start_pose.pose.orientation = self.web_handler.euler_to_quaternion(
-                self.web_handler.deg_to_rad(self.web_handler.start_pose['theta_deg'])
+                self.web_handler.deg_to_rad(effective_start['theta_deg'])
             )
             
             # Goal pose
