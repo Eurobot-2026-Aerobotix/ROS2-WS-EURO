@@ -236,6 +236,38 @@ class PathfinderAdapter:
             self.web_handler.get_logger().error(f'❌ Error calling get_active_batches: {e}')
             return None
 
+    def get_batch_color(self, known_id: str, pos=None):
+        """Get color pattern for a batch synchronously.
+        Returns (color_pattern, success, direction, batch_center, known_id)
+        """
+        from hybrid_astar.srv import GetBatchColorPattern
+        from geometry_msgs.msg import Point
+
+        client = self.web_handler.batch_color_client
+        if not client.service_is_ready():
+            self.web_handler.get_logger().warning('⚠️ /get_batch_color_pattern service not ready')
+            return '', False, '', Point(), ''
+
+        request = GetBatchColorPattern.Request()
+        request.batch_known_id = known_id
+        request.pos = pos if pos is not None else Point()
+
+        try:
+            import rclpy
+            future = client.call_async(request)
+            rclpy.spin_until_future_complete(self.web_handler, future, timeout_sec=5.0)
+            if not future.done():
+                self.web_handler.get_logger().error('❌ get_batch_color timeout')
+                return '', False, '', Point(), ''
+            response = future.result()
+            if response.success:
+                return response.color_pattern, True, response.direction, response.batch_center, response.message
+            else:
+                return '', False, '', Point(), ''
+        except Exception as e:
+            self.web_handler.get_logger().error(f'❌ get_batch_color error: {e}')
+            return '', False, '', Point(), ''
+
     def add_untracked_batch(self, known_id: str):
         """Add a batch known_id to be ignored as obstacle during path planning."""
         if not known_id:

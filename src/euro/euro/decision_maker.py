@@ -509,16 +509,39 @@ class DecisionMaker:
         best_distance = float('inf')
         best_name = None
         
+        # Get team color once (e.g. 'yellow' -> 'y', 'blue' -> 'b')
+        team_color_char = 'y' if getattr(self.strategy, 'color', None) == 'yellow' else 'b'
+
         for zone_name, zone in type_b_zones.items():
             # Derive fx batch id from zone name: 'fx3' -> 'f3'
             fx_batch_id = zone_name.replace('fx', 'f', 1)
             batch = self.available_batches.get(fx_batch_id)
             if batch is not None and batch.get('member_count', 0) > 0:
-                self.strategy.get_logger().info(
-                    f'⚠️ Putdown zone {zone_name} blocked by batch {fx_batch_id} '
-                    f'({batch["member_count"]} members), skipping'
+                # Query the color pattern to see if majority are our color
+                from geometry_msgs.msg import Point as _Point
+                color_pattern, cp_success, _, _, _ = self.pathfinder.get_batch_color(
+                    fx_batch_id, _Point()
                 )
-                continue
+                if cp_success and color_pattern:
+                    our_count = color_pattern.lower().count(team_color_char)
+                    total = len(color_pattern)
+                    majority_ours = our_count > total / 2
+                else:
+                    # Could not get pattern — be conservative and block the zone
+                    majority_ours = True
+
+                if majority_ours:
+                    self.strategy.get_logger().info(
+                        f'⚠️ Putdown zone {zone_name} blocked: batch {fx_batch_id} '
+                        f'has {batch["member_count"]} members, majority our color '
+                        f'("{color_pattern}" our_char="{team_color_char}"), skipping'
+                    )
+                    continue
+                else:
+                    self.strategy.get_logger().info(
+                        f'✅ Putdown zone {zone_name}: batch {fx_batch_id} has members '
+                        f'but majority are NOT our color ("{color_pattern}" our_char="{team_color_char}"), zone usable'
+                    )
 
             dx = zone['x'] - robot_x_mm
             dy = zone['y'] - robot_y_mm
