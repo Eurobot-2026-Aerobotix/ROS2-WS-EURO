@@ -15,6 +15,7 @@ Features:
 """
 
 import math
+import threading
 from typing import Dict, List, Optional, Tuple
 from geometry_msgs.msg import Point
 import time
@@ -92,14 +93,51 @@ class DecisionMaker:
         # Cache for available batches
         self.available_batches = {}
         self.last_batch_update = 0.0
+        self.last_update_map_second = -1
+        self._update_map_lock = threading.Lock()
 
         # Enemy proximity thresholds (in mm)
         # - hard_block_radius_mm: batch is rejected if enemy is this close
         # - near_penalty_radius_mm: batch score is penalized if enemy is within this radius
         self.hard_block_radius_mm = 280.0
         self.near_penalty_radius_mm = 520.0
+
+        self._update_map_timer = self.strategy.create_timer(
+            1.0,
+            self._update_map_during_round
+        )
         
         self.strategy.get_logger().info('🧠 Decision Maker initialized')
+
+    def _update_map_during_round(self):
+        """Refresh the map once per elapsed game second until the round reaches 100s."""
+        round_timer = getattr(self.strategy, 'round', None)
+        if round_timer is None or not round_timer.has_started():
+            return
+
+        elapsed = round_timer.time()
+        if elapsed >= 100.0:
+            return
+
+        current_second = int(elapsed)
+        if current_second <= self.last_update_map_second:
+            return
+
+        if not self._update_map_lock.acquire(blocking=False):
+            return
+
+        try:
+            if current_second <= self.last_update_map_second:
+                return
+
+            self.last_update_map_second = current_second
+            success, message = self.pathfinder.update_map()
+            if not success:
+                self.strategy.get_logger().warning(
+                    f'⚠️ Periodic update_map failed at t={current_second}s: {message}'
+                )
+        finally:
+            self._update_map_lock.release()
 
     def _get_enemy_position_mm(self) -> Optional[Tuple[float, float]]:
         """Get latest enemy position from pathfinder in mm, or None if unavailable."""

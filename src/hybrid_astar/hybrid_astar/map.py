@@ -86,6 +86,9 @@ class MapManager:
         
         # Flag to track if we've locked the baseline patterns
         self.baselines_locked = False
+
+        # Only the first normal update_map flow is allowed to trigger baseline locking.
+        self.baseline_lock_pending = False
         
         # Set to track known_ids that need to be retried (not in TRACKING state)
         self.known_ids_to_retry: set = set()
@@ -147,6 +150,9 @@ class MapManager:
     def handle_clear_map(self, request: Trigger.Request, response: Trigger.Response) -> Trigger.Response:
         """Service handler: Clear all obstacles and reset map state for fresh update"""
         self.node.get_logger().info("🗺️  Clear map service called")
+
+        # Prevent clear/reset operations from triggering baseline lock via retry-stop path.
+        self.baseline_lock_pending = False
         
         # Stop any running retry timer
         self._stop_retry_timer()
@@ -168,6 +174,7 @@ class MapManager:
         # Reset state flags
         self.first_update_map = True
         self.baselines_locked = False
+        self.baseline_lock_pending = False
         self.known_ids_to_retry.clear()
         self.deleted_batch_ids.clear()
         self.active_batch_ids.clear()
@@ -467,6 +474,7 @@ class MapManager:
         # The difference is that first call clears everything, subsequent calls do incremental updates
         if self.first_update_map:
             self.node.get_logger().info("🔄 First update_map call - requesting all batches (unlocked)")
+            self.baseline_lock_pending = True
         
         stable_request = GetStableBatches.Request()
         stable_request.batch_types_filter = "sfg"  # Get all stable batches
@@ -476,7 +484,7 @@ class MapManager:
         # Call service asynchronously
         future = client_to_use.call_async(stable_request)
         future.add_done_callback(lambda f: self._handle_get_stable_batches_response(
-            f, response, client_to_use, service_name, None, False))
+            f, response, client_to_use, service_name, None, False, True))
         
         response.success = True
         message_type = "First" if self.first_update_map else "Incremental"
@@ -505,6 +513,7 @@ class MapManager:
 
         self.retry_client = client_to_use
         self.retry_service_name = service_name
+        self.baseline_lock_pending = False
 
         self.node.get_logger().info("🔄 reset_map called - requesting batches with 'rrr' filter")
 
@@ -515,13 +524,13 @@ class MapManager:
 
         future = client_to_use.call_async(stable_request)
         future.add_done_callback(lambda f: self._handle_get_stable_batches_response(
-            f, response, client_to_use, service_name, None, False))
+            f, response, client_to_use, service_name, None, False, False))
 
         response.success = True
         response.message = f"Reset map triggered from {service_name} with 'rrr' filter (processing asynchronously)"
         return response
 
-    def _handle_get_stable_batches_response(self, future, trigger_response=None, client=None, service_name="", specific_known_id=None, from_retry_timer=False):
+    def _handle_get_stable_batches_response(self, future, trigger_response=None, client=None, service_name="", specific_known_id=None, from_retry_timer=False, can_lock_baseline=True):
         """
         Callback for GetStableBatches service response
         Processes the received batches and updates the map
@@ -548,7 +557,7 @@ class MapManager:
             disappeared_ids = set()
             
             # Remember if this is the first update (before we set it to False)
-            is_first_update = self.first_update_map and specific_known_id is None
+            is_first_update = can_lock_baseline and self.first_update_map and specific_known_id is None
             is_full_update = specific_known_id is None  # Full update (not a specific retry)
             
             # Filter batches based on update type
@@ -867,7 +876,7 @@ class MapManager:
                 self.active_batch_ids = received_batch_ids
                 
                 # Check if all batches are TRACKING and we haven't locked baselines yet
-                if not self.baselines_locked and not self.known_ids_to_retry:
+                if can_lock_baseline and self.baseline_lock_pending and not self.baselines_locked and not self.known_ids_to_retry:
                     self._lock_baseline_patterns()
             
             # Count obstacles by type for summary
@@ -928,7 +937,7 @@ class MapManager:
         self.node.get_logger().info("✅ Auto-retry stopped: all batches are no longer EMERGING")
         
         # After all batches are no longer EMERGING, lock the baseline patterns
-        if not self.baselines_locked:
+        if self.baseline_lock_pending and not self.baselines_locked:
             self._lock_baseline_patterns()
     
     def _lock_baseline_patterns(self):
@@ -957,6 +966,7 @@ class MapManager:
             if response and response.stable_state:
                 num_batches = len(response.stable_state.batches)
                 self.baselines_locked = True
+                self.baseline_lock_pending = False
                 self.node.get_logger().info(f"✅ Baseline patterns locked! Received {num_batches} locked batches")
                 
                 # Track the locked batch IDs
@@ -1008,7 +1018,7 @@ class MapManager:
             self.retry_pending += 1
             future.add_done_callback(
                 lambda f, kid=known_id: self._handle_get_stable_batches_response(
-                    f, None, self.retry_client, self.retry_service_name, kid, True
+                    f, None, self.retry_client, self.retry_service_name, kid, True, True
                 )
             )
     

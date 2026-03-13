@@ -19,6 +19,10 @@ class Round:
     def start_game(self):
         """Start the game timer"""
         self._start_time = time.time()
+
+    def has_started(self):
+        """Return whether the game timer has started."""
+        return self._start_time is not None
     
     def time(self):
         """Return elapsed seconds since start_game() was called"""
