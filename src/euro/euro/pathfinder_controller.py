@@ -108,6 +108,11 @@ class PathfinderClient(Node):
         self.latest_robot_pose_y = None
         self.latest_robot_pose_theta = None
 
+        # Active batches cache (for fast fallback on transient service delays)
+        self.active_batches_cache = None
+        self.active_batches_cache_time = 0.0
+        self.active_batches_cache_ttl_s = 2.0
+
         # Subscribe to robot pose
         self.robot_pose_subscription = self.create_subscription(
             Vector3,
@@ -519,23 +524,38 @@ class PathfinderClient(Node):
                 'qualities': List[int]
             }
         """
+        import time
+
+        # If service is not ready, return fresh-enough cache immediately
+        if not self.get_active_batches_client.service_is_ready():
+            now = time.time()
+            if self.active_batches_cache is not None and (now - self.active_batches_cache_time) <= self.active_batches_cache_ttl_s:
+                self.get_logger().warning('⚠️ /pathfinder/get_active_batches not ready, using cached active batches')
+                return self.active_batches_cache
+            self.get_logger().error('❌ /pathfinder/get_active_batches service not ready')
+            return None
+
         request = GetActiveBatches.Request()
-        
         future = self.get_active_batches_client.call_async(request)
-        
-        # Wait for future to complete with proper spinning
-        rclpy.spin_until_future_complete(self, future, timeout_sec=5.0)
-        
-        if not future.done():
-            self.get_logger().error(f'❌ Get active batches service call timed out after 5s')
+
+        # Keep this call responsive: short timeout, then fallback to cache
+        timeout_sec = 1.5
+        rclpy.spin_until_future_complete(self, future, timeout_sec=timeout_sec)
+
+        if not future.done() or not future.result():
+            now = time.time()
+            if self.active_batches_cache is not None and (now - self.active_batches_cache_time) <= self.active_batches_cache_ttl_s:
+                self.get_logger().warning(
+                    f'⚠️ Get active batches delayed (> {timeout_sec:.1f}s), using cache '
+                    f'age={now - self.active_batches_cache_time:.2f}s'
+                )
+                return self.active_batches_cache
+
+            self.get_logger().error(f'❌ Get active batches service call timed out after {timeout_sec:.1f}s (no cache)')
             return None
-        
-        if not future.result():
-            self.get_logger().error('❌ Get active batches service call failed')
-            return None
-        
+
         response = future.result()
-        
+
         # Convert response to dictionary
         batch_info = {
             'known_ids': list(response.known_ids),
@@ -545,13 +565,17 @@ class PathfinderClient(Node):
             'centers': list(response.centers),
             'qualities': list(response.qualities)
         }
-        
+
+        # Refresh cache
+        self.active_batches_cache = batch_info
+        self.active_batches_cache_time = time.time()
+
         self.get_logger().info(
             f'📊 Retrieved {len(batch_info["known_ids"])} active batches: '
             f'FX={batch_info["batch_types"].count("fx")}, '
             f'SX={batch_info["batch_types"].count("sx")}'
         )
-        
+
         return batch_info
 
 

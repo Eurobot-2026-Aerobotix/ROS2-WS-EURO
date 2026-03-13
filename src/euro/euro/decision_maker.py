@@ -94,6 +94,7 @@ class DecisionMaker:
         self.available_batches = {}
         self.last_batch_update = 0.0
         self.last_update_map_second = -1
+        self.update_map_period_s = 2
         self._update_map_lock = threading.Lock()
 
         # Enemy proximity thresholds (in mm)
@@ -102,10 +103,7 @@ class DecisionMaker:
         self.hard_block_radius_mm = 280.0
         self.near_penalty_radius_mm = 520.0
 
-        self._update_map_timer = self.strategy.create_timer(
-            1.0,
-            self._update_map_during_round
-        )
+        self._update_map_timer = self.strategy.create_timer(1.0, self._update_map_during_round)
         
         self.strategy.get_logger().info('🧠 Decision Maker initialized')
 
@@ -121,6 +119,10 @@ class DecisionMaker:
 
         current_second = int(elapsed)
         if current_second <= self.last_update_map_second:
+            return
+
+        # Throttle map updates to reduce service contention
+        if (current_second % self.update_map_period_s) != 0:
             return
 
         if not self._update_map_lock.acquire(blocking=False):
