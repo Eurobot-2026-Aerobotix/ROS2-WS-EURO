@@ -123,9 +123,9 @@ class HybridAStarNode(Node):
             Trigger, '/clear_map', self.map_manager.handle_clear_map,
             callback_group=self.reentrant_group)
         
-        # Get active batches service
-        self.get_active_batches_service = self.create_service(
-            GetActiveBatches, '/pathfinder/get_active_batches', self.handle_get_active_batches,
+        # Delegate reset_map service to MapManager (same as update_map but with 'rrr' types_filter)
+        self.reset_map_service = self.create_service(
+            Trigger, '/reset_map', self.map_manager.handle_reset_map,
             callback_group=self.reentrant_group)
         
         # Initialize pathfinder
@@ -935,18 +935,18 @@ class HybridAStarNode(Node):
                 self.get_logger().warn("❌ No valid batches found for position search")
                 return response
             
-            # Check if closest batch is within 0.2m (200mm) tolerance
-            if min_distance > 0.3:
+            # Check if closest batch is within 0.33m (330mm) tolerance
+            if min_distance > 0.33:
                 response.success = False
                 response.color_pattern = ""
                 response.direction = ""
                 response.batch_center.x = 0.0
                 response.batch_center.y = 0.0
                 response.batch_center.z = 0.0
-                response.message = f"Closest batch is too far ({min_distance*1000:.0f}mm > 200mm limit)"
+                response.message = f"Closest batch is too far ({min_distance*1000:.0f}mm > 330mm limit)"
                 self.get_logger().warn(
                     f"❌ Closest batch '{closest_batch.known_id}' is {min_distance*1000:.0f}mm away "
-                    f"(exceeds 300mm limit) - skipping"
+                    f"(exceeds 330mm limit) - skipping"
                 )
                 return response
             

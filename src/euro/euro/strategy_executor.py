@@ -43,24 +43,29 @@ replanning=False
 last_stm_command=""
 PATH_PREPARED = False  # Flag indicating path is prepared in background
 PREPARING_PATH = False  # Flag indicating path preparation is in progress
-def path_planning_task(strategy, lidar, round_timer, pneumatic_controller=None, front_controller=None, back_controller=None):
-    """Dedicated thread for handling return home at 85s"""
+return_home_triggered = False  # Flag to ensure return home logic only triggers once
+def path_planning_task(strategy, lidar, round_timer, pneumatic_controller=None, front_controller=None, back_controller=None,stm32_controller=None):
+    """Dedicated thread for handling return home at 90s"""
     global SHUTDOWN_REQUESTED
     global last_stm_command
     global IDLE
     global IDLE_FOR_SYSTEMS
     global SYSTEMS_IDLE_COUNT
     global replanning
-    
+    global return_home_triggered
     strategy.get_logger().info("🏠 Return home monitor thread started")
     return_home_triggered = False
-    
+    reset_stm_triggered=False
     while rclpy.ok() and not SHUTDOWN_REQUESTED:
-        # Check if only 15 seconds remain (85s elapsed out of 100s)
-        if round_timer.time() >= 85.0 and not return_home_triggered:
+        # Check if only 10 seconds remain (90s elapsed out of 100s)
+        if round_timer.time()>=100.0 and not reset_stm_triggered:
+            strategy.get_logger().info("⏰ Game time reached 100s -    resetting stm")
+            stm32_controller.reset()
+            reset_stm_triggered=True
+        if round_timer.time() >= 90.0 and round_timer.time() <= 100.0 and not return_home_triggered:
             return_home_triggered = True
             strategy.end_game = True
-            strategy.get_logger().warning("⏰ Only 15 seconds left! Returning home to (250, 225)...")
+            strategy.get_logger().warning("⏰ Only 10 seconds left! Returning home to (250, 225)...")
             
             # Reset systems without stopping STM32 (like at start)
             if pneumatic_controller and front_controller and back_controller:
@@ -136,9 +141,9 @@ def prepare_path(strategy, lidar):
     while not path_found and EMERGENCY_STOP and not SHUTDOWN_REQUESTED:
         attempt_count += 1
         
-        # Re-set goal before trying
+        # Re-set goal before trying (global_pos_x/y are already in meters after task load)
         if strategy.global_pos_x is not None and strategy.global_pos_y is not None and strategy.global_pos_angle is not None:
-            strategy.handle_global_goal(float(strategy.global_pos_x)/1000, float(strategy.global_pos_y)/1000, float(strategy.global_pos_angle))
+            strategy.handle_global_goal(float(strategy.global_pos_x), float(strategy.global_pos_y), float(strategy.global_pos_angle))
             strategy.get_logger().info(f"🗺️  Background path prep attempt #{attempt_count}")
             
             # Use prepare=True to generate path without loading to queue
@@ -207,7 +212,7 @@ def execute_prepared_path(strategy, lidar):
         strategy.get_logger().warning("⚠️ No prepared path available - generating synchronously as fallback...")
         
         if strategy.global_pos_x is not None and strategy.global_pos_y is not None and strategy.global_pos_angle is not None:
-            strategy.handle_global_goal(float(strategy.global_pos_x)/1000, float(strategy.global_pos_y)/1000, float(strategy.global_pos_angle))
+            strategy.handle_global_goal(float(strategy.global_pos_x), float(strategy.global_pos_y), float(strategy.global_pos_angle))
             # Call path() without prepare (default False) - generates and loads immediately
             path_found = strategy.path()
             
@@ -271,7 +276,7 @@ def robot_status(strategy, stm32, lidar):
                     
                     # Log state changes for IDLE
                     if IDLE != old_idle:
-                        strategy.get_logger().info(f"🔄 IDLE changed: {old_idle} → {IDLE} (last_stm_command={last_stm_command})")
+                        strategy.get_logger().info(f"🔄 IDLE changed: {old_idle} → {IDLE} (last_stm_command={last_stm_command})")   
             if  IDLE_FOR_SYSTEMS ==True and PREVIOUS_IDLE_FOR_SYSTEMS==False and last_stm_command!="emergency" :
                 SYSTEMS_IDLE_COUNT+=1
             PREVIOUS_IDLE_FOR_SYSTEMS=IDLE_FOR_SYSTEMS
@@ -845,7 +850,12 @@ def put_down(controller,pneumatic,strategy,front):
     
     if front:
         pneumatic.front(15)
-    else: pneumatic.back(15)
+        time.sleep(0.5)
+        pneumatic.front(15)
+    else: 
+        pneumatic.back(15)
+        time.sleep(0.5)
+        pneumatic.back(15)
     if front:
         ESP_FRONT_IDLE=True
     else: ESP_BACK_IDLE=True
@@ -934,6 +944,7 @@ def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=No
     global WAITING_TIRETTE
     global IDLE
     global IDLE_FOR_SYSTEMS
+    global return_home_triggered
     while rclpy.ok() and not SHUTDOWN_REQUESTED:
         # Check if there are commands in the queue
         if len(strategy.queues['RASP_PI']) > 0:
@@ -1008,6 +1019,7 @@ def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=No
                 # Wait until game time reaches 1.25s + duration
                 duration = float(params[0]) if params else 0
                 target_time = 85 + duration
+                return_home_triggered=True
                 strategy.get_logger().info(f"⏳ Waiting until game time reaches {target_time}s (85s + {duration}s)")
                 
                 while rclpy.ok() and not SHUTDOWN_REQUESTED:

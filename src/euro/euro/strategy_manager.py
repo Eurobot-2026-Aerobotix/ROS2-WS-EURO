@@ -192,14 +192,14 @@ class StrategyManager(Node):
                         if self.last_task_device == 'ESP_front' :
                             self.queues['STM'].append({
                                 'command': 'go_to',
-                                'params': [self.global_pos_x, self.global_pos_y, 1100.0, 1.0, {'from_pathfinding': True}],  # Mark as from pathfinding
+                                'params': [self.global_pos_x*1000, self.global_pos_y*1000, 1100.0, 1.0, {'from_pathfinding': True}],  # Mark as from pathfinding
                                 'wait': False
                             })
                             self.get_logger().info(f"Added go_to command with global position: x={self.global_pos_x}, y={self.global_pos_y} (last command after pathfinding )")
                         elif self.last_task_device == 'ESP_back' :
                             self.queues['STM'].append({
                                 'command': 'go_to_backwards',
-                                'params': [self.global_pos_x, self.global_pos_y, 1100.0, 1.0, {'from_pathfinding': True}],  # Mark as from pathfinding
+                                'params': [self.global_pos_x*1000, self.global_pos_y*1000, 1100.0, 1.0, {'from_pathfinding': True}],  # Mark as from pathfinding
                                 'wait': False
                             })
                             
@@ -220,6 +220,7 @@ class StrategyManager(Node):
         known_id = ''
         self.get_logger().info("requesting from pathfinder for checking if there is a batch or no(global pose ) ")
         color_pattern, success, direction, batch_center, batch_known_id = self.pathfinder.get_batch_color(known_id, pos)
+        self.get_logger().info(f"found batch: {success}")
         if success and self.last_task_command =='pick_up' :
             found_goal_batch=True
             if (direction == "horizontal" and y < batch_center.y) :
@@ -409,8 +410,8 @@ def reset_systems(pneumatic_controller,front_controller,back_controller,stm32_co
                 stm32_controller.reset(timeout=2.0)
         
         # Reset pneumatic and ESP controllers
-        pneumatic_controller.front(16)
-        pneumatic_controller.back(16)
+        pneumatic_controller.front(20)
+        pneumatic_controller.back(20)
         front_controller.kabech(0)
         back_controller.kabech(0)
         front_controller.dawer(0)
@@ -500,7 +501,7 @@ def main(args=None):
     
     path_planning_thread = threading.Thread(
         target=path_planning_task,
-        args=(strategy, lidar, strategy.round, pneumatic, front, back),
+        args=(strategy, lidar, strategy.round, pneumatic, front, back,stm32),
         daemon=True
     )
     path_planning_thread.start()
@@ -609,8 +610,8 @@ def main(args=None):
                         strategy.get_logger().info(f"Global goal found for task '{task['name']}'")
                         strategy.handle_global_goal(float(strategy.global_pos_x)/1000, float(strategy.global_pos_y)/1000, float(strategy.global_pos_angle))
                         strategy.get_logger().info("global pose set goal")
-                        strategy.global_pos_x =float( strategy.global_pos_x)
-                        strategy.global_pos_y =float( strategy.global_pos_y)
+                        strategy.global_pos_x =float( strategy.global_pos_x)/1000
+                        strategy.global_pos_y =float( strategy.global_pos_y)/1000
                         strategy.global_pos_angle =float( strategy.global_pos_angle)
                         #strategy.pathfinder.set_goal(float(strategy.global_pos_x)/1000, float(strategy.global_pos_y)/1000,float(strategy.global_pos_angle))
                 else:

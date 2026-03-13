@@ -482,7 +482,45 @@ class MapManager:
         message_type = "First" if self.first_update_map else "Incremental"
         response.message = f"{message_type} map update triggered from {service_name} (processing asynchronously)"
         return response
-    
+
+    def handle_reset_map(self, request: Trigger.Request, response: Trigger.Response) -> Trigger.Response:
+        """
+        Service handler: Reset map by requesting stable batches filtered by 'rrr'.
+        Works identically to handle_update_map but uses 'rrr' as the batch_types_filter.
+        """
+        client_to_use = None
+        service_name = ""
+
+        if self.get_stable_batches_client.service_is_ready():
+            client_to_use = self.get_stable_batches_client
+            service_name = "/aruco_mapper/get_stable_batches"
+        elif self.get_stable_batches_client_web and self.get_stable_batches_client_web.service_is_ready():
+            client_to_use = self.get_stable_batches_client_web
+            service_name = "/aruco_mapper/get_stable_batches_web"
+        else:
+            self.node.get_logger().error("❌ No GetStableBatches service available")
+            response.success = False
+            response.message = "No batch service available"
+            return response
+
+        self.retry_client = client_to_use
+        self.retry_service_name = service_name
+
+        self.node.get_logger().info("🔄 reset_map called - requesting batches with 'rrr' filter")
+
+        stable_request = GetStableBatches.Request()
+        stable_request.batch_types_filter = "rrr"
+        stable_request.specific_known_id = ""
+        stable_request.only_locked_baselines = False
+
+        future = client_to_use.call_async(stable_request)
+        future.add_done_callback(lambda f: self._handle_get_stable_batches_response(
+            f, response, client_to_use, service_name, None, False))
+
+        response.success = True
+        response.message = f"Reset map triggered from {service_name} with 'rrr' filter (processing asynchronously)"
+        return response
+
     def _handle_get_stable_batches_response(self, future, trigger_response=None, client=None, service_name="", specific_known_id=None, from_retry_timer=False):
         """
         Callback for GetStableBatches service response
