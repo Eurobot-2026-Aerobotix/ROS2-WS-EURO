@@ -164,33 +164,51 @@ class PathfinderClient(Node):
     # =========================================================
     # PATH PLANNING
     # =========================================================
-    def path(self):
+    def path(self, start_x=None, start_y=None, start_theta=None):
         """
         Plan a path from current robot position to stored goal position
         Uses latest robot pose from /robot_pose_raw and stored goal from set_goal()
+        unless an explicit start pose is provided.
+
+        Args:
+            start_x: Optional start X in meters
+            start_y: Optional start Y in meters
+            start_theta: Optional start yaw in radians
         
         Returns:
             stm32_commands (list[str]): List of formatted STM32 commands
             success (bool): Whether path planning succeeded
         """
-        # Check if robot pose is available
-        if self.latest_robot_pose_x is None or self.latest_robot_pose_y is None or self.latest_robot_pose_theta is None:
-            self.get_logger().error("No robot pose received yet!")
-            return [], False
+        # Resolve start pose source: explicit args if provided, otherwise latest robot pose
+        use_override_start = (
+            start_x is not None and start_y is not None and start_theta is not None
+        )
+
+        if use_override_start:
+            resolved_start_x = float(start_x)
+            resolved_start_y = float(start_y)
+            resolved_start_theta = float(start_theta)
+        else:
+            if self.latest_robot_pose_x is None or self.latest_robot_pose_y is None or self.latest_robot_pose_theta is None:
+                self.get_logger().error("No robot pose received yet!")
+                return [], False
+            resolved_start_x = self.latest_robot_pose_x
+            resolved_start_y = self.latest_robot_pose_y
+            resolved_start_theta = self.latest_robot_pose_theta
         
         # Check if goal is set
         if self.goal_x is None or self.goal_y is None or self.goal_angle is None:
             self.get_logger().error("No goal set! Use set_goal(x, y, angle) first.")
             return [], False
         
-        # Create start pose from latest robot position
+        # Create start pose from resolved source
         start_pose = PoseStamped()
         start_pose.header.stamp = self.get_clock().now().to_msg()
         start_pose.header.frame_id = "map"
-        start_pose.pose.position.x = self.latest_robot_pose_x
-        start_pose.pose.position.y = self.latest_robot_pose_y
+        start_pose.pose.position.x = resolved_start_x
+        start_pose.pose.position.y = resolved_start_y
         start_pose.pose.position.z = 0.0
-        start_pose.pose.orientation = self._yaw_to_quaternion(self.latest_robot_pose_theta)
+        start_pose.pose.orientation = self._yaw_to_quaternion(resolved_start_theta)
         
         # Create goal pose from stored goal
         goal_pose = PoseStamped()

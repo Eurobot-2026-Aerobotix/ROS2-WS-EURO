@@ -856,7 +856,10 @@ class DecisionMaker:
             device=device,
             target_x=putdown_pos['x'],
             target_y=putdown_pos['y'],
-            target_theta=putdown_pos['theta']
+            target_theta=putdown_pos['theta'],
+            start_x=pickup_x_mm,
+            start_y=pickup_y_mm,
+            start_theta=pickup_theta
         )
         
         if putdown_task is None:
@@ -872,8 +875,9 @@ class DecisionMaker:
         self.strategy.get_logger().info(f'✅ Generated complete steal sequence: pickup + putdown at {zone_name}')
         return [pickup_task, putdown_task]
     
-    def create_put_down_task(self, device: str, target_x: float, target_y: float, 
-                            target_theta: float) -> Optional[Dict]:
+    def create_put_down_task(self, device: str, target_x: float, target_y: float,
+                            target_theta: float, start_x: Optional[float] = None,
+                            start_y: Optional[float] = None, start_theta: Optional[float] = None) -> Optional[Dict]:
         """
         Create a put_down task to drop batch at target location
         
@@ -882,6 +886,9 @@ class DecisionMaker:
             target_x: Target x coordinate in mm
             target_y: Target y coordinate in mm
             target_theta: Target orientation in degrees
+            start_x: Optional start x in mm (if provided, overrides live robot pose)
+            start_y: Optional start y in mm (if provided, overrides live robot pose)
+            start_theta: Optional start theta in degrees (if provided, overrides live robot pose)
         
         Returns:
             Task dictionary for putting down batch, or None if path generation fails
@@ -901,8 +908,16 @@ class DecisionMaker:
             target_theta_rad
         )
         
-        # Get path waypoints
-        stm32_commands, path_success = self.pathfinder.path()
+        # Get path waypoints (use explicit start pose if provided)
+        if start_x is not None and start_y is not None and start_theta is not None:
+            start_theta_rad = math.radians(start_theta)
+            stm32_commands, path_success = self.pathfinder.path(
+                start_x=start_x / 1000.0,
+                start_y=start_y / 1000.0,
+                start_theta=start_theta_rad
+            )
+        else:
+            stm32_commands, path_success = self.pathfinder.path()
         
         if not path_success:
             self.strategy.get_logger().error('❌ Failed to generate path for put_down')
