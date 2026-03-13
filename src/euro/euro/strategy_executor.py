@@ -55,12 +55,13 @@ def path_planning_task(strategy, lidar, round_timer, pneumatic_controller=None, 
     global return_home_triggered
     strategy.get_logger().info("🏠 Return home monitor thread started")
     return_home_triggered = False
-    
+    reset_stm_triggered=False
     while rclpy.ok() and not SHUTDOWN_REQUESTED:
         # Check if only 10 seconds remain (90s elapsed out of 100s)
-        if round_timer.time()>=100.0:
+        if round_timer.time()>=100.0 and not reset_stm_triggered:
             strategy.get_logger().info("⏰ Game time reached 100s -    resetting stm")
             stm32_controller.reset()
+            reset_stm_triggered=True
         if round_timer.time() >= 90.0 and round_timer.time() <= 100.0 and not return_home_triggered:
             return_home_triggered = True
             strategy.end_game = True
@@ -140,9 +141,9 @@ def prepare_path(strategy, lidar):
     while not path_found and EMERGENCY_STOP and not SHUTDOWN_REQUESTED:
         attempt_count += 1
         
-        # Re-set goal before trying
+        # Re-set goal before trying (global_pos_x/y are already in meters after task load)
         if strategy.global_pos_x is not None and strategy.global_pos_y is not None and strategy.global_pos_angle is not None:
-            strategy.handle_global_goal(float(strategy.global_pos_x)/1000, float(strategy.global_pos_y)/1000, float(strategy.global_pos_angle))
+            strategy.handle_global_goal(float(strategy.global_pos_x), float(strategy.global_pos_y), float(strategy.global_pos_angle))
             strategy.get_logger().info(f"🗺️  Background path prep attempt #{attempt_count}")
             
             # Use prepare=True to generate path without loading to queue
@@ -211,7 +212,7 @@ def execute_prepared_path(strategy, lidar):
         strategy.get_logger().warning("⚠️ No prepared path available - generating synchronously as fallback...")
         
         if strategy.global_pos_x is not None and strategy.global_pos_y is not None and strategy.global_pos_angle is not None:
-            strategy.handle_global_goal(float(strategy.global_pos_x)/1000, float(strategy.global_pos_y)/1000, float(strategy.global_pos_angle))
+            strategy.handle_global_goal(float(strategy.global_pos_x), float(strategy.global_pos_y), float(strategy.global_pos_angle))
             # Call path() without prepare (default False) - generates and loads immediately
             path_found = strategy.path()
             
@@ -843,7 +844,12 @@ def put_down(controller,pneumatic,strategy,front):
     
     if front:
         pneumatic.front(15)
-    else: pneumatic.back(15)
+        time.sleep(0.5)
+        pneumatic.front(15)
+    else: 
+        pneumatic.back(15)
+        time.sleep(0.5)
+        pneumatic.back(15)
     if front:
         ESP_FRONT_IDLE=True
     else: ESP_BACK_IDLE=True
