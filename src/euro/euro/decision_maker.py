@@ -92,8 +92,72 @@ class DecisionMaker:
         # Cache for available batches
         self.available_batches = {}
         self.last_batch_update = 0.0
+
+        # Enemy proximity thresholds (in mm)
+        # - hard_block_radius_mm: batch is rejected if enemy is this close
+        # - near_penalty_radius_mm: batch score is penalized if enemy is within this radius
+        self.hard_block_radius_mm = 280.0
+        self.near_penalty_radius_mm = 520.0
         
         self.strategy.get_logger().info('🧠 Decision Maker initialized')
+
+    def _get_enemy_position_mm(self) -> Optional[Tuple[float, float]]:
+        """Get latest enemy position from pathfinder in mm, or None if unavailable."""
+        if self.pathfinder.enemy_x is None or self.pathfinder.enemy_y is None:
+            return None
+        return (self.pathfinder.enemy_x * 1000.0, self.pathfinder.enemy_y * 1000.0)
+
+    @staticmethod
+    def _distance_mm(x1: float, y1: float, x2: float, y2: float) -> float:
+        """Euclidean distance in mm."""
+        return math.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2)
+
+    def _get_batch_enemy_distances_mm(self, batch: Dict, pickup_pose: Dict,
+                                      enemy_x_mm: float, enemy_y_mm: float) -> Tuple[float, float, float]:
+        """
+        Returns distances from enemy to:
+          (batch_center_mm, pickup_pose_mm, min_of_both_mm)
+        """
+        # batch center is in meters in active batch info
+        center_x_mm = batch['center'].x * 1000.0
+        center_y_mm = batch['center'].y * 1000.0
+
+        pickup_x_mm = float(pickup_pose['x'])
+        pickup_y_mm = float(pickup_pose['y'])
+
+        d_center = self._distance_mm(enemy_x_mm, enemy_y_mm, center_x_mm, center_y_mm)
+        d_pickup = self._distance_mm(enemy_x_mm, enemy_y_mm, pickup_x_mm, pickup_y_mm)
+        return d_center, d_pickup, min(d_center, d_pickup)
+
+    def _is_hard_blocked_by_enemy(self, batch: Dict, pickup_pose: Dict,
+                                  enemy_x_mm: float, enemy_y_mm: float) -> bool:
+        """Return True if enemy is too close to batch center or pickup pose."""
+        _, _, min_distance = self._get_batch_enemy_distances_mm(
+            batch, pickup_pose, enemy_x_mm, enemy_y_mm
+        )
+        return min_distance <= self.hard_block_radius_mm
+
+    def _compute_enemy_penalty(self, batch: Dict, pickup_pose: Dict,
+                               enemy_x_mm: float, enemy_y_mm: float) -> float:
+        """
+        Compute a score penalty based on enemy proximity.
+        0 outside near_penalty_radius_mm, increasing as enemy gets closer.
+        """
+        _, _, min_distance = self._get_batch_enemy_distances_mm(
+            batch, pickup_pose, enemy_x_mm, enemy_y_mm
+        )
+
+        if min_distance >= self.near_penalty_radius_mm:
+            return 0.0
+
+        # Guard against invalid configuration
+        effective_span = max(1.0, self.near_penalty_radius_mm - self.hard_block_radius_mm)
+
+        # proximity in [0,1], where 1 is right at hard block radius
+        proximity = (self.near_penalty_radius_mm - max(min_distance, self.hard_block_radius_mm)) / effective_span
+
+        max_penalty = 2.0
+        return proximity * max_penalty
     
     def set_front_status(self, is_full: bool):
         """Set front picker status"""
@@ -446,6 +510,13 @@ class DecisionMaker:
         
         robot_x_mm = robot_pose.x * 1000
         robot_y_mm = robot_pose.y * 1000
+
+        enemy_pos_mm = self._get_enemy_position_mm()
+        if enemy_pos_mm is not None:
+            self.strategy.get_logger().info(
+                f'⚠️ Enemy considered in scoring: hard_block_radius={self.hard_block_radius_mm:.0f}mm, '
+                f'near_penalty_radius={self.near_penalty_radius_mm:.0f}mm'
+            )
         
         # Filter batches
         batches = list(self.available_batches.values())
@@ -476,6 +547,19 @@ class DecisionMaker:
         for item in batches_with_poses:
             batch = item['batch']
             pickup_pose = item['pickup_pose']
+
+            # Hard reject if enemy blocks this batch/pickup area
+            if enemy_pos_mm is not None:
+                enemy_x_mm, enemy_y_mm = enemy_pos_mm
+                if self._is_hard_blocked_by_enemy(batch, pickup_pose, enemy_x_mm, enemy_y_mm):
+                    _, _, min_enemy_dist = self._get_batch_enemy_distances_mm(
+                        batch, pickup_pose, enemy_x_mm, enemy_y_mm
+                    )
+                    self.strategy.get_logger().info(
+                        f'🚫 Skipping batch {batch["known_id"]}: enemy too close '
+                        f'({min_enemy_dist:.0f}mm <= {self.hard_block_radius_mm:.0f}mm)'
+                    )
+                    continue
             
             # Calculate distance to pickup point
             dx = pickup_pose['x'] - robot_x_mm
@@ -498,6 +582,12 @@ class DecisionMaker:
                 member_score * 2.0 +
                 quality_score * 1.5
             )
+
+            enemy_penalty = 0.0
+            if enemy_pos_mm is not None:
+                enemy_x_mm, enemy_y_mm = enemy_pos_mm
+                enemy_penalty = self._compute_enemy_penalty(batch, pickup_pose, enemy_x_mm, enemy_y_mm)
+                total_score -= enemy_penalty
             
             scored_batches.append({
                 'known_id': batch['known_id'],
@@ -508,8 +598,13 @@ class DecisionMaker:
                 'quality': batch['quality'],
                 'pickup_pose': pickup_pose,
                 'distance_mm': distance_mm,
-                'score': total_score
+                'score': total_score,
+                'enemy_penalty': enemy_penalty
             })
+
+        if not scored_batches:
+            self.strategy.get_logger().info('ℹ️ No valid batches left after enemy blocking filter')
+            return None
         
         # Sort by score (highest first)
         scored_batches.sort(key=lambda x: x['score'], reverse=True)
@@ -518,7 +613,7 @@ class DecisionMaker:
         self.strategy.get_logger().info(
             f'🎯 Optimal batch: {best["known_id"]} (type={best["batch_type"]}, '
             f'members={best["member_count"]}, distance={best["distance_mm"]:.0f}mm, '
-            f'score={best["score"]:.2f})'
+            f'enemy_penalty={best.get("enemy_penalty", 0.0):.2f}, score={best["score"]:.2f})'
         )
         
         return best
@@ -721,6 +816,11 @@ class DecisionMaker:
         # if the task fails or is interrupted.
         
         self.strategy.get_logger().info(f'✅ Generated pickup task: {pickup_task["name"]}')
+
+        # Exclude picked batch from obstacle set for subsequent path generation (e.g., putdown path)
+        # while keeping its metadata queryable by known_id.
+        if hasattr(self.pathfinder, 'add_untracked_batch'):
+            self.pathfinder.add_untracked_batch(known_id)
         
         # ========== NOW CREATE PUTDOWN TASK ==========
         
@@ -731,6 +831,8 @@ class DecisionMaker:
         )
         if putdown_zone_result is None:
             self.strategy.get_logger().warning('⚠️ No putdown zone available, returning pickup task only')
+            if hasattr(self.pathfinder, 'remove_untracked_batch'):
+                self.pathfinder.remove_untracked_batch(known_id)
             return [pickup_task]
         
         zone_name, zone = putdown_zone_result
@@ -745,6 +847,8 @@ class DecisionMaker:
         )
         if putdown_pos is None:
             self.strategy.get_logger().warning('⚠️ Could not calculate putdown position, returning pickup task only')
+            if hasattr(self.pathfinder, 'remove_untracked_batch'):
+                self.pathfinder.remove_untracked_batch(known_id)
             return [pickup_task]
         
         # Create putdown task using the same device
@@ -757,7 +861,13 @@ class DecisionMaker:
         
         if putdown_task is None:
             self.strategy.get_logger().warning('⚠️ Failed to generate putdown task, returning pickup task only')
+            if hasattr(self.pathfinder, 'remove_untracked_batch'):
+                self.pathfinder.remove_untracked_batch(known_id)
             return [pickup_task]
+
+        # Putdown task is now generated. Restore default obstacle tracking for future planning calls.
+        if hasattr(self.pathfinder, 'remove_untracked_batch'):
+            self.pathfinder.remove_untracked_batch(known_id)
         
         self.strategy.get_logger().info(f'✅ Generated complete steal sequence: pickup + putdown at {zone_name}')
         return [pickup_task, putdown_task]

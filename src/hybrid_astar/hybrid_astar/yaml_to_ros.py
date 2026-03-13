@@ -214,6 +214,9 @@ class YAMLToPathPlanner(Node):
         req.goal_pose.pose.orientation.z = math.sin(theta / 2.0)
         req.goal_pose.pose.orientation.w = math.cos(theta / 2.0)
 
+        # No batch ignored by default
+        req.untracked_batches = []
+
         self.get_logger().info("🧭 Requesting path...")
         future = self.client.call_async(req)
         rclpy.spin_until_future_complete(self, future, timeout_sec=30.0)

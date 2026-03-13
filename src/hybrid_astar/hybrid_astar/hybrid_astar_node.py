@@ -505,13 +505,6 @@ class HybridAStarNode(Node):
             in_x_range = obs_x - margin <= goal_x <= obs_x + obs_width + margin
             in_y_range = obs_y - margin <= goal_y <= obs_y + obs_height + margin
             
-            # Use log_once to avoid spamming batch check details
-            self.log_once(
-                f"    Batch '{obs_id}': center=({batch_center_x:.1f}, {batch_center_y:.1f}), "
-                f"bounds=({obs_x:.1f},{obs_y:.1f})+({obs_width:.1f}x{obs_height:.1f}), "
-                f"dist={distance:.1f}mm, in_range={in_x_range and in_y_range}"
-            )
-            
             if in_x_range and in_y_range:
                 self.get_logger().info(
                     f"  ✅ Goal ({goal_x:.1f}, {goal_y:.1f}) overlaps with batch '{obs_id}' "
@@ -549,6 +542,24 @@ class HybridAStarNode(Node):
         
         # Filter obstacles by color
         active_obstacles = self.map_manager.get_active_obstacles()
+
+        # Optionally ignore selected batch obstacles for planning while keeping metadata available
+        # Request carries known_ids (e.g., ['S6_WEB']) and we skip obstacles with ids like:
+        #   fx_<known_id>_memberN / sx_<known_id>_memberN
+        untracked_batches = [kid.strip() for kid in list(request.untracked_batches) if kid.strip()]
+        if untracked_batches:
+            before_count = len(active_obstacles)
+            active_obstacles = [
+                obs for obs in active_obstacles
+                if not any(
+                    f"fx_{known_id}_" in obs.get('id', '') or f"sx_{known_id}_" in obs.get('id', '')
+                    for known_id in untracked_batches
+                )
+            ]
+            removed_count = before_count - len(active_obstacles)
+            self.get_logger().info(
+                f"   Untracked batches for planning: {untracked_batches} (ignored {removed_count} obstacles)"
+            )
         
         self.get_logger().info(f"   Dynamic obstacles: {len(active_obstacles)}")
         self.get_logger().info(f"   Permanent area: (0,600)→(450,2400) always blocked")
@@ -565,15 +576,12 @@ class HybridAStarNode(Node):
             self.pathfinder.set_obstacles(active_obstacles, grid_resolution, static_walls=None)
             
             # Automatically detect if goal is targeting a batch for pickup
-            self.get_logger().info(f"🔍 Checking if goal is targeting a batch for pickup...")
             allow_goal_collision = self._is_goal_on_batch(goal_x, goal_y, active_obstacles)
             if allow_goal_collision:
                 self.get_logger().info("🎯 Goal overlaps with batch obstacle - enabling batch pickup mode")
-            else:
-                self.get_logger().info("ℹ️  Goal does not overlap with any batch - standard collision rules apply")
+            
             
             # Run Hybrid A* algorithm (same as local script)
-            self.get_logger().info("🔍 Searching for path...")
             path = self.pathfinder.find_path(
                 start_pose=(start_x, start_y, start_theta),
                 goal_pose=(goal_x, goal_y, goal_theta),
@@ -630,7 +638,7 @@ class HybridAStarNode(Node):
                         self.get_logger().info(f"⚠ Goal orientation {math.degrees(goal_theta):.1f}° would cause collision during rotation, keeping {math.degrees(current_theta):.1f}°")
                 
                 # Validate that each waypoint can safely rotate to travel angle
-                self.get_logger().info(f"🔍 Validating travel rotations for {len(smoothed)} waypoints...")
+                # Validate that each waypoint can safely rotate to travel angle
                 validated = []
                 for i in range(len(smoothed)):
                     x, y, theta = smoothed[i]
@@ -697,7 +705,6 @@ class HybridAStarNode(Node):
                 smoothed = validated
                 
                 # Remove waypoints that are too close (rotation-only waypoints)
-                self.get_logger().info(f"🔧 Removing rotation-only waypoints...")
                 optimized = [smoothed[0]]  # Always keep first waypoint
                 
                 i = 1
@@ -740,11 +747,7 @@ class HybridAStarNode(Node):
                     self.get_logger().info(f"🎯 Optimized to {len(optimized)} waypoints (removed {len(smoothed)-len(optimized)} rotation-only waypoints)")
                     smoothed = optimized
                 
-                self.get_logger().info(f"ℹ️  Intersection optimization disabled - keeping all waypoints")
-                self.get_logger().info(f"ℹ️  Axis-aligned projection disabled - keeping all waypoints")
-                
                 # FINAL VALIDATION: Check each waypoint can safely rotate to travel toward next waypoint
-                self.get_logger().info(f"🔒 Final safety check: validating travel rotations...")
                 final_path = []
                 for i in range(len(smoothed)):
                     x, y, theta = smoothed[i]
@@ -825,7 +828,6 @@ class HybridAStarNode(Node):
                         final_path.append((x, y, theta))
                 
                 smoothed = final_path
-                self.get_logger().info("🧠 Applying intersection optimization...")
                 smoothed = self.optimize_path_with_intersections(
                     smoothed, 
                     grid_resolution=grid_resolution,

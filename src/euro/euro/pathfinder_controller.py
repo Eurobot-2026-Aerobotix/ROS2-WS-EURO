@@ -100,6 +100,9 @@ class PathfinderClient(Node):
         self.enemy_x = None
         self.enemy_y = None
 
+        # Batch known_ids to ignore as obstacles during path computation
+        self.untracked_batches = []
+
         # Robot pose storage
         self.latest_robot_pose_x = None
         self.latest_robot_pose_y = None
@@ -237,6 +240,7 @@ class PathfinderClient(Node):
         request = ComputePath.Request()
         request.start_pose = start_pose
         request.goal_pose = goal_pose
+        request.untracked_batches = list(self.untracked_batches)
 
         future = self.path_client.call_async(request)
         
@@ -259,6 +263,26 @@ class PathfinderClient(Node):
         else:
             self.get_logger().warning(f'⚠ Path failed: {response.message}')
             return [], False
+
+    def add_untracked_batch(self, known_id: str):
+        """Add a batch known_id to be ignored as obstacle during path planning."""
+        if not known_id:
+            return
+        if known_id not in self.untracked_batches:
+            self.untracked_batches.append(known_id)
+            self.get_logger().info(f"🙈 Added untracked batch for planning: {known_id}")
+
+    def remove_untracked_batch(self, known_id: str):
+        """Remove a known_id from untracked planning list."""
+        if known_id in self.untracked_batches:
+            self.untracked_batches.remove(known_id)
+            self.get_logger().info(f"👁️ Restored tracked batch for planning: {known_id}")
+
+    def clear_untracked_batches(self):
+        """Clear all untracked batch known_ids used for planning."""
+        if self.untracked_batches:
+            self.get_logger().info(f"🧹 Clearing untracked planning batches: {self.untracked_batches}")
+        self.untracked_batches.clear()
 
     # =========================================================
     # 2️⃣ UPDATE MAP

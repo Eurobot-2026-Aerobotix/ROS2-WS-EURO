@@ -60,6 +60,7 @@ class PathfinderAdapter:
     def __init__(self, web_handler, callback_group=None):
         self.web_handler = web_handler
         self.goal_angle = None
+        self.untracked_batches = []
         
         # Create service clients with callback group for concurrent execution
         self.get_active_batches_client = web_handler.create_client(
@@ -73,6 +74,20 @@ class PathfinderAdapter:
             '/compute_path',
             callback_group=callback_group
         )
+
+    @property
+    def enemy_x(self):
+        """Enemy x in meters (compatible with PathfinderClient interface)."""
+        if not self.web_handler.enemy_pose:
+            return None
+        return self.web_handler.mm_to_m(self.web_handler.enemy_pose.get('x_mm', 0.0))
+
+    @property
+    def enemy_y(self):
+        """Enemy y in meters (compatible with PathfinderClient interface)."""
+        if not self.web_handler.enemy_pose:
+            return None
+        return self.web_handler.mm_to_m(self.web_handler.enemy_pose.get('y_mm', 0.0))
         
     def set_goal(self, x, y, theta):
         """Set goal pose (x, y in meters, theta in radians)"""
@@ -123,6 +138,9 @@ class PathfinderAdapter:
             request.goal_pose.pose.orientation = self.web_handler.euler_to_quaternion(
                 self.web_handler.deg_to_rad(self.web_handler.goal_pose['theta_deg'])
             )
+
+            # Batch known_ids to ignore as obstacles during this planning request
+            request.untracked_batches = list(self.untracked_batches)
             
             # Call service
             future = self.compute_path_client.call_async(request)
@@ -201,6 +219,26 @@ class PathfinderAdapter:
         except Exception as e:
             self.web_handler.get_logger().error(f'❌ Error calling get_active_batches: {e}')
             return None
+
+    def add_untracked_batch(self, known_id: str):
+        """Add a batch known_id to be ignored as obstacle during path planning."""
+        if not known_id:
+            return
+        if known_id not in self.untracked_batches:
+            self.untracked_batches.append(known_id)
+            self.web_handler.get_logger().info(f"🙈 Added untracked batch for planning: {known_id}")
+
+    def remove_untracked_batch(self, known_id: str):
+        """Remove a known_id from untracked planning list."""
+        if known_id in self.untracked_batches:
+            self.untracked_batches.remove(known_id)
+            self.web_handler.get_logger().info(f"👁️ Restored tracked batch for planning: {known_id}")
+
+    def clear_untracked_batches(self):
+        """Clear all untracked batch known_ids used for planning."""
+        if self.untracked_batches:
+            self.web_handler.get_logger().info(f"🧹 Clearing untracked planning batches: {self.untracked_batches}")
+        self.untracked_batches.clear()
 
 
 class WebHandlerNode(Node):
@@ -677,7 +715,7 @@ class WebHandlerNode(Node):
             })
 
     def _log_steal_tasks_details(self, tasks: List[Dict]):
-        """Log generated steal tasks with full content for debugging."""
+        """Log generated steal tasks in compact form for debugging."""
         self.get_logger().info(f"🧾 Generated {len(tasks)} steal task(s):")
 
         for idx, task in enumerate(tasks, 1):
@@ -690,13 +728,11 @@ class WebHandlerNode(Node):
                 f"goal=({global_goal.get('x', '?')}, {global_goal.get('y', '?')}, {global_goal.get('theta', '?')})"
             )
 
-            try:
-                task_json = json.dumps(task, indent=2, ensure_ascii=False, default=str)
-            except Exception:
-                task_json = str(task)
-
-            for line in task_json.splitlines():
-                self.get_logger().info(f"      {line}")
+            # Only print command skeleton (no full JSON blob)
+            for step_i, step in enumerate(sequence, 1):
+                device = step.get('device', '?')
+                command = step.get('command', '?')
+                self.get_logger().info(f"      - step {step_i}: {device}.{command}")
     
     # ========================================================================
     # Service Calls
@@ -837,6 +873,9 @@ class WebHandlerNode(Node):
             request.goal_pose.pose.orientation = self.euler_to_quaternion(
                 self.deg_to_rad(self.goal_pose['theta_deg'])
             )
+
+            # Default: track all batches unless explicitly ignored by DecisionMaker via PathfinderAdapter
+            request.untracked_batches = []
             
             # Call service
             self.get_logger().info("📞 Calling /compute_path service...")

@@ -218,6 +218,10 @@ class JSONToROSBridge(Node):
         theta_rad = math.radians(goal['theta'])
         request.goal_pose.pose.orientation.z = math.sin(theta_rad / 2.0)
         request.goal_pose.pose.orientation.w = math.cos(theta_rad / 2.0)
+
+        # No batch ignored by default
+        request.untracked_batches = []
+
         # Call service
         future = self.path_client.call_async(request)
         rclpy.spin_until_future_complete(self, future, timeout_sec=30.0)
