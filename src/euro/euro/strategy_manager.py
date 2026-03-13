@@ -213,6 +213,7 @@ class StrategyManager(Node):
             return success
     def handle_global_goal(self, x, y, angle):
         global found_goal_batch
+        angle_rad = math.radians(float(angle)) if abs(float(angle)) > (2 * math.pi + 0.01) else float(angle)
         pos = Point()
         pos.x = float(x)
         pos.y = float(y)
@@ -245,11 +246,11 @@ class StrategyManager(Node):
                 global_y=y
                 global_angle=angle
                 self.get_logger().warn(f"Edge case: position equals batch center or unexpected direction '{direction}'")
-            self.pathfinder.set_goal(float(global_x), float(global_y), float(global_angle))
+            self.pathfinder.set_goal(float(global_x), float(global_y), angle_rad)
         else:
             found_goal_batch=False
             self.get_logger().info(f"pathfinder goal set to :x = {x}, y = {y}  angle=  {angle}without pickuo ")
-            self.pathfinder.set_goal(float(x), float(y), float(angle))
+            self.pathfinder.set_goal(float(x), float(y), angle_rad)
     def quaternion_to_yaw(self, quat: Quaternion) -> float:
         """Convert quaternion to yaw angle"""
         siny_cosp = 2 * (quat.w * quat.z + quat.x * quat.y)
@@ -445,6 +446,27 @@ class StrategyManager(Node):
                 # Ensure unique name to avoid collisions in self.tasks lookup
                 base_name = generated_task.get('name', f'steal_generated_{idx+1}')
                 generated_task['name'] = f"{base_name}_{ts}_{sequence_index}_{idx+1}"
+
+                # Refresh global goal for dynamically generated tasks so emergency
+                # replanning uses the current task goal instead of stale previous data.
+                global_goal = generated_task.get('global_goal')
+                if global_goal:
+                    self.global_pos_x = global_goal.get('x')
+                    self.global_pos_y = global_goal.get('y')
+                    self.global_pos_angle = global_goal.get('theta')
+
+                    if self.global_pos_x is not None and self.global_pos_y is not None and self.global_pos_angle is not None:
+                        self.handle_global_goal(
+                            float(self.global_pos_x) / 1000.0,
+                            float(self.global_pos_y) / 1000.0,
+                            float(self.global_pos_angle)
+                        )
+                        self.global_pos_x = float(self.global_pos_x) / 1000.0
+                        self.global_pos_y = float(self.global_pos_y) / 1000.0
+                        self.global_pos_angle = float(self.global_pos_angle)
+                        self.get_logger().info(
+                            f"🎯 Dynamic task global goal set: x={self.global_pos_x:.3f}, y={self.global_pos_y:.3f}, angle={self.global_pos_angle:.1f}°"
+                        )
 
                 # Track last actuator command info (same behavior as static tasks loop)
                 if generated_task.get('sequence') and len(generated_task['sequence']) > 0:
