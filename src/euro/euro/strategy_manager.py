@@ -355,12 +355,33 @@ class StrategyManager(Node):
                 return False
             return True
     
-    def wait_for_all_queues_empty(self):
-        """Wait until all device queues are empty (unless replanning or interrupted)"""
-        
-        while (not (self.are_all_queues_empty() or(  executor_module.ESP_FRONT_IDLE==True and executor_module.ESP_BACK_IDLE==True ))) or (not executor_module.IDLE) or executor_module.WAITING_TIRETTE or len(self.queues["STM"])!=0 or len(self.queues["RASP_PI"])!=0 or executor_module.replanning or self.end_game==True:
+    def wait_for_all_queues_empty(self, ignore_rasp_pi: bool = False):
+        """Wait until all device queues are empty (unless replanning or interrupted).
+
+        Args:
+            ignore_rasp_pi: When True, do not block on the RASP_PI queue.
+                This is useful when called from a currently executing RASP_PI
+                command (e.g. 'steal'), where the queue head is popped only
+                after the handler returns.
+        """
+
+        while (
+            (not (self.are_all_queues_empty() or (executor_module.ESP_FRONT_IDLE is True and executor_module.ESP_BACK_IDLE is True)))
+            or (not executor_module.IDLE)
+            or executor_module.WAITING_TIRETTE
+            or len(self.queues["STM"]) != 0
+            or ((not ignore_rasp_pi) and len(self.queues["RASP_PI"]) != 0)
+            or executor_module.replanning
+            or self.end_game is True
+        ):
             # Check if shutdown is requested
-            self.get_logger().debug(f"Waiting for queues to empty... STM queue size: {len(self.queues['STM'])}, RASP_PI queue size: {len(self.queues['RASP_PI'])}, ESP_FRONT_IDLE: {executor_module.ESP_FRONT_IDLE}, ESP_BACK_IDLE: {executor_module.ESP_BACK_IDLE}, IDLE: {executor_module.IDLE}, WAITING_TIRETTE: {executor_module.WAITING_TIRETTE}, replanning: {executor_module.replanning}")
+            self.get_logger().debug(
+                f"Waiting for queues to empty... STM queue size: {len(self.queues['STM'])}, "
+                f"RASP_PI queue size: {len(self.queues['RASP_PI'])}, ignore_rasp_pi={ignore_rasp_pi}, "
+                f"ESP_FRONT_IDLE: {executor_module.ESP_FRONT_IDLE}, ESP_BACK_IDLE: {executor_module.ESP_BACK_IDLE}, "
+                f"IDLE: {executor_module.IDLE}, WAITING_TIRETTE: {executor_module.WAITING_TIRETTE}, "
+                f"replanning: {executor_module.replanning}"
+            )
             if executor_module.SHUTDOWN_REQUESTED:
                 self.get_logger().info("Shutdown requested, stopping queue wait")
                 return
@@ -468,11 +489,11 @@ class StrategyManager(Node):
                 return False
 
             # Run each steal cycle fully before generating the next one
-            self.wait_for_all_queues_empty()
+            self.wait_for_all_queues_empty(ignore_rasp_pi=True)
 
         # keep compatibility with caller's wait flag (already executed sequential waits)
         if wait:
-            self.wait_for_all_queues_empty()
+            self.wait_for_all_queues_empty(ignore_rasp_pi=True)
 
         return True
     
