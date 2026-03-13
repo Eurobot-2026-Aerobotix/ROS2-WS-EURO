@@ -6,7 +6,7 @@ from rclpy.executors import MultiThreadedExecutor
 import os
 import time
 import threading
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from collections import deque
 from geometry_msgs.msg import PoseStamped, Pose2D, Quaternion, Vector3, Point
 from aruco_mapper_msgs.msg import ArucoMapperState
@@ -377,6 +377,104 @@ class StrategyManager(Node):
     def display_queue_contents(self):
         """Display the full contents of all queues with parameters"""
         pass
+
+    def handle_steal_command(self, params: Optional[List[Any]] = None, wait: bool = False) -> bool:
+        """
+        Handle YAML command `RASP_PI -> steal`.
+
+        Params format:
+          - params[0]: number of SX batches to steal
+          - params[1]: number of FX batches to steal (currently ignored)
+
+        Current behavior:
+          - Only SX stealing is enabled.
+          - Will execute SX steal sequence N times (N = params[0]).
+        """
+        params = params or []
+
+        sx_count = 0
+        fx_count = 0
+
+        if len(params) >= 1:
+            try:
+                sx_count = max(0, int(float(params[0])))
+            except Exception:
+                self.get_logger().warning(f"⚠️ Invalid SX steal count '{params[0]}', using 0")
+
+        if len(params) >= 2:
+            try:
+                fx_count = max(0, int(float(params[1])))
+            except Exception:
+                self.get_logger().warning(f"⚠️ Invalid FX steal count '{params[1]}', using 0")
+
+        if sx_count <= 0:
+            self.get_logger().info("ℹ️ Steal command requested 0 SX steals; nothing to do")
+            return True
+
+        if fx_count > 0:
+            self.get_logger().info(
+                f"ℹ️ FX steal count requested ({fx_count}) but FX stealing is currently disabled; ignoring it"
+            )
+
+        self.get_logger().info(f"🏴‍☠️ Executing SX steal command {sx_count} time(s)")
+
+        def _enqueue_generated_tasks(generated_tasks: List[Dict], sequence_index: int) -> bool:
+            ts = int(time.time() * 1000)
+            for idx, generated_task in enumerate(generated_tasks):
+                # Ensure unique name to avoid collisions in self.tasks lookup
+                base_name = generated_task.get('name', f'steal_generated_{idx+1}')
+                generated_task['name'] = f"{base_name}_{ts}_{sequence_index}_{idx+1}"
+
+                # Track last actuator command info (same behavior as static tasks loop)
+                if generated_task.get('sequence') and len(generated_task['sequence']) > 0:
+                    last_cmd = generated_task['sequence'][-1]
+                    last_command = last_cmd.get('command')
+                    last_device = last_cmd.get('device')
+                    if last_command in ['pick_up', 'put_down'] and last_device in ['ESP_front', 'ESP_back']:
+                        self.last_task_command = last_command
+                        self.last_task_device = last_device
+
+                self.tasks.append(generated_task)
+                try:
+                    success = self.load_task_to_queues(generated_task['name'])
+                    if not success:
+                        self.get_logger().error(f"❌ Failed loading generated steal task: {generated_task['name']}")
+                        return False
+                finally:
+                    if generated_task in self.tasks:
+                        self.tasks.remove(generated_task)
+            return True
+
+        # Execute steals sequentially so each next steal uses updated state
+        for i in range(sx_count):
+            self.get_logger().info(f"🎯 SX steal {i+1}/{sx_count}")
+            generated_tasks = self.decision_maker.steal_batch(
+                batch_type='sx',
+                device=None,
+                min_members=1
+            )
+
+            if not generated_tasks:
+                self.get_logger().warning(
+                    f"⚠️ Could not generate SX steal task at iteration {i+1}/{sx_count}; stopping"
+                )
+                return i > 0
+
+            self.get_logger().info(
+                f"✅ Generated {len(generated_tasks)} task(s) for SX steal {i+1}/{sx_count}"
+            )
+
+            if not _enqueue_generated_tasks(generated_tasks, i + 1):
+                return False
+
+            # Run each steal cycle fully before generating the next one
+            self.wait_for_all_queues_empty()
+
+        # keep compatibility with caller's wait flag (already executed sequential waits)
+        if wait:
+            self.wait_for_all_queues_empty()
+
+        return True
     
     def interrupt_waiting(self):
         """Set flag to interrupt all waiting loops.

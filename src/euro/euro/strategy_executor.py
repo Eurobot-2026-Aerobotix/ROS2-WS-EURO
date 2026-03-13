@@ -1029,6 +1029,18 @@ def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=No
                         break
                     time.sleep(0.05)  # Check every 50ms
 
+            elif command == 'steal':
+                # Generate and queue dynamic steal tasks from YAML command
+                # Params example: [3, 0] => min_members=3, device=auto
+                try:
+                    success = strategy.handle_steal_command(params=params, wait=wait)
+                    if success:
+                        strategy.get_logger().info("✅ RASP_PI steal command handled")
+                    else:
+                        strategy.get_logger().warning("⚠️ RASP_PI steal command did not generate executable tasks")
+                except Exception as e:
+                    strategy.get_logger().error(f"❌ Error handling RASP_PI steal command: {e}")
+
             else:
                 strategy.get_logger().warn(f"Unknown RASP_PI command: {command}")
             

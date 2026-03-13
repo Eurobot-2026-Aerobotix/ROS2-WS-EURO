@@ -112,6 +112,16 @@ class HybridAStarNode(Node):
         self.delete_batch_service = self.create_service(
             DeleteBatch, '/delete_batch', self.handle_delete_batch,
             callback_group=self.reentrant_group)
+
+        # Active batches query service (used by DecisionMaker via web_handler)
+        self.get_active_batches_service = self.create_service(
+            GetActiveBatches, '/pathfinder/get_active_batches', self.handle_get_active_batches,
+            callback_group=self.reentrant_group)
+
+        # Backward-compatible alias
+        self.get_active_batches_service_alias = self.create_service(
+            GetActiveBatches, '/get_active_batches', self.handle_get_active_batches,
+            callback_group=self.reentrant_group)
         
         # Delegate update_map service to MapManager
         self.update_map_service = self.create_service(

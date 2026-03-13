@@ -645,6 +645,7 @@ class WebHandlerNode(Node):
             if tasks:
                 # steal_batch now returns a list of tasks [pickup_task, putdown_task]
                 task_names = [task['name'] for task in tasks]
+                self._log_steal_tasks_details(tasks)
                 result = {
                     "success": True,
                     "message": f"Batch steal tasks generated: {', '.join(task_names)}",
@@ -674,6 +675,28 @@ class WebHandlerNode(Node):
                 "tasks": None,
                 "task_count": 0
             })
+
+    def _log_steal_tasks_details(self, tasks: List[Dict]):
+        """Log generated steal tasks with full content for debugging."""
+        self.get_logger().info(f"🧾 Generated {len(tasks)} steal task(s):")
+
+        for idx, task in enumerate(tasks, 1):
+            task_name = task.get('name', f'task_{idx}')
+            sequence = task.get('sequence', [])
+            global_goal = task.get('global_goal', {})
+
+            self.get_logger().info(
+                f"   [{idx}] {task_name} | steps={len(sequence)} | "
+                f"goal=({global_goal.get('x', '?')}, {global_goal.get('y', '?')}, {global_goal.get('theta', '?')})"
+            )
+
+            try:
+                task_json = json.dumps(task, indent=2, ensure_ascii=False, default=str)
+            except Exception:
+                task_json = str(task)
+
+            for line in task_json.splitlines():
+                self.get_logger().info(f"      {line}")
     
     # ========================================================================
     # Service Calls

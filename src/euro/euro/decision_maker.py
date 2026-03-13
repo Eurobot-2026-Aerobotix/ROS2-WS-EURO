@@ -669,15 +669,6 @@ class DecisionMaker:
         # Add final orientation command if goal angle is available
         goal_angle = self.pathfinder.goal_angle
         if goal_angle is not None:
-            # Convert from radians to degrees
-            goal_angle_deg = math.degrees(goal_angle)
-            task_sequence.append({
-                'device': 'STM',
-                'command': 'orientate',
-                'params': [goal_angle_deg, 0.0],  # [angle_in_degrees, is_radian=False]
-                'wait': False
-            })
-            
             # Add final movement to pickup position (like strategy_manager path() logic)
             # This ensures proper alignment after orientation
             if device == 'ESP_front':
@@ -838,35 +829,13 @@ class DecisionMaker:
         goal_angle = self.pathfinder.goal_angle
         if goal_angle is not None:
             # # Convert from radians to degrees
-            # goal_angle_deg = math.degrees(goal_angle)
-            # task_sequence.append({
-            #     'device': 'STM',
-            #     'command': 'orientate',
-            #     'params': [goal_angle_deg, 0.0],  # [angle_in_degrees, is_radian=False]
-            #     'wait': False
-            # })
-            
-            # Add final movement to putdown position
-            if device == 'ESP_front':
-                task_sequence.append({
-                    'device': 'STM',
-                    'command': 'go_to',
-                    'params': [target_x, target_y, 1100.0, 1.0, {'from_pathfinding': True}],
-                    'wait': False
-                })
-                self.strategy.get_logger().info(
-                    f'📍 Added final go_to after orientate: x={target_x:.0f}mm, y={target_y:.0f}mm'
-                )
-            elif device == 'ESP_back':
-                task_sequence.append({
-                    'device': 'STM',
-                    'command': 'go_to_backwards',
-                    'params': [target_x, target_y, 1100.0, 1.0, {'from_pathfinding': True}],
-                    'wait': False
-                })
-                self.strategy.get_logger().info(
-                    f'📍 Added final go_to_backwards after orientate: x={target_x:.0f}mm, y={target_y:.0f}mm'
-                )
+            goal_angle_deg = math.degrees(goal_angle)
+            task_sequence.append({
+                'device': 'STM',
+                'command': 'orientate',
+                'params': [goal_angle_deg, 0.0],  # [angle_in_degrees, is_radian=False]
+                'wait': False
+            })
         
         # Add ESP put_down command
         task_sequence.append({
