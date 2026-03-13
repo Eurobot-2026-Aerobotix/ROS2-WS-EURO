@@ -915,6 +915,7 @@ class DecisionMaker:
         
         # Add STM32 waypoint commands
         last_cmd = None
+        first_stm_command = True
         for cmd in stm32_commands:
             values = cmd.replace('go_to(', '').replace(')', '').split(',')
             x = float(values[0].strip())
@@ -931,8 +932,9 @@ class DecisionMaker:
                     'device': 'STM',
                     'command': stm32_cmd,
                     'params': [x, y, 1100.0, {'from_pathfinding': True}],
-                    'wait': False
+                    'wait': first_stm_command
                 })
+                first_stm_command = False
             last_cmd = cmd
         
         # Add final orientation
