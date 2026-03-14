@@ -251,21 +251,24 @@ def robot_status(strategy, stm32, lidar):
     
     strategy.get_logger().info("🤖 Robot status monitoring started")
     status_loop_count = 0
-    
+    stopped_by_failsafe=False
     while rclpy.ok() and not SHUTDOWN_REQUESTED:
         status_loop_count += 1
         
         # Only check if robot is idle when we think it's busy
-        if not IDLE:
+        if not IDLE and not stopped_by_failsafe :
             if not IDLE_FOR_SYSTEMS and last_stm_command != "emergency":
                 success, is_completed, _ = stm32.IDLE_FOR_SYSTEMS(1.0)
                 #strategy.get_logger().info(f"idle for systems  : {is_completed}")
             else:
                 success, is_completed, _ = stm32.IDLE(1.0)
                 #strategy.get_logger().info(f"idle : {is_completed}")
-                
+            if is_completed:
+                stopped_by_failsafe=stm32.fail_safe(1.0)    
             if not success:
                 strategy.get_logger().warning("⚠️ Failed to check robot status")
+            elif stopped_by_failsafe:
+                strategy.get_logger().info("✅ Robot stopped by failsafe not updating idle to be stopped ")
             else:
                 if not IDLE_FOR_SYSTEMS and not EMERGENCY_STOP:
                     PREVIOUS_IDLE_FOR_SYSTEMS=IDLE_FOR_SYSTEMS

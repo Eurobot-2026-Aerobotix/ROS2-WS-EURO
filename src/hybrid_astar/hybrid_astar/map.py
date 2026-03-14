@@ -108,6 +108,10 @@ class MapManager:
         self.retry_pending = 0
         self.retry_client = None
         self.retry_service_name = ""
+
+        # Enemy obstacle freshness management (/obstacle_relative)
+        self.enemy_obstacle_timeout_sec = params.get('rates', {}).get('enemy_obstacle_timeout_sec', 1.0)
+        self.last_enemy_update_ns: Optional[int] = None
         
         # Create publishers
         self.current_obs_pub = node.create_publisher(
@@ -309,6 +313,7 @@ class MapManager:
             # Add to obstacles list and track source
             self.obstacles.append(obs)
             self.obstacle_sources[obs.id] = 'enemy'
+            self.last_enemy_update_ns = self.node.get_clock().now().nanoseconds
         
         # Publish enemy marker to separate topic
         self._publish_enemy_marker(center_x_mm, center_y_mm, obs)
@@ -351,6 +356,8 @@ class MapManager:
     
     def publish_current_obstacles(self):
         """Periodically publish current obstacle list"""
+        self._purge_stale_enemy_obstacle()
+
         with self.obstacles_lock:
             msg = ObstacleArray()
             msg.header.stamp = self.node.get_clock().now().to_msg()
@@ -359,6 +366,28 @@ class MapManager:
             self.current_obs_pub.publish(msg)
         # Also publish obstacle visualization for RViz
         self.publish_obstacles(self.get_active_obstacles())
+
+    def _purge_stale_enemy_obstacle(self):
+        """Remove enemy obstacle if /obstacle_relative has not been updated recently."""
+        if self.last_enemy_update_ns is None:
+            return
+
+        now_ns = self.node.get_clock().now().nanoseconds
+        age_sec = (now_ns - self.last_enemy_update_ns) / 1e9
+        if age_sec <= self.enemy_obstacle_timeout_sec:
+            return
+
+        with self.obstacles_lock:
+            had_enemy = any(obs.color == 'enemy' for obs in self.obstacles)
+            if had_enemy:
+                self.obstacles = [obs for obs in self.obstacles if obs.color != 'enemy']
+                self.obstacle_sources = {k: v for k, v in self.obstacle_sources.items() if v != 'enemy'}
+                self.node.get_logger().info(
+                    f"⏱️ Removed stale enemy obstacle (age={age_sec:.2f}s > timeout={self.enemy_obstacle_timeout_sec:.2f}s)"
+                )
+
+        # Reset freshness marker after stale removal
+        self.last_enemy_update_ns = None
     
     def get_active_obstacles(self) -> List[dict]:
         """Get obstacles filtered by color (permanent areas are ALWAYS included in pathfinder)"""
