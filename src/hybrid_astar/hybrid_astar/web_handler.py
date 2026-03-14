@@ -23,6 +23,8 @@ from rclpy.node import Node
 import math
 import json
 import requests
+import socket
+import uuid
 from typing import List, Dict, Optional
 import sys
 import os
@@ -37,14 +39,20 @@ from hybrid_astar.srv import ComputePath, GetBatchColorPattern, GetActiveBatches
 # Import DecisionMaker from euro package
 try:
     from euro.decision_maker import DecisionMaker
+    from euro.front_systems_controller import FrontSystemsController
+    from euro.back_systems_controller import BackSystemsController
+    from euro.pneumatic_controller import PneumaticController
 except ImportError:
     # Fallback: try adding to path if import fails (development mode)
-    import sys
-    import os
-    euro_path = os.path.join(os.path.dirname(__file__), '../../../euro/euro')
-    if os.path.exists(euro_path):
-        sys.path.insert(0, euro_path)
-    from decision_maker import DecisionMaker
+    euro_pkg_root = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), '../../../euro')
+    )
+    if os.path.exists(euro_pkg_root) and euro_pkg_root not in sys.path:
+        sys.path.insert(0, euro_pkg_root)
+    from euro.decision_maker import DecisionMaker
+    from euro.front_systems_controller import FrontSystemsController
+    from euro.back_systems_controller import BackSystemsController
+    from euro.pneumatic_controller import PneumaticController
 
 
 class RobotPose:
@@ -312,6 +320,11 @@ class WebHandlerNode(Node):
     
     def __init__(self):
         super().__init__('web_handler_node')
+
+        # Runtime identity (helps detect duplicate web_handler instances)
+        self.hostname = socket.gethostname()
+        self.pid = os.getpid()
+        self.instance_id = f"{self.hostname}:{self.pid}:{uuid.uuid4().hex[:8]}"
         
         # Create reentrant callback group for concurrent service calls
         from rclpy.callback_groups import ReentrantCallbackGroup
@@ -339,6 +352,12 @@ class WebHandlerNode(Node):
         self.steal_batch_result_pub = self.create_publisher(
             String,
             '/web/steal_batch_result',
+            10
+        )
+
+        self.test_controller_result_pub = self.create_publisher(
+            String,
+            '/web/test_controller_result',
             10
         )
         
@@ -398,6 +417,14 @@ class WebHandlerNode(Node):
             10,
             callback_group=self.reentrant_group
         )
+
+        self.create_subscription(
+            String,
+            '/web/test_controller',
+            self.handle_test_controller_request,
+            10,
+            callback_group=self.reentrant_group
+        )
         
         # Service clients
         self.path_service_client = self.create_client(
@@ -437,6 +464,11 @@ class WebHandlerNode(Node):
         self.start_pose: Optional[Dict] = None
         self.goal_pose: Optional[Dict] = None
         self.enemy_pose: Optional[Dict] = None
+
+        # TEST page controller instances from euro package
+        self.front_controller = FrontSystemsController('web_front_systems_controller')
+        self.back_controller = BackSystemsController('web_back_systems_controller')
+        self.pneumatic_controller = PneumaticController('web_pneumatic_controller')
         
         # Robot pose tracking for DecisionMaker
         self.latest_robot_pose = RobotPose()
@@ -447,6 +479,9 @@ class WebHandlerNode(Node):
         
         self.get_logger().info("=" * 60)
         self.get_logger().info("🌐 Web Handler Node Ready!")
+        self.get_logger().info(
+            f"🆔 web_handler identity: host={self.hostname}, pid={self.pid}, instance_id={self.instance_id}"
+        )
         self.get_logger().info("=" * 60)
         self.get_logger().info("📡 Listening for web dashboard requests via rosbridge...")
         self.get_logger().info("   Topics:")
@@ -456,6 +491,7 @@ class WebHandlerNode(Node):
         self.get_logger().info("   - /web/enemy_pose → /obstacle_relative")
         self.get_logger().info("   - /web/compute_path")
         self.get_logger().info("   - /web/steal_batch (DecisionMaker)")
+        self.get_logger().info("   - /web/test_controller (manual euro controllers)")
         self.get_logger().info("   Services:")
         self.get_logger().info("   - /aruco_mapper/get_stable_batches_web (provides batches to map)")
         self.get_logger().info("=" * 60)
@@ -762,6 +798,86 @@ class WebHandlerNode(Node):
                 "task_count": 0
             })
 
+    def handle_test_controller_request(self, msg: String):
+        """
+        Handle manual controller actions from the TEST dashboard page.
+
+        Expected JSON examples:
+            {"controller": "front", "action": "kabech", "value": 1}
+            {"controller": "back", "action": "n20", "value": 1111}
+            {"controller": "pneumatic", "side": "front", "action": "pump"}
+        """
+        data = None
+        try:
+            data = json.loads(msg.data)
+            request_id = data.get('request_id')
+            controller_name = str(data.get('controller', '')).strip().lower()
+            action = str(data.get('action', '')).strip().lower()
+            side = str(data.get('side', '')).strip().lower()
+            value = data.get('value', None)
+
+            if controller_name in ['front', 'back']:
+                controller = self.front_controller if controller_name == 'front' else self.back_controller
+
+                if action not in ['kabech', 'dawer', 'n20']:
+                    raise ValueError(f"Unsupported action '{action}' for controller '{controller_name}'")
+
+                if value is None:
+                    raise ValueError(f"Missing value for {controller_name}.{action}")
+
+                value_int = int(value)
+                getattr(controller, action)(value_int)
+
+                response = {
+                    'success': True,
+                    'controller': controller_name,
+                    'action': action,
+                    'value': value_int,
+                    'request_id': request_id,
+                    'message': f"Executed {controller_name}.{action}({value_int})"
+                }
+                self.get_logger().info(f"🧪 {response['message']}")
+
+            elif controller_name == 'pneumatic':
+                if side not in ['front', 'back']:
+                    raise ValueError("Pneumatic command requires side='front' or 'back'")
+
+                if action == 'pump':
+                    command_value = 15
+                elif action == 'disable_pump':
+                    command_value = 16
+                else:
+                    raise ValueError(f"Unsupported pneumatic action '{action}'")
+
+                if side == 'front':
+                    self.pneumatic_controller.front(command_value)
+                else:
+                    self.pneumatic_controller.back(command_value)
+
+                response = {
+                    'success': True,
+                    'controller': controller_name,
+                    'action': action,
+                    'side': side,
+                    'value': command_value,
+                    'request_id': request_id,
+                    'message': f"Executed pneumatic.{side}({command_value})"
+                }
+                self.get_logger().info(f"🧪 {response['message']}")
+
+            else:
+                raise ValueError(f"Unknown controller '{controller_name}'")
+
+            self.publish_test_controller_result(response)
+
+        except Exception as e:
+            self.get_logger().error(f"❌ Error handling TEST controller command: {e}")
+            self.publish_test_controller_result({
+                'success': False,
+                'request_id': data.get('request_id') if isinstance(data, dict) else None,
+                'message': f'Error: {str(e)}'
+            })
+
     def _log_steal_tasks_details(self, tasks: List[Dict]):
         """Log generated steal tasks in compact form for debugging."""
         self.get_logger().info(f"🧾 Generated {len(tasks)} steal task(s):")
@@ -1061,6 +1177,18 @@ class WebHandlerNode(Node):
         self.steal_batch_result_pub.publish(msg)
         self.get_logger().info("📤 Steal batch result sent to web")
 
+    def publish_test_controller_result(self, result: Dict):
+        """Publish TEST controller command result to web dashboard"""
+        if isinstance(result, dict):
+            result.setdefault('handler_pid', self.pid)
+            result.setdefault('handler_host', self.hostname)
+            result.setdefault('handler_instance', self.instance_id)
+
+        msg = String()
+        msg.data = json.dumps(result)
+        self.test_controller_result_pub.publish(msg)
+        self.get_logger().info("📤 TEST controller result sent to web")
+
 
 def main(args=None):
     rclpy.init(args=args)
@@ -1071,6 +1199,9 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
+        node.front_controller.destroy_node()
+        node.back_controller.destroy_node()
+        node.pneumatic_controller.destroy_node()
         node.destroy_node()
         rclpy.shutdown()
 
