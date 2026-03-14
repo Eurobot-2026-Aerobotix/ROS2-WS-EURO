@@ -260,7 +260,7 @@ def robot_status(strategy, stm32, lidar):
                 success, is_completed, _ = stm32.IDLE(1.0)
                 #strategy.get_logger().info(f"idle : {is_completed}")
             if is_completed:
-                stopped_by_failsafe=stm32.fail_safe(1.0)    
+                _ ,stopped_by_failsafe=stm32.fail_safe(1.0)    
             if not success:
                 strategy.get_logger().warning("⚠️ Failed to check robot status")
             elif stopped_by_failsafe:
