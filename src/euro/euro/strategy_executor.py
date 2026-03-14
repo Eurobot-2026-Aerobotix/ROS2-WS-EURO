@@ -595,13 +595,12 @@ def stm32_task(strategy, stm32,lidar):
                         strategy.get_logger().info(f"✅ Emergency cleared - resuming command: {last_command}")
                         strategy.get_logger().info(f"📊 State before resume: IDLE={IDLE}, IDLE_FOR_SYSTEMS={IDLE_FOR_SYSTEMS}")
                         # Resend the last command using handler function
+                        if IDLE_FOR_SYSTEMS:
+                            SYSTEMS_IDLE_COUNT-=1
                         handle_stm32_command(last_command, last_params, stm32, lidar, strategy)
                         last_stm_command="navigation"
                         was_in_emergency = False
-                        IDLE = False  # Back to moving
-                        if IDLE_FOR_SYSTEMS:
-                            SYSTEMS_IDLE_COUNT-=1
-                        IDLE_FOR_SYSTEMS = False
+                        
                         strategy.get_logger().info(f"🚀 Command resumed - IDLE={IDLE}, IDLE_FOR_SYSTEMS={IDLE_FOR_SYSTEMS}, last_stm_command={last_stm_command}")
                     
                 elif lidar.get_path_status() and replanning==False :

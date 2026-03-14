@@ -194,7 +194,7 @@ class StrategyManager(Node):
                             })
                             
                 n=len((self.queues["STM"]))
-                executor_module.SYSTEMS_IDLE_COUNT=0
+                
                 self.get_logger().info(f"✅ Path loaded to queue! {len(self.queues['STM'])} commands ready for execution")
                 # Resume task execution
                 executor_module.replanning = False
@@ -302,7 +302,7 @@ class StrategyManager(Node):
                             # Track if prepare command has been added
                             prepare_added = False
                             
-                            while executor_module.SYSTEMS_IDLE_COUNT !=n :
+                            while executor_module.SYSTEMS_IDLE_COUNT <n and len((self.queues["STM"]))>0 :
                                 # Add prepare command when on second-to-last STM command
                                 if not prepare_added and executor_module.SYSTEMS_IDLE_COUNT == n-1:
                                     prepare_cmd = {
@@ -382,7 +382,7 @@ def reset_systems(pneumatic_controller,front_controller,back_controller,stm32_co
         back_controller.kabech(0)
         front_controller.dawer(0)
         back_controller.dawer(0)
-        front_controller.n20(20)
+        front_controller.n20(0)
         back_controller.n20(20)
         # Allow time for messages to be sent
         time.sleep(0.2)
