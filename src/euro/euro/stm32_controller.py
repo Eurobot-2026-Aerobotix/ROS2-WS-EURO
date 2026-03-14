@@ -446,7 +446,8 @@ class STM32Controller(Node):
             
             response = future.result()
             self.get_logger().info(f"fail_safe response: {response.result}")
-            return True, response
+            is_completed = bool(response.result)
+            return True, is_completed
         except Exception as e:
             self.get_logger().error(f'Fail_safe service error: {str(e)}')
             return False, f'Service error: {str(e)}'
