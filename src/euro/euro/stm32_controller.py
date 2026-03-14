@@ -419,7 +419,37 @@ class STM32Controller(Node):
         except Exception as e:
             self.get_logger().error(f'LED blink service error: {str(e)}')
             return False, f'Service error: {str(e)}'
-
+    def fail_safe(self,  timeout=2.0):
+        """Send a request to failsafe command """
+        if not self.navi_client.wait_for_service(timeout_sec=2.0):
+            self.get_logger().error('NaviStm service not available')
+            return False, 'NaviStm service not available'
+        
+        request = NaviStm.Request()
+        request.arg1 = 18.0  # Indicates failsafe  command
+        request.arg2 = 0.0
+        request.arg3 = 0.0
+        request.arg4 = 0.0
+        request.arg5 = 0.0
+        request.arg6 = 0.0
+        request.arg7 = 0.0
+        request.arg8 = 0.0
+        request.arg9 = 0.0
+        request.arg10 = 0.0
+        self.get_logger().info(f"Sending fail_safe command")
+        
+        try:
+            future = self.navi_client.call_async(request)
+            if not self._wait_for_future(future, timeout):
+                self.get_logger().error('Service call timeout')
+                return False, 'Service call timeout'
+            
+            response = future.result()
+            self.get_logger().info(f"fail_safe response: {response.result}")
+            return True, response
+        except Exception as e:
+            self.get_logger().error(f'Fail_safe service error: {str(e)}')
+            return False, f'Service error: {str(e)}'
     def IDLE(self, timeout=2.0):
         """
         Check if the current navigation command has completed
