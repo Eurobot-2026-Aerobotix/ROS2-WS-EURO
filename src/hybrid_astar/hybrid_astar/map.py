@@ -87,6 +87,7 @@ class MapManager:
         # Flag to track if we've locked the baseline patterns
         self.baselines_locked = False
         self.locked_baseline_batch_ids: set = set()
+        self.pending_baseline_lock_ids: set = set()
 
         # Only the first normal update_map flow is allowed to trigger baseline locking.
         self.baseline_lock_pending = False
@@ -185,6 +186,7 @@ class MapManager:
         self.first_update_map = True
         self.baselines_locked = False
         self.locked_baseline_batch_ids.clear()
+        self.pending_baseline_lock_ids.clear()
         self.baseline_lock_pending = False
         self.known_ids_to_retry.clear()
         self.deleted_batch_ids.clear()
@@ -766,6 +768,7 @@ class MapManager:
                             self.batches_sx.clear()
                             self.batches_with_obstacles.clear()  # Clear tracking
                             self.locked_baseline_batch_ids.clear()
+                            self.pending_baseline_lock_ids.clear()
                             self.node.get_logger().info(f"🗑️  Cleared all FX and SX batches and {removed} obstacles before first update")
                 else:
                     # SUBSEQUENT UPDATES: Incremental update
@@ -798,6 +801,8 @@ class MapManager:
                                     self.batches_sx.pop(bid, None)
                                     self.batches_with_obstacles.discard(bid)  # Remove from tracking
                                     self.locked_baseline_batch_ids.discard(bid)
+                                    self.pending_baseline_lock_ids.discard(bid)
+                                    self.short_pattern_ids.discard(bid)
                                 for bid in fx_batches_ids:
                                     # Remove FX batches for refresh (they'll be re-added)
                                     self.batches_fx.pop(bid, None)
@@ -997,6 +1002,112 @@ class MapManager:
         
         future = self.retry_client.call_async(stable_request)
         future.add_done_callback(self._handle_lock_baseline_response)
+
+    def _request_locked_baseline_for_sx(self, known_id: str):
+        """Request locked baseline for a single SX batch when it appears after initial lock."""
+        if not known_id.startswith('s'):
+            return
+        if known_id in self.locked_baseline_batch_ids or known_id in self.pending_baseline_lock_ids:
+            return
+
+        client = None
+        if self.retry_client and self.retry_client.service_is_ready():
+            client = self.retry_client
+        elif self.get_stable_batches_client.service_is_ready():
+            client = self.get_stable_batches_client
+            self.retry_client = client
+            self.retry_service_name = "/aruco_mapper/get_stable_batches"
+        elif self.get_stable_batches_client_web and self.get_stable_batches_client_web.service_is_ready():
+            client = self.get_stable_batches_client_web
+            self.retry_client = client
+            self.retry_service_name = "/aruco_mapper/get_stable_batches_web"
+        else:
+            self.node.get_logger().warn(
+                f"⚠️ Cannot request locked baseline for '{known_id}': batch service not ready"
+            )
+            return
+
+        self.pending_baseline_lock_ids.add(known_id)
+        self.node.get_logger().info(
+            f"🔒 Requesting locked baseline for SX batch '{known_id}'"
+        )
+
+        req = GetStableBatches.Request()
+        req.batch_types_filter = "sfg"
+        req.specific_known_id = known_id
+        req.only_locked_baselines = True
+        future = client.call_async(req)
+        future.add_done_callback(
+            lambda f, kid=known_id: self._handle_single_locked_sx_response(f, kid)
+        )
+
+    def _handle_single_locked_sx_response(self, future, known_id: str):
+        """Handle locked-baseline response for a single SX batch."""
+        try:
+            response = future.result()
+            if not response or not response.stable_state:
+                self.node.get_logger().warn(
+                    f"⚠️ Locked baseline request for '{known_id}' returned no response"
+                )
+                return
+
+            target_batch = None
+            for batch in response.stable_state.batches:
+                if batch.known_id == known_id:
+                    target_batch = batch
+                    break
+
+            if target_batch is None:
+                self.node.get_logger().info(
+                    f"⏳ Locked baseline not available yet for '{known_id}'"
+                )
+                return
+
+            pattern = target_batch.pattern if target_batch.pattern else ""
+            self.locked_baseline_batch_ids.add(known_id)
+            with self.batches_lock:
+                self.batches_sx[known_id] = target_batch
+                self.batches_with_obstacles.discard(known_id)
+
+            self.node.get_logger().info(
+                f"✅ Locked baseline received for SX '{known_id}' pattern='{pattern}'"
+            )
+
+            if len(pattern) < 4:
+                self.short_pattern_ids.add(known_id)
+                self.node.get_logger().warn(
+                    f"⚠️  Locked pattern for '{known_id}' still short ({len(pattern)}), will re-check"
+                )
+                self._start_short_pattern_retry_timer()
+                return
+
+            member_count = len(target_batch.members) if target_batch.members else 0
+            if member_count == 3:
+                self.node.get_logger().info(
+                    f"⏭️  SX batch '{known_id}' has only 3 members after baseline lock - skipping obstacle creation"
+                )
+                return
+
+            prefix_sx = f"sx_{known_id}_"
+            with self.obstacles_lock:
+                self.obstacles = [obs for obs in self.obstacles if not obs.id.startswith(prefix_sx)]
+                self.obstacle_sources = {
+                    k: v for k, v in self.obstacle_sources.items() if not k.startswith(prefix_sx)
+                }
+
+            sx_state = ArucoMapperState()
+            sx_state.stamp = response.stable_state.stamp
+            sx_state.initialized = response.stable_state.initialized
+            sx_state.batches = [target_batch]
+            self._handle_aruco_mapper_state(sx_state, 'sx')
+        except Exception as e:
+            self.node.get_logger().error(
+                f"❌ Error handling locked baseline for '{known_id}': {e}"
+            )
+            import traceback
+            self.node.get_logger().error(traceback.format_exc())
+        finally:
+            self.pending_baseline_lock_ids.discard(known_id)
     
     def _handle_lock_baseline_response(self, future):
         """Handle response from locked baseline patterns request."""
@@ -1291,6 +1402,7 @@ class MapManager:
                     batch.center.z = 0.0
 
                     if batch_known_id not in self.locked_baseline_batch_ids:
+                        self._request_locked_baseline_for_sx(batch_known_id)
                         self.node.get_logger().info(
                             f"⏳ Deferring SX obstacles for '{batch_known_id}' until its baseline is locked"
                         )
@@ -1432,6 +1544,8 @@ class MapManager:
             # Remove from obstacle creation tracking
             self.batches_with_obstacles.discard(known_id)
             self.locked_baseline_batch_ids.discard(known_id)
+            self.pending_baseline_lock_ids.discard(known_id)
+            self.short_pattern_ids.discard(known_id)
             
             if not (deleted_from_fx or deleted_from_sx):
                 self.node.get_logger().warn(f"⚠️  Batch '{known_id}' not found in FX or SX storage")
