@@ -598,7 +598,7 @@ class MapManager:
             
             # Filter batches based on update type
             if is_first_update:
-                # FIRST UPDATE: accept non-EMERGING batches, queue EMERGING SX/GX for retry
+                # FIRST UPDATE: accept non-EMERGING batches, queue EMERGING SX for retry
                 filtered_batches = []
                 emerging_ids = set()
                 non_emerging_count = 0
@@ -611,11 +611,10 @@ class MapManager:
                         filtered_batches.append(batch)
                         non_emerging_count += 1
                     else:
-                        # Only retry EMERGING SX/GX batches
-                        if batch.known_id.startswith('s') or batch.known_id.startswith('g'):
+                        # Only retry EMERGING SX batches
+                        if batch.known_id.startswith('s'):
                             emerging_ids.add(batch.known_id)
-                            batch_type = 'SX' if batch.known_id.startswith('s') else 'GX'
-                            self.node.get_logger().info(f"  ⏳ [{batch_type}] '{batch.known_id}': {state} → will retry")
+                            self.node.get_logger().info(f"  ⏳ [SX] '{batch.known_id}': {state} → will retry")
                         else:
                             skipped_count += 1
                 
@@ -623,7 +622,7 @@ class MapManager:
                 self.known_ids_to_retry = emerging_ids
                 
                 self.node.get_logger().info(
-                    f"📊 First update summary: {non_emerging_count} non-EMERGING, {len(emerging_ids)} SX/GX EMERGING queued for retry, "
+                    f"📊 First update summary: {non_emerging_count} non-EMERGING, {len(emerging_ids)} SX EMERGING queued for retry, "
                     f"{skipped_count} FX skipped"
                 )
                 
@@ -635,7 +634,7 @@ class MapManager:
                     self._start_retry_timer()
                     
             elif is_full_update:
-                # SUBSEQUENT FULL UPDATE: process non-EMERGING batches, retry EMERGING SX/GX
+                # SUBSEQUENT FULL UPDATE: process non-EMERGING batches, retry EMERGING SX only
                 filtered_batches = []
                 emerging_ids = set()
                 non_emerging_count = 0
@@ -644,7 +643,7 @@ class MapManager:
                 for batch in aruco_state.batches:
                     state = batch.state.upper()
                     is_fx = batch.known_id.startswith('f') or not (batch.known_id.startswith('s') or batch.known_id.startswith('g'))
-                    is_sx_gx = batch.known_id.startswith('s') or batch.known_id.startswith('g')
+                    is_sx = batch.known_id.startswith('s')
                     batch_type = 'FX' if is_fx else ('SX' if batch.known_id.startswith('s') else 'GX')
                     
                     if state != 'EMERGING':
@@ -663,14 +662,14 @@ class MapManager:
                                 self.known_ids_to_retry.discard(batch.known_id)
                                 self.node.get_logger().info(f"  🗑️  [{batch_type}] '{batch.known_id}': LOST → removed from retry")
                             skipped_count += 1
-                        elif is_sx_gx:
-                            # EMERGING SX/GX: Add to retry queue (log only on first add)
+                        elif is_sx:
+                            # EMERGING SX: Add to retry queue (log only on first add)
                             if batch.known_id not in emerging_ids and batch.known_id not in self.known_ids_to_retry:
                                 self.node.get_logger().info(f"  ⏭️  [{batch_type}] '{batch.known_id}': EMERGING → added to retry")
                             emerging_ids.add(batch.known_id)
                             skipped_count += 1
                         else:
-                            # EMERGING FX - skip
+                            # EMERGING FX/GX - skip
                             skipped_count += 1
                 
                 # Update retry list (add new EMERGING batches, keep existing ones)
@@ -1023,10 +1022,10 @@ class MapManager:
                 self.active_batch_ids.update(locked_batch_ids)
                 self.node.get_logger().info(f"   📌 Added {len(locked_batch_ids)} locked batches to active tracking")
 
-                # Detect batches with short patterns (< 4 elements) and schedule re-checks
+                # Detect SX batches with short patterns (< 4 elements) and schedule re-checks
                 for batch in response.stable_state.batches:
                     pattern = batch.pattern if batch.pattern else ""
-                    if len(pattern) < 4:
+                    if batch.known_id.startswith('s') and len(pattern) < 4:
                         self.short_pattern_ids.add(batch.known_id)
                         self.node.get_logger().warn(
                             f"⚠️  Short pattern after baseline lock for '{batch.known_id}': "
@@ -1041,7 +1040,7 @@ class MapManager:
             self.node.get_logger().error(f"❌ Error locking baseline patterns: {e}")
 
     def _retry_timer_callback(self):
-        """Timer callback to retry EMERGING known_ids."""
+        """Timer callback to retry EMERGING SX known_ids only."""
         if not self.known_ids_to_retry:
             self._stop_retry_timer()
             return
@@ -1054,7 +1053,7 @@ class MapManager:
             return
 
         self.node.get_logger().info(
-            f"🔁 Auto-retrying {len(self.known_ids_to_retry)} EMERGING batches"
+            f"🔁 Auto-retrying {len(self.known_ids_to_retry)} EMERGING SX batches"
         )
 
         for known_id in list(self.known_ids_to_retry):
@@ -1112,6 +1111,11 @@ class MapManager:
             f"🔍 Re-checking short-pattern batches with locked baseline: {self.short_pattern_ids}"
         )
         for known_id in list(self.short_pattern_ids):
+            # Defensive: SX-only retry policy
+            if not known_id.startswith('s'):
+                self.short_pattern_ids.discard(known_id)
+                continue
+
             req = GetStableBatches.Request()
             req.batch_types_filter = "sfg"
             req.specific_known_id = known_id
@@ -1137,6 +1141,11 @@ class MapManager:
                 if batch.known_id != known_id:
                     continue
 
+                # Defensive: SX-only retry policy
+                if not known_id.startswith('s'):
+                    self.short_pattern_ids.discard(known_id)
+                    break
+
                 new_pattern = batch.pattern if batch.pattern else ""
 
                 # Get old stored pattern for comparison
@@ -1158,7 +1167,7 @@ class MapManager:
                             self.batches_fx[known_id] = batch
 
                     # Tear down old obstacles for this batch
-                    source = 'sx' if known_id.startswith('s') else 'fx'
+                    source = 'sx'
                     prefix_sx = f"sx_{known_id}_"
                     prefix_fx = f"fx_{known_id}_"
                     with self.obstacles_lock:
