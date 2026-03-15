@@ -263,11 +263,12 @@ def robot_status(strategy, stm32, lidar):
             else:
                 success, is_completed, _ = stm32.IDLE(1.0)
                 #strategy.get_logger().info(f"idle : {is_completed}")
-            if is_completed:
+            if is_completed and last_stm_command == "navigation":
                 _ ,stopped_by_failsafe=stm32.fail_safe(1.0)    
+                strategy.get_logger().info(f"failsafe result : {stopped_by_failsafe}")
             if not success:
                 strategy.get_logger().warning("⚠️ Failed to check robot status")
-            elif stopped_by_failsafe:
+            elif stopped_by_failsafe and last_stm_command == "navigation":
                 strategy.get_logger().info("✅ Robot stopped by failsafe not updating idle to be stopped ")
             else:
                 if not IDLE_FOR_SYSTEMS and not EMERGENCY_STOP:
@@ -604,11 +605,12 @@ def stm32_task(strategy, stm32,lidar):
                         strategy.get_logger().info(f"✅ Emergency cleared - resuming command: {last_command}")
                         strategy.get_logger().info(f"📊 State before resume: IDLE={IDLE}, IDLE_FOR_SYSTEMS={IDLE_FOR_SYSTEMS}")
                         # Resend the last command using handler function
+                        if IDLE_FOR_SYSTEMS:
+                            SYSTEMS_IDLE_COUNT-=1
                         handle_stm32_command(last_command, last_params, stm32, lidar, strategy)
                         last_stm_command="navigation"
                         was_in_emergency = False
-                        IDLE = False  # Back to moving
-                        IDLE_FOR_SYSTEMS = False
+                        
                         strategy.get_logger().info(f"🚀 Command resumed - IDLE={IDLE}, IDLE_FOR_SYSTEMS={IDLE_FOR_SYSTEMS}, last_stm_command={last_stm_command}")
                     
                 elif lidar.get_path_status() and replanning==False :
@@ -755,9 +757,9 @@ def stana(controller):
     global SHUTDOWN_REQUESTED
     
     # Use shorter timeout to allow quicker shutdown response
-    idle = controller.IDLE(timeout=2.0)
+    idle = controller.IDLE(timeout=5.0)
     while not idle and not SHUTDOWN_REQUESTED:
-        idle = controller.IDLE(timeout=2.0)
+        idle = controller.IDLE(timeout=5.0)
         time.sleep(0.1)
     
 def talaa(strategy, front_controller=None,front=True):

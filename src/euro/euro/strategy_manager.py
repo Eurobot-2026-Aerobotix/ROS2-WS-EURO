@@ -204,7 +204,7 @@ class StrategyManager(Node):
                             })
                             
                 n=len((self.queues["STM"]))
-                executor_module.SYSTEMS_IDLE_COUNT=0
+                
                 self.get_logger().info(f"✅ Path loaded to queue! {len(self.queues['STM'])} commands ready for execution")
                 # Resume task execution
                 executor_module.replanning = False
@@ -317,13 +317,7 @@ class StrategyManager(Node):
                             # Track if prepare command has been added
                             prepare_added = False
                             
-                            while executor_module.SYSTEMS_IDLE_COUNT !=n :
-                                # Check for interrupt
-                                if self.interrupt_wait:
-                                    self.get_logger().warning("🛑 SYSTEMS_IDLE_COUNT wait interrupted")
-                                    self.load_task_to_queues_ended = True
-                                    return False
-                                
+                            while executor_module.SYSTEMS_IDLE_COUNT <n and len((self.queues["STM"]))>0 :
                                 # Add prepare command when on second-to-last STM command
                                 if not prepare_added and executor_module.SYSTEMS_IDLE_COUNT == n-1:
                                     prepare_cmd = {
@@ -557,7 +551,7 @@ def reset_systems(pneumatic_controller,front_controller,back_controller,stm32_co
         back_controller.kabech(0)
         front_controller.dawer(0)
         back_controller.dawer(0)
-        front_controller.n20(20)
+        front_controller.n20(0)
         back_controller.n20(20)
         # Allow time for messages to be sent
         time.sleep(0.2)
@@ -593,11 +587,12 @@ def main(args=None):
     executor.add_node(pneumatic)
     executor.add_node(rpi)
     executor.add_node(strategy.pathfinder)
-    
     # Reset STM32 and wait for reconnection
     strategy.get_logger().info("Resetting STM32...")
     rpi.reset_stm32()
-    
+    strategy.get_logger().info("Resetting pneumatic, ESP back, and ESP front...")
+    time.sleep(5)
+    rpi.reset_all_esps()
     # Wait longer for STM32 to boot and connect to micro-ROS agent
     strategy.get_logger().info("Waiting for STM32 to boot and connect to micro-ROS agent...")
     
@@ -710,8 +705,8 @@ def main(args=None):
         for _ in range(5):
             executor.spin_once(timeout_sec=0.01)
         
-        reset_systems(pneumatic,front,back,None,strategy,True,False)
-        time.sleep(2)
+        #reset_systems(pneumatic,front,back,None,strategy,True,False)
+        #time.sleep(2)
         strategy.pathfinder.update_map()
         # Execute tasks sequentially
         # Start a thread to execute tasks one by one
@@ -807,7 +802,7 @@ def main(args=None):
                     # Stop STM32 and reset all systems immediately (not queued)
                     try:
                         strategy.get_logger().info("Stopping and resetting all systems...")
-                        reset_systems(pneumatic,front,back,stm32,strategy,immediate=True)
+                        #reset_systems(pneumatic,front,back,stm32,strategy,immediate=True)
                         time.sleep(0.5)
                     except Exception as e:
                         strategy.get_logger().error(f"Failed to stop/reset systems: {e}")
