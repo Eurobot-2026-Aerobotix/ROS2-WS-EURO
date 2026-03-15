@@ -591,7 +591,6 @@ def main(args=None):
     strategy.get_logger().info("Resetting STM32...")
     rpi.reset_stm32()
     strategy.get_logger().info("Resetting pneumatic, ESP back, and ESP front...")
-    time.sleep(5)
     rpi.reset_all_esps()
     # Wait longer for STM32 to boot and connect to micro-ROS agent
     strategy.get_logger().info("Waiting for STM32 to boot and connect to micro-ROS agent...")
@@ -608,7 +607,6 @@ def main(args=None):
     
      # Start background threads for each device
     strategy.get_logger().info("Starting background threads...")
-    
     # Reset ArUco stability in background thread (after executor starts spinning)
     def reset_aruco_stability():
         time.sleep(0.5)  # Wait for executor to start
