@@ -3,12 +3,14 @@
 import rclpy
 from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
+from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
 import os
 import time
 import threading
 from typing import List, Dict, Any, Optional
 from collections import deque
 from geometry_msgs.msg import PoseStamped, Pose2D, Quaternion, Vector3, Point
+from std_msgs.msg import Int32
 from aruco_mapper_msgs.msg import ArucoMapperState
 from euro.yaml_loader import load_tasks_from_yaml
 import math
@@ -83,12 +85,43 @@ class StrategyManager(Node):
             self.aruco_mapper_callback,
             10
         )
+
+        # Beacon readiness status for dashboard: 0 = not ready, 1 = ready
+        beacon_qos = QoSProfile(depth=1)
+        beacon_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
+        beacon_qos.reliability = ReliabilityPolicy.RELIABLE
+        self.beacon_status_pub = self.create_publisher(Int32, '/web/beacon_status', beacon_qos)
+
+        self.beacon_status_value = 0
+        self.publish_beacon_status(self.beacon_status_value)
+        self._beacon_startup_publish_count = 0
+        self._beacon_startup_timer = self.create_timer(0.5, self._publish_initial_beacon_status)
+
         self.pathfinder = PathfinderClient()
         self.path_called = False
         
         # Initialize decision maker for dynamic batch stealing
         self.decision_maker = DecisionMaker(self, self.pathfinder)
         self.get_logger().info('🧠 Decision Maker initialized with pathfinder access')
+
+    def publish_beacon_status(self, value: int) -> None:
+        self.beacon_status_value = int(value)
+        msg = Int32()
+        msg.data = self.beacon_status_value
+        self.beacon_status_pub.publish(msg)
+        self.get_logger().info(f"📡 Published beacon status: {msg.data}")
+
+    def _publish_initial_beacon_status(self) -> None:
+        # Republish initial 0 a few times so late-starting dashboard listeners get it.
+        if self._beacon_startup_publish_count >= 5:
+            if self._beacon_startup_timer is not None:
+                self._beacon_startup_timer.cancel()
+                self._beacon_startup_timer = None
+            return
+
+        self.publish_beacon_status(self.beacon_status_value)
+        self._beacon_startup_publish_count += 1
+
     def robot_pose_callback(self, msg):
         self.latest_robot_pose = msg
     
@@ -702,9 +735,18 @@ def main(args=None):
         # Spin executor briefly to initialize publishers before sending reset
         for _ in range(5):
             executor.spin_once(timeout_sec=0.01)
+
+        # Ensure startup reset/clear completes before the first update_map.
+        # Without this wait, update_map can run first and then get wiped by the
+        # delayed reset thread, which breaks the expected first-update flow.
+        if reset_thread.is_alive():
+            strategy.get_logger().info("Waiting for reset/clear map startup sequence to finish...")
+            reset_thread.join(timeout=5.0)
+            if reset_thread.is_alive():
+                strategy.get_logger().warning("Startup reset thread did not finish before update_map timeout")
         
         #reset_systems(pneumatic,front,back,None,strategy,True,False)
-        #time.sleep(2)
+        time.sleep(1)
         strategy.pathfinder.update_map()
         # Execute tasks sequentially
         # Start a thread to execute tasks one by one

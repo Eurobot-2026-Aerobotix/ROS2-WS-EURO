@@ -10,9 +10,10 @@ from threading import Lock
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
 
 # ROS2 messages
-from std_msgs.msg import Empty
+from std_msgs.msg import Empty, Int32
 from std_srvs.srv import Trigger
 from geometry_msgs.msg import PoseStamped, Quaternion, Point
 from visualization_msgs.msg import Marker, MarkerArray
@@ -83,6 +84,8 @@ class MapManager:
         
         # Flag to track if this is the first update_map call
         self.first_update_map = True
+        self.first_update_empty_retry_count = 0
+        self.first_update_empty_retry_max = 6
         
         # Flag to track if we've locked the baseline patterns
         self.baselines_locked = False
@@ -106,6 +109,7 @@ class MapManager:
 
         # Retry management for auto update_map
         self.retry_timer = None
+        self.retry_timer_active = False
         self.retry_interval_sec = params.get('rates', {}).get('update_map_retry_sec', 1.0)
         self.retry_pending = 0
         self.retry_client = None
@@ -114,6 +118,7 @@ class MapManager:
         # Short-pattern retry: re-check batches whose locked pattern has < 4 elements
         self.short_pattern_ids: set = set()
         self.short_pattern_retry_timer = None
+        self.short_pattern_retry_active = False
         self.short_pattern_retry_interval_sec = params.get('rates', {}).get('short_pattern_retry_sec', 2.0)
 
         # Enemy obstacle freshness management (/obstacle_relative)
@@ -129,6 +134,12 @@ class MapManager:
         
         self.relative_obstacle_marker_pub = node.create_publisher(
             MarkerArray, '/relative_obstacle_marker', 10)
+
+        beacon_qos = QoSProfile(depth=1)
+        beacon_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
+        beacon_qos.reliability = ReliabilityPolicy.RELIABLE
+        self.beacon_status_pub = node.create_publisher(Int32, '/web/beacon_status', beacon_qos)
+        self.beacon_ready_published = False
         
         # Create subscribers
         node.create_subscription(
@@ -140,8 +151,25 @@ class MapManager:
         # Create timer for publishing current obstacles
         obstacle_hz = params['rates']['obstacle_list_hz']
         node.create_timer(1.0 / obstacle_hz, self.publish_current_obstacles)
+
+        # Create persistent timers once and gate execution with active flags.
+        # This avoids cancel() races with MultiThreadedExecutor that can crash with
+        # "failed to call timer: timer is canceled".
+        retry_interval = max(self.retry_interval_sec, 0.1)
+        self.retry_timer = self.node.create_timer(retry_interval, self._retry_timer_callback)
+
+        short_retry_interval = max(self.short_pattern_retry_interval_sec, 0.5)
+        self.short_pattern_retry_timer = self.node.create_timer(
+            short_retry_interval, self._short_pattern_retry_callback
+        )
         
         self.node.get_logger().info('🗺️  Map Manager initialized')
+
+    def _publish_beacon_status(self, value: int) -> None:
+        msg = Int32()
+        msg.data = int(value)
+        self.beacon_status_pub.publish(msg)
+        self.node.get_logger().info(f"📡 Published beacon status from map manager: {msg.data}")
     
     def handle_clear_all(self, msg: Empty):
         """Clear all obstacles"""
@@ -184,7 +212,9 @@ class MapManager:
         
         # Reset state flags
         self.first_update_map = True
+        self.first_update_empty_retry_count = 0
         self.baselines_locked = False
+        self.beacon_ready_published = False
         self.locked_baseline_batch_ids.clear()
         self.pending_baseline_lock_ids.clear()
         self.baseline_lock_pending = False
@@ -553,7 +583,20 @@ class MapManager:
 
         self.retry_client = client_to_use
         self.retry_service_name = service_name
+
+        # Rearm initial update flow so the next /update_map call behaves like a fresh first update.
+        # reset_map is a reset/reinitialization step, not a normal incremental update.
+        self.first_update_map = True
+        self.first_update_empty_retry_count = 0
+        self.baselines_locked = False
         self.baseline_lock_pending = False
+        self.beacon_ready_published = False
+        self.locked_baseline_batch_ids.clear()
+        self.pending_baseline_lock_ids.clear()
+        self.known_ids_to_retry.clear()
+        self.short_pattern_ids.clear()
+        self._stop_retry_timer()
+        self._stop_short_pattern_retry_timer()
 
         self.node.get_logger().info("🔄 reset_map called - requesting batches with 'rrr' filter")
 
@@ -599,6 +642,42 @@ class MapManager:
             # Remember if this is the first update (before we set it to False)
             is_first_update = can_lock_baseline and self.first_update_map and specific_known_id is None
             is_full_update = specific_known_id is None  # Full update (not a specific retry)
+
+            # If first update returns zero batches, retry as first update (do not switch to incremental flow yet).
+            if is_first_update and num_batches == 0:
+                if self.first_update_empty_retry_count < self.first_update_empty_retry_max:
+                    self.first_update_empty_retry_count += 1
+                    attempt = self.first_update_empty_retry_count
+                    self.baseline_lock_pending = True
+                    self.node.get_logger().warn(
+                        f"⚠️ First update_map returned 0 batches, retrying as first update "
+                        f"({attempt}/{self.first_update_empty_retry_max})"
+                    )
+
+                    retry_client = client if client is not None else self.retry_client
+                    if retry_client and retry_client.service_is_ready():
+                        retry_request = GetStableBatches.Request()
+                        retry_request.batch_types_filter = "sfg"
+                        retry_request.specific_known_id = ""
+                        retry_request.only_locked_baselines = False
+
+                        retry_future = retry_client.call_async(retry_request)
+                        retry_future.add_done_callback(
+                            lambda f: self._handle_get_stable_batches_response(
+                                f, trigger_response, retry_client, service_name, None, False, True
+                            )
+                        )
+                    else:
+                        self.node.get_logger().error(
+                            "❌ Cannot retry first update_map: batch service not ready"
+                        )
+                    return
+
+                self.node.get_logger().error(
+                    f"❌ First update_map still returned 0 batches after "
+                    f"{self.first_update_empty_retry_max} retries"
+                )
+                return
             
             # Filter batches based on update type
             if is_first_update:
@@ -629,6 +708,9 @@ class MapManager:
                     f"📊 First update summary: {non_emerging_count} non-EMERGING, {len(emerging_ids)} SX EMERGING queued for retry, "
                     f"{skipped_count} FX skipped"
                 )
+
+                # First update completed with non-empty data; clear empty-response retry counter.
+                self.first_update_empty_retry_count = 0
                 
                 # Mark first update as complete
                 self.first_update_map = False
@@ -961,22 +1043,21 @@ class MapManager:
 
     def _start_retry_timer(self):
         """Start periodic retries until all EMERGING batches become non-EMERGING (stable)."""
-        if self.retry_timer is not None:
+        if self.retry_timer_active:
             return
 
+        self.retry_timer_active = True
         interval = max(self.retry_interval_sec, 0.1)
-        self.retry_timer = self.node.create_timer(interval, self._retry_timer_callback)
         self.node.get_logger().info(
             f"⏳ Auto-retry enabled: checking EMERGING batches every {interval:.1f}s until stable"
         )
 
     def _stop_retry_timer(self):
         """Stop periodic retries when all batches are TRACKING or removed."""
-        if self.retry_timer is None:
+        if not self.retry_timer_active:
             return
 
-        self.retry_timer.cancel()
-        self.retry_timer = None
+        self.retry_timer_active = False
         self.retry_pending = 0
         self.node.get_logger().info("✅ Auto-retry stopped: all batches are no longer EMERGING")
         
@@ -1118,6 +1199,10 @@ class MapManager:
                 self.baselines_locked = True
                 self.baseline_lock_pending = False
                 self.node.get_logger().info(f"✅ Baseline patterns locked! Received {num_batches} locked batches")
+
+                if not self.beacon_ready_published:
+                    self._publish_beacon_status(1)
+                    self.beacon_ready_published = True
                 
                 # Track the locked batch IDs
                 locked_batch_ids = set()
@@ -1180,6 +1265,9 @@ class MapManager:
 
     def _retry_timer_callback(self):
         """Timer callback to retry EMERGING SX known_ids only."""
+        if not self.retry_timer_active:
+            return
+
         if not self.known_ids_to_retry:
             self._stop_retry_timer()
             return
@@ -1216,12 +1304,11 @@ class MapManager:
     def _start_short_pattern_retry_timer(self):
         """Start a periodic timer that re-checks locked baselines for batches
         whose pattern currently has fewer than 4 colour elements."""
-        if self.short_pattern_retry_timer is not None:
+        if self.short_pattern_retry_active:
             return
+
+        self.short_pattern_retry_active = True
         interval = max(self.short_pattern_retry_interval_sec, 0.5)
-        self.short_pattern_retry_timer = self.node.create_timer(
-            interval, self._short_pattern_retry_callback
-        )
         self.node.get_logger().info(
             f"🔍 Short-pattern retry enabled: re-checking every {interval:.1f}s "
             f"for {len(self.short_pattern_ids)} batches: {self.short_pattern_ids}"
@@ -1229,15 +1316,18 @@ class MapManager:
 
     def _stop_short_pattern_retry_timer(self):
         """Stop the short-pattern retry timer."""
-        if self.short_pattern_retry_timer is None:
+        if not self.short_pattern_retry_active:
             return
-        self.short_pattern_retry_timer.cancel()
-        self.short_pattern_retry_timer = None
+
+        self.short_pattern_retry_active = False
         self.node.get_logger().info("✅ Short-pattern retry stopped: all patterns resolved")
 
     def _short_pattern_retry_callback(self):
         """Timer callback: request locked baselines for each short-pattern batch
         to see whether the pattern has been extended to 4 elements."""
+        if not self.short_pattern_retry_active:
+            return
+
         if not self.short_pattern_ids:
             self._stop_short_pattern_retry_timer()
             return
