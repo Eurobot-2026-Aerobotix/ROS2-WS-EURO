@@ -33,11 +33,17 @@ class RPiController(Node):
         self.VCC_PIN = 27        # Output pin for VCC (always HIGH)
         self.BUTTON_PIN = 17     # Input pin for button reading
         self.STM32_RESET_PIN = 5 # Output pin for STM32 reset (active LOW)
+        self.PNEUMATIC_RESET_PIN = 23  # Output pin for pneumatic reset (active LOW)
+        self.ESP_BACK_RESET_PIN = 24   # Output pin for ESP back reset (active LOW)
+        self.ESP_FRONT_RESET_PIN = 25  # Output pin for ESP front reset (active LOW)
         
         # GPIO device objects
         self.vcc_device = None
         self.button_device = None
         self.stm32_reset_device = None
+        self.pneumatic_reset_device = None
+        self.esp_back_reset_device = None
+        self.esp_front_reset_device = None
         
         self.gpio_initialized = False
         
@@ -69,9 +75,18 @@ class RPiController(Node):
             
             # Setup STM32 reset pin as output (initially HIGH - not in reset)
             self.stm32_reset_device = DigitalOutputDevice(self.STM32_RESET_PIN, initial_value=True)
+
+            # Setup additional reset pins as outputs (initially HIGH - not in reset)
+            self.pneumatic_reset_device = DigitalOutputDevice(self.PNEUMATIC_RESET_PIN, initial_value=True)
+            self.esp_back_reset_device = DigitalOutputDevice(self.ESP_BACK_RESET_PIN, initial_value=True)
+            self.esp_front_reset_device = DigitalOutputDevice(self.ESP_FRONT_RESET_PIN, initial_value=True)
             
             self.gpio_initialized = True
-            self.get_logger().info(f"✅ GPIO initialized (VCC:{self.VCC_PIN}, Button:{self.BUTTON_PIN}, STM32_Reset:{self.STM32_RESET_PIN})")
+            self.get_logger().info(
+                f"✅ GPIO initialized (VCC:{self.VCC_PIN}, Button:{self.BUTTON_PIN}, "
+                f"STM32_Reset:{self.STM32_RESET_PIN}, Pneumatic_Reset:{self.PNEUMATIC_RESET_PIN}, "
+                f"ESP_Back_Reset:{self.ESP_BACK_RESET_PIN}, ESP_Front_Reset:{self.ESP_FRONT_RESET_PIN})"
+            )
         except PermissionError as pe:
             self.get_logger().error(f"❌ Permission denied: {pe}")
             self.get_logger().error("Try: sudo usermod -a -G gpio $USER")
@@ -169,7 +184,7 @@ class RPiController(Node):
                 return False
             
             # Hold reset for specified time
-            #time.sleep(hold_time_ms / 1000.0)
+            time.sleep(hold_time_ms / 1000.0)
             
             # Release reset back to HIGH
             if not self.write_stm32_reset_high():
@@ -181,6 +196,72 @@ class RPiController(Node):
         except Exception as e:
             self.get_logger().error(f'STM32 reset sequence failed: {str(e)}')
             return False
+
+    def _write_reset_high(self, device, label):
+        """Write HIGH to a reset pin (release reset)."""
+        if not self.gpio_initialized or device is None:
+            self.get_logger().warning(f"GPIO not initialized - cannot release reset for {label}")
+            return False
+
+        try:
+            device.on()
+            self.get_logger().info(f'{label} reset pin set to HIGH (reset released)')
+            return True
+        except Exception as e:
+            self.get_logger().error(f'Failed to write HIGH to {label} reset pin: {str(e)}')
+            return False
+
+    def _write_reset_low(self, device, label):
+        """Write LOW to a reset pin (activate reset)."""
+        if not self.gpio_initialized or device is None:
+            self.get_logger().warning(f"GPIO not initialized - cannot activate reset for {label}")
+            return False
+
+        try:
+            device.off()
+            self.get_logger().info(f'{label} reset pin set to LOW (reset active)')
+            return True
+        except Exception as e:
+            self.get_logger().error(f'Failed to write LOW to {label} reset pin: {str(e)}')
+            return False
+
+    def _reset_device(self, device, label, hold_time_ms=100):
+        """Perform reset pulse for a device on an active-LOW reset pin."""
+        if not self.gpio_initialized:
+            self.get_logger().warning(f"GPIO not initialized - cannot reset {label}")
+            return False
+
+        try:
+            if not self._write_reset_low(device, label):
+                return False
+            time.sleep(hold_time_ms / 1000.0)
+            if not self._write_reset_high(device, label):
+                return False
+
+            self.get_logger().info(f'✅ {label} reset sequence completed ({hold_time_ms}ms)')
+            return True
+        except Exception as e:
+            self.get_logger().error(f'{label} reset sequence failed: {str(e)}')
+            return False
+
+    def reset_pneumatic(self, hold_time_ms=100):
+        """Hardware reset for pneumatic board."""
+        return self._reset_device(self.pneumatic_reset_device, 'Pneumatic', hold_time_ms)
+
+    def reset_esp_back(self, hold_time_ms=100):
+        """Hardware reset for ESP back board."""
+        return self._reset_device(self.esp_back_reset_device, 'ESP Back', hold_time_ms)
+
+    def reset_esp_front(self, hold_time_ms=100):
+        """Hardware reset for ESP front board."""
+        return self._reset_device(self.esp_front_reset_device, 'ESP Front', hold_time_ms)
+
+    def reset_all_esps(self, hold_time_ms=100):
+        """Hardware reset for pneumatic, ESP back, and ESP front boards."""
+        pneumatic_ok = self.reset_pneumatic(hold_time_ms=hold_time_ms)
+        back_ok = self.reset_esp_back(hold_time_ms=hold_time_ms)
+        front_ok = self.reset_esp_front(hold_time_ms=hold_time_ms)
+        return pneumatic_ok and back_ok and front_ok
     
     def cleanup(self):
         """Clean up GPIO resources"""
@@ -223,6 +304,27 @@ class RPiController(Node):
                     except Exception:
                         pass
                     self.stm32_reset_device = None
+
+                if self.pneumatic_reset_device:
+                    try:
+                        self.pneumatic_reset_device.close()
+                    except Exception:
+                        pass
+                    self.pneumatic_reset_device = None
+
+                if self.esp_back_reset_device:
+                    try:
+                        self.esp_back_reset_device.close()
+                    except Exception:
+                        pass
+                    self.esp_back_reset_device = None
+
+                if self.esp_front_reset_device:
+                    try:
+                        self.esp_front_reset_device.close()
+                    except Exception:
+                        pass
+                    self.esp_front_reset_device = None
                 
                 # Close the pin factory to fully release GPIO
                 if Device.pin_factory is not None:
