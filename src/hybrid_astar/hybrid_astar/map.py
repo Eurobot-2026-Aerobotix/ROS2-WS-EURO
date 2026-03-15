@@ -86,6 +86,7 @@ class MapManager:
         
         # Flag to track if we've locked the baseline patterns
         self.baselines_locked = False
+        self.locked_baseline_batch_ids: set = set()
 
         # Only the first normal update_map flow is allowed to trigger baseline locking.
         self.baseline_lock_pending = False
@@ -183,6 +184,7 @@ class MapManager:
         # Reset state flags
         self.first_update_map = True
         self.baselines_locked = False
+        self.locked_baseline_batch_ids.clear()
         self.baseline_lock_pending = False
         self.known_ids_to_retry.clear()
         self.deleted_batch_ids.clear()
@@ -763,6 +765,7 @@ class MapManager:
                             self.batches_fx.clear()
                             self.batches_sx.clear()
                             self.batches_with_obstacles.clear()  # Clear tracking
+                            self.locked_baseline_batch_ids.clear()
                             self.node.get_logger().info(f"🗑️  Cleared all FX and SX batches and {removed} obstacles before first update")
                 else:
                     # SUBSEQUENT UPDATES: Incremental update
@@ -794,6 +797,7 @@ class MapManager:
                                     self.batches_fx.pop(bid, None)
                                     self.batches_sx.pop(bid, None)
                                     self.batches_with_obstacles.discard(bid)  # Remove from tracking
+                                    self.locked_baseline_batch_ids.discard(bid)
                                 for bid in fx_batches_ids:
                                     # Remove FX batches for refresh (they'll be re-added)
                                     self.batches_fx.pop(bid, None)
@@ -1006,14 +1010,18 @@ class MapManager:
                 
                 # Track the locked batch IDs
                 locked_batch_ids = set()
+                sx_batches_ready_for_obstacles = []
                 
                 # Update batches with locked patterns
                 with self.batches_lock:
                     for batch in response.stable_state.batches:
                         locked_batch_ids.add(batch.known_id)
                         if batch.known_id.startswith('s'):
+                            self.locked_baseline_batch_ids.add(batch.known_id)
                             self.batches_sx[batch.known_id] = batch
                             self.node.get_logger().info(f"   🔒 Locked SX pattern: {batch.known_id} = '{batch.pattern}'")
+                            if len(batch.pattern or "") >= 4:
+                                sx_batches_ready_for_obstacles.append(batch)
                         elif batch.known_id.startswith('f'):
                             self.batches_fx[batch.known_id] = batch
                             self.node.get_logger().info(f"   🔒 Locked FX pattern: {batch.known_id} = '{batch.pattern}'")
@@ -1034,6 +1042,26 @@ class MapManager:
 
                 if self.short_pattern_ids:
                     self._start_short_pattern_retry_timer()
+
+                if sx_batches_ready_for_obstacles:
+                    with self.batches_lock:
+                        for batch in sx_batches_ready_for_obstacles:
+                            self.batches_with_obstacles.discard(batch.known_id)
+                    with self.obstacles_lock:
+                        ready_ids = {batch.known_id for batch in sx_batches_ready_for_obstacles}
+                        self.obstacles = [
+                            obs for obs in self.obstacles
+                            if not any(obs.id.startswith(f"sx_{bid}_") for bid in ready_ids)
+                        ]
+                        self.obstacle_sources = {
+                            k: v for k, v in self.obstacle_sources.items()
+                            if not any(k.startswith(f"sx_{bid}_") for bid in ready_ids)
+                        }
+                    sx_state = ArucoMapperState()
+                    sx_state.stamp = response.stable_state.stamp
+                    sx_state.initialized = response.stable_state.initialized
+                    sx_state.batches = sx_batches_ready_for_obstacles
+                    self._handle_aruco_mapper_state(sx_state, 'sx')
             else:
                 self.node.get_logger().error("❌ Failed to lock baseline patterns: no response")
         except Exception as e:
@@ -1148,7 +1176,6 @@ class MapManager:
 
                 new_pattern = batch.pattern if batch.pattern else ""
 
-                # Get old stored pattern for comparison
                 with self.batches_lock:
                     existing = self.batches_sx.get(known_id) or self.batches_fx.get(known_id)
                     old_pattern = existing.pattern if (existing and existing.pattern) else ""
@@ -1159,15 +1186,12 @@ class MapManager:
                         f"'{old_pattern}' → '{new_pattern}' ({len(new_pattern)} elements)"
                     )
 
-                    # Persist updated batch with new full pattern
-                    with self.batches_lock:
-                        if known_id.startswith('s'):
-                            self.batches_sx[known_id] = batch
-                        elif known_id.startswith('f'):
-                            self.batches_fx[known_id] = batch
+                    self.locked_baseline_batch_ids.add(known_id)
 
-                    # Tear down old obstacles for this batch
-                    source = 'sx'
+                    with self.batches_lock:
+                        self.batches_sx[known_id] = batch
+                        self.batches_with_obstacles.discard(known_id)
+
                     prefix_sx = f"sx_{known_id}_"
                     prefix_fx = f"fx_{known_id}_"
                     with self.obstacles_lock:
@@ -1179,20 +1203,16 @@ class MapManager:
                             k: v for k, v in self.obstacle_sources.items()
                             if not (k.startswith(prefix_sx) or k.startswith(prefix_fx))
                         }
-                    with self.batches_lock:
-                        self.batches_with_obstacles.discard(known_id)
 
-                    # Rebuild obstacles with the new full pattern
                     fake_state = ArucoMapperState()
                     fake_state.stamp = self.node.get_clock().now().to_msg()
                     fake_state.batches = [batch]
-                    self._handle_aruco_mapper_state(fake_state, source)
+                    self._handle_aruco_mapper_state(fake_state, 'sx')
 
                     self.node.get_logger().info(
                         f"   🔄 Obstacles rebuilt for '{known_id}' with full pattern '{new_pattern}'"
                     )
 
-                    # Mark as resolved
                     self.short_pattern_ids.discard(known_id)
                     if not self.short_pattern_ids:
                         self._stop_short_pattern_retry_timer()
@@ -1212,8 +1232,8 @@ class MapManager:
                     f"⏳ Short-pattern re-check: no data yet for '{known_id}'"
                 )
         except Exception as e:
-            self.node.get_logger().error(f"❌ Short-pattern retry error for '{known_id}': {e}")
             import traceback
+            self.node.get_logger().error(f"❌ Short-pattern retry error for '{known_id}': {e}")
             self.node.get_logger().error(traceback.format_exc())
 
     # ------------------------------------------------------------------
@@ -1227,14 +1247,10 @@ class MapManager:
         Note: FX/SX batches and obstacles are cleared before this is called
         """
         with self.obstacles_lock:
-            # Process each batch (no clearing needed - done at top level)
             for batch in msg.batches:
-                # Skip GX batches (goal area markers - don't create obstacles)
                 if source == 'gx':
                     continue
-                
-                # For FX batches, log member count and skip if no members
-                # For SX batches, we use predefined positions, so members are not required
+
                 if source == 'fx':
                     member_count = len(batch.members) if batch.members else 0
                     self.node.get_logger().info(
@@ -1242,232 +1258,135 @@ class MapManager:
                     )
                     if not batch.members:
                         continue
-                
-                # Store batch by known_id in the appropriate dictionary FIRST (always store, even if can't create obstacles)
+
                 with self.batches_lock:
                     if source == 'fx':
                         self.batches_fx[batch.known_id] = batch
                     elif source == 'sx':
                         self.batches_sx[batch.known_id] = batch
-                    # GX batches are not stored (goal area markers only)
-                    
-                    # Check if this batch already has obstacles created
+
                     if batch.known_id in self.batches_with_obstacles:
-                        # Skip obstacle creation - already processed
                         self.node.get_logger().info(
                             f"⏭️  Skipping '{batch.known_id}' - obstacles already created"
                         )
                         skip_creation = True
                     else:
                         skip_creation = False
-                
+
                 if skip_creation:
                     continue
-                
+
                 if source == 'sx':
-                    # SX: Use predefined batch position from lookup table
                     batch_known_id = batch.known_id
-                    
+
                     if batch_known_id not in self.predefined_batch_positions:
-                        self.node.get_logger().warn(f"⚠️  Batch '{batch_known_id}' not found in predefined positions, skipping obstacle creation")
-                        continue  # Skip obstacle creation, but batch is already stored
-                    
-                    batch_pos = self.predefined_batch_positions[batch_known_id]
-                    batch_center_x = batch_pos["x"]  # Already in meters
-                    batch_center_y = batch_pos["y"]  # Already in meters
-                    
-                    # Update batch center with predefined position
-                    # This is CRITICAL for distance calculations in handle_get_batch_color_pattern
-                    batch.center.x = batch_center_x
-                    batch.center.y = batch_center_y
-                    batch.center.z = 0.0
-                
-                if source == 'sx':
-                    # Continue with SX obstacle creation using predefined position
-                    
-                    # Convert batch center from meters to millimeters
-                    batch_center_x_mm = batch_center_x * 1000.0
-                    batch_center_y_mm = batch_center_y * 1000.0
-                    
-                    # Get color pattern from batch pattern string (e.g., "bbyy")
-                    pattern_str = batch.pattern.lower() if batch.pattern else ""
-                    
-                    # If no pattern provided, skip obstacle creation for this batch
-                    if not pattern_str:
-                        self.node.get_logger().info(
-                            f"ℹ️  Batch '{batch_known_id}' has no pattern field, skipping obstacle creation"
-                        )
-                        continue
-                    
-                    # Parse pattern string to extract colors
-                    pattern_colors = []
-                    for char in pattern_str:
-                        if char == 'b':
-                            pattern_colors.append('blue')
-                        elif char == 'y':
-                            pattern_colors.append('yellow')
-                    
-                    # If pattern exists but has no valid colors, skip
-                    if not pattern_colors:
                         self.node.get_logger().warn(
-                            f"⚠️  Batch '{batch_known_id}' has invalid pattern (pattern='{batch.pattern}'), "
-                            f"skipping obstacle creation"
+                            f"⚠️  Batch '{batch_known_id}' not found in predefined positions, skipping obstacle creation"
                         )
                         continue
-                    
-                    # Check if batch has members with real positions
-                    if batch.members and len(batch.members) > 0 and len(batch.members) < 4:
-                        # Use REAL member positions (for batches with < 4 members)
+
+                    batch_pos = self.predefined_batch_positions[batch_known_id]
+                    batch.center.x = batch_pos["x"]
+                    batch.center.y = batch_pos["y"]
+                    batch.center.z = 0.0
+
+                    if batch_known_id not in self.locked_baseline_batch_ids:
                         self.node.get_logger().info(
-                            f"✅ Creating {len(batch.members)} obstacles for batch '{batch_known_id}' "
-                            f"using REAL positions from members"
+                            f"⏳ Deferring SX obstacles for '{batch_known_id}' until its baseline is locked"
                         )
-                        
-                        for idx, member in enumerate(batch.members):
-                            obs = Obstacle()
-                            obs.id = f"{source}_{batch_known_id}_member{idx}"
-                            obs.type = 'crate'
-                            
-                            # Use color from pattern if available
-                            if idx < len(pattern_colors):
-                                obs.color = pattern_colors[idx]
-                            else:
-                                obs.color = pattern_colors[-1] if pattern_colors else 'yellow'
-                            
-                            # Determine obstacle dimensions based on batch direction
-                            if batch.direction == "horizontal":
-                                obs.width_mm = 50.0
-                                obs.height_mm = 150.0
-                            elif batch.direction == "vertical":
-                                obs.width_mm = 150.0
-                                obs.height_mm = 50.0
-                            else:
-                                # Skip if no direction
-                                self.node.get_logger().warn(
-                                    f"⚠️  Batch '{batch_known_id}' has no direction, skipping"
-                                )
-                                continue
-                            
-                            # Use ACTUAL member position from service
-                            center_x_mm = member.map_pos.x * 1000.0
-                            center_y_mm = member.map_pos.y * 1000.0
-                            
-                            # Convert to TOP-LEFT corner
-                            obs.pose.x = center_x_mm - (obs.width_mm / 2.0)
-                            obs.pose.y = center_y_mm - (obs.height_mm / 2.0)
-                            obs.pose.theta = 0.0
-                            
-                            obs.detected_at = msg.stamp
-                            
-                            self.node.get_logger().info(
-                                f"  ✅ Created obstacle '{obs.id}' at REAL position "
-                                f"({center_x_mm:.0f}, {center_y_mm:.0f}) mm, color={obs.color}"
-                            )
-                            
-                            # Add to obstacles list and track source
-                            self.obstacles.append(obs)
-                            self.obstacle_sources[obs.id] = source
-                    
+                        continue
+
+                    pattern_colors = self.parse_pattern_colors((batch.pattern or "").lower())
+                    if len(pattern_colors) < 4:
+                        self.node.get_logger().warn(
+                            f"⚠️  Locked SX batch '{batch_known_id}' still has incomplete pattern '{batch.pattern}', waiting before obstacle creation"
+                        )
+                        continue
+
+                    member_count = len(batch.members) if batch.members else 0
+                    if member_count == 3:
+                        self.node.get_logger().info(
+                            f"⏭️  SX batch '{batch_known_id}' has only 3 members - skipping obstacle creation"
+                        )
+                        continue
+
+                    batch_center_x_mm = batch_pos["x"] * 1000.0
+                    batch_center_y_mm = batch_pos["y"] * 1000.0
+
+                    if batch.direction == "horizontal":
+                        obs_width_mm = 50.0
+                        obs_height_mm = 150.0
+                        offsets = [(-75.0, 0.0), (-25.0, 0.0), (25.0, 0.0), (75.0, 0.0)]
+                    elif batch.direction == "vertical":
+                        obs_width_mm = 150.0
+                        obs_height_mm = 50.0
+                        offsets = [(0.0, -75.0), (0.0, -25.0), (0.0, 25.0), (0.0, 75.0)]
                     else:
-                        # Use PREDEFINED positions with offsets (for full batches with 4 members or no member data)
-                        # Determine obstacle dimensions based on batch direction
-                        if batch.direction == "horizontal":
-                            obs_width_mm = 50.0
-                            obs_height_mm = 150.0
-                            offsets = [(-75.0, 0.0), (-25.0, 0.0), (25.0, 0.0), (75.0, 0.0)]
-                        elif batch.direction == "vertical":
-                            obs_width_mm = 150.0
-                            obs_height_mm = 50.0
-                            offsets = [(0.0, -75.0), (0.0, -25.0), (0.0, 25.0), (0.0, 75.0)]
-                        else:
-                            # Skip if no direction
-                            self.node.get_logger().warn(
-                                f"⚠️  Batch '{batch_known_id}' has no direction, skipping obstacle creation"
-                            )
-                            continue
-                        
-                        # Create 4 obstacles for this batch
-                        for idx, (offset_x, offset_y) in enumerate(offsets):
-                            obs = Obstacle()
-                            obs.id = f"{source}_{batch_known_id}_member{idx}"
-                            obs.type = 'crate'
-                            obs.color = pattern_colors[idx] if idx < len(pattern_colors) else pattern_colors[-1]
-                            obs.width_mm = obs_width_mm
-                            obs.height_mm = obs_height_mm
-                            
-                            # Calculate obstacle center using predefined offsets
-                            obs_center_x = batch_center_x_mm + offset_x
-                            obs_center_y = batch_center_y_mm + offset_y
-                            
-                            # Convert to TOP-LEFT corner
-                            obs.pose.x = obs_center_x - (obs_width_mm / 2.0)
-                            obs.pose.y = obs_center_y - (obs_height_mm / 2.0)
-                            obs.pose.theta = 0.0
-                            
-                            obs.detected_at = msg.stamp
-                            
-                            # Add to obstacles list and track source
-                            self.obstacles.append(obs)
-                            self.obstacle_sources[obs.id] = source
-                        
-                        # Mark this batch as having obstacles created
-                        with self.batches_lock:
-                            self.batches_with_obstacles.add(batch_known_id)
-                
-                else:
-                    # FX: Use individual member positions
-                    # Parse pattern string (e.g., "ybyb", "yybb") to get colors
-                    pattern_str = batch.pattern if batch.pattern else ""
-                    pattern_colors = self.parse_pattern_colors(pattern_str)
-                    
-                    for idx, member in enumerate(batch.members):
-                        # Create obstacle from batch member
+                        self.node.get_logger().warn(
+                            f"⚠️  Batch '{batch_known_id}' has no direction, skipping obstacle creation"
+                        )
+                        continue
+
+                    for idx, (offset_x, offset_y) in enumerate(offsets):
                         obs = Obstacle()
-                        obs.id = f"{source}_{batch.known_id}_member{idx}"  # Use known_id for unique IDs
+                        obs.id = f"{source}_{batch_known_id}_member{idx}"
                         obs.type = 'crate'
-                        
-                        # Use color from pattern if available, otherwise from member
-                        if pattern_colors and idx < len(pattern_colors):
-                            obs.color = pattern_colors[idx]
-                        elif member.color in ["yellow", "blue"]:
-                            obs.color = member.color
-                        else:
-                            # Skip if no valid color
-                            continue
-
-                        # Determine obstacle dimensions based on batch direction
-                        if batch.direction == "horizontal":
-                            obs.width_mm = self.params['obstacles']['crate_horizontal']['height_mm']
-                            obs.height_mm = self.params['obstacles']['crate_horizontal']['width_mm']
-                        elif batch.direction == "vertical":
-                            obs.width_mm = self.params['obstacles']['crate_vertical']['height_mm']
-                            obs.height_mm = self.params['obstacles']['crate_vertical']['width_mm']
-                        else:
-                            # Skip if no valid direction
-                            self.node.get_logger().warn(
-                                f"⚠️  Obstacle '{obs.id}' has no direction, skipping"
-                            )
-                            continue
-
-                        # IMPORTANT: map_pos is the CENTER of the obstacle
-                        # Convert to TOP-LEFT corner (what the planner expects)
-                        # Convert from meters to millimeters
-                        center_x_mm = member.map_pos.x * 1000.0 
-                        center_y_mm = member.map_pos.y * 1000.0
-                        obs.pose.x = center_x_mm - (obs.width_mm / 2.0)   # Center to top-left
-                        obs.pose.y = center_y_mm - (obs.height_mm / 2.0)  # Center to top-left
+                        obs.color = pattern_colors[idx]
+                        obs.width_mm = obs_width_mm
+                        obs.height_mm = obs_height_mm
+                        obs_center_x = batch_center_x_mm + offset_x
+                        obs_center_y = batch_center_y_mm + offset_y
+                        obs.pose.x = obs_center_x - (obs_width_mm / 2.0)
+                        obs.pose.y = obs_center_y - (obs_height_mm / 2.0)
                         obs.pose.theta = 0.0
-
                         obs.detected_at = msg.stamp
-
-                        # Add to obstacles list and track source
                         self.obstacles.append(obs)
                         self.obstacle_sources[obs.id] = source
-                    
-                    # Mark this batch as having obstacles created
+
                     with self.batches_lock:
-                        self.batches_with_obstacles.add(batch.known_id)
-            
+                        self.batches_with_obstacles.add(batch_known_id)
+                    continue
+
+                pattern_str = batch.pattern if batch.pattern else ""
+                pattern_colors = self.parse_pattern_colors(pattern_str)
+
+                for idx, member in enumerate(batch.members):
+                    obs = Obstacle()
+                    obs.id = f"{source}_{batch.known_id}_member{idx}"
+                    obs.type = 'crate'
+
+                    if pattern_colors and idx < len(pattern_colors):
+                        obs.color = pattern_colors[idx]
+                    elif member.color in ["yellow", "blue"]:
+                        obs.color = member.color
+                    else:
+                        continue
+
+                    if batch.direction == "horizontal":
+                        obs.width_mm = self.params['obstacles']['crate_horizontal']['height_mm']
+                        obs.height_mm = self.params['obstacles']['crate_horizontal']['width_mm']
+                    elif batch.direction == "vertical":
+                        obs.width_mm = self.params['obstacles']['crate_vertical']['height_mm']
+                        obs.height_mm = self.params['obstacles']['crate_vertical']['width_mm']
+                    else:
+                        self.node.get_logger().warn(
+                            f"⚠️  Obstacle '{obs.id}' has no direction, skipping"
+                        )
+                        continue
+
+                    center_x_mm = member.map_pos.x * 1000.0
+                    center_y_mm = member.map_pos.y * 1000.0
+                    obs.pose.x = center_x_mm - (obs.width_mm / 2.0)
+                    obs.pose.y = center_y_mm - (obs.height_mm / 2.0)
+                    obs.pose.theta = 0.0
+                    obs.detected_at = msg.stamp
+
+                    self.obstacles.append(obs)
+                    self.obstacle_sources[obs.id] = source
+
+                with self.batches_lock:
+                    self.batches_with_obstacles.add(batch.known_id)
+
             # Obstacle counts are logged in final summary
 
     def get_batch_by_known_id(self, known_id: str) -> Optional[Batch]:
@@ -1512,6 +1431,7 @@ class MapManager:
             
             # Remove from obstacle creation tracking
             self.batches_with_obstacles.discard(known_id)
+            self.locked_baseline_batch_ids.discard(known_id)
             
             if not (deleted_from_fx or deleted_from_sx):
                 self.node.get_logger().warn(f"⚠️  Batch '{known_id}' not found in FX or SX storage")
