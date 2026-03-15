@@ -109,6 +109,11 @@ class MapManager:
         self.retry_client = None
         self.retry_service_name = ""
 
+        # Short-pattern retry: re-check batches whose locked pattern has < 4 elements
+        self.short_pattern_ids: set = set()
+        self.short_pattern_retry_timer = None
+        self.short_pattern_retry_interval_sec = params.get('rates', {}).get('short_pattern_retry_sec', 2.0)
+
         # Enemy obstacle freshness management (/obstacle_relative)
         self.enemy_obstacle_timeout_sec = params.get('rates', {}).get('enemy_obstacle_timeout_sec', 1.0)
         self.last_enemy_update_ns: Optional[int] = None
@@ -182,6 +187,8 @@ class MapManager:
         self.known_ids_to_retry.clear()
         self.deleted_batch_ids.clear()
         self.active_batch_ids.clear()
+        self.short_pattern_ids.clear()
+        self._stop_short_pattern_retry_timer()
         
         # Publish empty obstacle visualization
         self.publish_obstacles([])
@@ -1015,6 +1022,19 @@ class MapManager:
                 # CRITICAL: Add locked batches to active_batch_ids to prevent them from being removed
                 self.active_batch_ids.update(locked_batch_ids)
                 self.node.get_logger().info(f"   📌 Added {len(locked_batch_ids)} locked batches to active tracking")
+
+                # Detect batches with short patterns (< 4 elements) and schedule re-checks
+                for batch in response.stable_state.batches:
+                    pattern = batch.pattern if batch.pattern else ""
+                    if len(pattern) < 4:
+                        self.short_pattern_ids.add(batch.known_id)
+                        self.node.get_logger().warn(
+                            f"⚠️  Short pattern after baseline lock for '{batch.known_id}': "
+                            f"'{pattern}' ({len(pattern)} elements, expected 4) — will re-check"
+                        )
+
+                if self.short_pattern_ids:
+                    self._start_short_pattern_retry_timer()
             else:
                 self.node.get_logger().error("❌ Failed to lock baseline patterns: no response")
         except Exception as e:
@@ -1051,13 +1071,152 @@ class MapManager:
                 )
             )
     
+    # ------------------------------------------------------------------
+    # Short-pattern retry helpers
+    # ------------------------------------------------------------------
+
+    def _start_short_pattern_retry_timer(self):
+        """Start a periodic timer that re-checks locked baselines for batches
+        whose pattern currently has fewer than 4 colour elements."""
+        if self.short_pattern_retry_timer is not None:
+            return
+        interval = max(self.short_pattern_retry_interval_sec, 0.5)
+        self.short_pattern_retry_timer = self.node.create_timer(
+            interval, self._short_pattern_retry_callback
+        )
+        self.node.get_logger().info(
+            f"🔍 Short-pattern retry enabled: re-checking every {interval:.1f}s "
+            f"for {len(self.short_pattern_ids)} batches: {self.short_pattern_ids}"
+        )
+
+    def _stop_short_pattern_retry_timer(self):
+        """Stop the short-pattern retry timer."""
+        if self.short_pattern_retry_timer is None:
+            return
+        self.short_pattern_retry_timer.cancel()
+        self.short_pattern_retry_timer = None
+        self.node.get_logger().info("✅ Short-pattern retry stopped: all patterns resolved")
+
+    def _short_pattern_retry_callback(self):
+        """Timer callback: request locked baselines for each short-pattern batch
+        to see whether the pattern has been extended to 4 elements."""
+        if not self.short_pattern_ids:
+            self._stop_short_pattern_retry_timer()
+            return
+
+        if not self.retry_client or not self.retry_client.service_is_ready():
+            self.node.get_logger().warn("⚠️ Short-pattern retry: batch service not ready")
+            return
+
+        self.node.get_logger().info(
+            f"🔍 Re-checking short-pattern batches with locked baseline: {self.short_pattern_ids}"
+        )
+        for known_id in list(self.short_pattern_ids):
+            req = GetStableBatches.Request()
+            req.batch_types_filter = "sfg"
+            req.specific_known_id = known_id
+            req.only_locked_baselines = True
+            future = self.retry_client.call_async(req)
+            future.add_done_callback(
+                lambda f, kid=known_id: self._handle_short_pattern_retry_response(f, kid)
+            )
+
+    def _handle_short_pattern_retry_response(self, future, known_id: str):
+        """Handle the re-check response for a single short-pattern batch.
+        If the pattern now has >= 4 elements, update the stored batch and
+        regenerate its obstacles; remove it from the retry set."""
+        try:
+            response = future.result()
+            if not response or not response.stable_state:
+                self.node.get_logger().warn(
+                    f"⚠️  Short-pattern re-check for '{known_id}': no response"
+                )
+                return
+
+            for batch in response.stable_state.batches:
+                if batch.known_id != known_id:
+                    continue
+
+                new_pattern = batch.pattern if batch.pattern else ""
+
+                # Get old stored pattern for comparison
+                with self.batches_lock:
+                    existing = self.batches_sx.get(known_id) or self.batches_fx.get(known_id)
+                    old_pattern = existing.pattern if (existing and existing.pattern) else ""
+
+                if len(new_pattern) >= 4:
+                    self.node.get_logger().info(
+                        f"✅ Short-pattern resolved for '{known_id}': "
+                        f"'{old_pattern}' → '{new_pattern}' ({len(new_pattern)} elements)"
+                    )
+
+                    # Persist updated batch with new full pattern
+                    with self.batches_lock:
+                        if known_id.startswith('s'):
+                            self.batches_sx[known_id] = batch
+                        elif known_id.startswith('f'):
+                            self.batches_fx[known_id] = batch
+
+                    # Tear down old obstacles for this batch
+                    source = 'sx' if known_id.startswith('s') else 'fx'
+                    prefix_sx = f"sx_{known_id}_"
+                    prefix_fx = f"fx_{known_id}_"
+                    with self.obstacles_lock:
+                        self.obstacles = [
+                            obs for obs in self.obstacles
+                            if not (obs.id.startswith(prefix_sx) or obs.id.startswith(prefix_fx))
+                        ]
+                        self.obstacle_sources = {
+                            k: v for k, v in self.obstacle_sources.items()
+                            if not (k.startswith(prefix_sx) or k.startswith(prefix_fx))
+                        }
+                    with self.batches_lock:
+                        self.batches_with_obstacles.discard(known_id)
+
+                    # Rebuild obstacles with the new full pattern
+                    fake_state = ArucoMapperState()
+                    fake_state.stamp = self.node.get_clock().now().to_msg()
+                    fake_state.batches = [batch]
+                    self._handle_aruco_mapper_state(fake_state, source)
+
+                    self.node.get_logger().info(
+                        f"   🔄 Obstacles rebuilt for '{known_id}' with full pattern '{new_pattern}'"
+                    )
+
+                    # Mark as resolved
+                    self.short_pattern_ids.discard(known_id)
+                    if not self.short_pattern_ids:
+                        self._stop_short_pattern_retry_timer()
+
+                elif len(new_pattern) > len(old_pattern):
+                    self.node.get_logger().info(
+                        f"📈 Pattern improving for '{known_id}': "
+                        f"'{old_pattern}' → '{new_pattern}' (still {len(new_pattern)} elements, need 4)"
+                    )
+                else:
+                    self.node.get_logger().info(
+                        f"⏳ Pattern unchanged for '{known_id}': '{new_pattern}' ({len(new_pattern)} elements)"
+                    )
+                break
+            else:
+                self.node.get_logger().info(
+                    f"⏳ Short-pattern re-check: no data yet for '{known_id}'"
+                )
+        except Exception as e:
+            self.node.get_logger().error(f"❌ Short-pattern retry error for '{known_id}': {e}")
+            import traceback
+            self.node.get_logger().error(traceback.format_exc())
+
+    # ------------------------------------------------------------------
+    # ArUco mapper state processing
+    # ------------------------------------------------------------------
+
     def _handle_aruco_mapper_state(self, msg: ArucoMapperState, source: str):
         """
         Internal method to handle ArUco mapper state updates
         source: 'fx', 'sx', or 'gx'
         Note: FX/SX batches and obstacles are cleared before this is called
         """
-        self.first_crate_update=True
         with self.obstacles_lock:
             # Process each batch (no clearing needed - done at top level)
             for batch in msg.batches:
