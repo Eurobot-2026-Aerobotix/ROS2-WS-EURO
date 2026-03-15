@@ -31,6 +31,7 @@ import os
 
 # ROS2 messages
 from std_msgs.msg import String
+from std_srvs.srv import Trigger
 from geometry_msgs.msg import PoseStamped, Quaternion, Point
 from aruco_mapper_msgs.msg import ArucoMapperState, Batch, BatchMember
 from aruco_mapper_msgs.srv import GetStableBatches
@@ -436,6 +437,24 @@ class WebHandlerNode(Node):
             GetBatchColorPattern,
             '/get_batch_color_pattern'
         )
+
+        self.update_map_client = self.create_client(
+            Trigger,
+            '/update_map',
+            callback_group=self.reentrant_group
+        )
+
+        self.clear_map_client = self.create_client(
+            Trigger,
+            '/clear_map',
+            callback_group=self.reentrant_group
+        )
+
+        self.reset_map_client = self.create_client(
+            Trigger,
+            '/reset_map',
+            callback_group=self.reentrant_group
+        )
         
         # Service servers
         self.get_stable_batches_server = self.create_service(
@@ -494,6 +513,7 @@ class WebHandlerNode(Node):
         self.get_logger().info("   - /web/test_controller (manual euro controllers)")
         self.get_logger().info("   Services:")
         self.get_logger().info("   - /aruco_mapper/get_stable_batches_web (provides batches to map)")
+        self.get_logger().info("   - /update_map, /clear_map, /reset_map (hybrid_astar controls)")
         self.get_logger().info("=" * 60)
     
     # ========================================================================
@@ -865,6 +885,40 @@ class WebHandlerNode(Node):
                 }
                 self.get_logger().info(f"🧪 {response['message']}")
 
+            elif controller_name in ['hybrid_astar', 'pathfinder', 'map']:
+                action_to_service = {
+                    'update_map': ('/update_map', self.update_map_client),
+                    'clear_map': ('/clear_map', self.clear_map_client),
+                    'reset_map': ('/reset_map', self.reset_map_client),
+                    # UI-friendly alias
+                    'reset_beacon': ('/reset_map', self.reset_map_client),
+                }
+
+                if action not in action_to_service:
+                    raise ValueError(
+                        f"Unsupported action '{action}' for controller '{controller_name}'"
+                    )
+
+                service_name, client = action_to_service[action]
+                success, service_message = self._call_trigger_service(client, service_name)
+
+                response = {
+                    'success': success,
+                    'controller': 'hybrid_astar',
+                    'action': action,
+                    'request_id': request_id,
+                    'message': (
+                        f"Executed hybrid_astar.{action} via {service_name}: {service_message}"
+                        if success
+                        else f"Failed hybrid_astar.{action} via {service_name}: {service_message}"
+                    )
+                }
+
+                if success:
+                    self.get_logger().info(f"🧪 {response['message']}")
+                else:
+                    self.get_logger().warning(f"⚠️ {response['message']}")
+
             else:
                 raise ValueError(f"Unknown controller '{controller_name}'")
 
@@ -877,6 +931,30 @@ class WebHandlerNode(Node):
                 'request_id': data.get('request_id') if isinstance(data, dict) else None,
                 'message': f'Error: {str(e)}'
             })
+
+    def _call_trigger_service(self, client, service_name: str, timeout_sec: float = 5.0):
+        """Call a Trigger service and return (success, message)."""
+        try:
+            if not client.wait_for_service(timeout_sec=1.0):
+                return False, f"{service_name} not available"
+
+            request = Trigger.Request()
+            future = client.call_async(request)
+
+            import rclpy
+            rclpy.spin_until_future_complete(self, future, timeout_sec=timeout_sec)
+
+            if not future.done():
+                return False, f"{service_name} timeout"
+
+            response = future.result()
+            if response is None:
+                return False, f"{service_name} returned no response"
+
+            message = response.message or ("Service call succeeded" if response.success else "Service call failed")
+            return bool(response.success), message
+        except Exception as e:
+            return False, f"{service_name} error: {str(e)}"
 
     def _log_steal_tasks_details(self, tasks: List[Dict]):
         """Log generated steal tasks in compact form for debugging."""
