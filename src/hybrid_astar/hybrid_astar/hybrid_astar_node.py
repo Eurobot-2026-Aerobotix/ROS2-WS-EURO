@@ -1466,7 +1466,7 @@ def main(args=None):
     
     # Use MultiThreadedExecutor to handle multiple service requests simultaneously
     from rclpy.executors import MultiThreadedExecutor
-    executor = MultiThreadedExecutor(num_threads=4)  # 4 threads for parallel requests
+    executor = MultiThreadedExecutor(num_threads=8)  # 8 threads for parallel requests
     executor.add_node(node)
     
     try:
