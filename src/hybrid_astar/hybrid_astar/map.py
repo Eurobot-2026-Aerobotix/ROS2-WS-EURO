@@ -1110,6 +1110,8 @@ class MapManager:
                     # SUBSEQUENT UPDATES: Incremental update
                     # 1. Find batches that disappeared (in active but not in received)
                     disappeared_ids = self.active_batch_ids - received_batch_ids
+                    # Preserved manual put_down batches must not be considered disappeared.
+                    disappeared_ids -= retained_manual_putdown_ids
                     
                     # 2. Remove obstacles ONLY for batches that disappeared OR are FX (FX always refreshed)
                     # Keep existing obstacles for SX batches that are still present
@@ -1276,7 +1278,7 @@ class MapManager:
             if specific_known_id is None:
                 # Update active batch IDs to current state
                 # Use received_batch_ids (all batches in response) not filtered_batches (only new ones)
-                self.active_batch_ids = received_batch_ids
+                self.active_batch_ids = received_batch_ids | retained_manual_putdown_ids
                 
                 # Check if all batches are TRACKING and we haven't locked baselines yet
                 if can_lock_baseline and self.baseline_lock_pending and not self.baselines_locked and not self.known_ids_to_retry:
