@@ -691,7 +691,7 @@ class WebHandlerNode(Node):
             # Publish to /obstacle_relative as PoseStamped
             pose_msg = PoseStamped()
             pose_msg.header.stamp = self.get_clock().now().to_msg()
-            pose_msg.header.frame_id = 'map'
+            pose_msg.header.frame_id = 'map_web_enemy'
             
             # Convert from mm to m
             pose_msg.pose.position.x = self.mm_to_m(self.enemy_pose['x_mm'])

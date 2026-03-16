@@ -390,7 +390,7 @@ class HybridAStarNode(Node):
             Optimized path [(x, y, theta), ...]
         """
 
-        if len(path) < 4:
+        if len(path) < 3:
             return path
 
         def collision_check_segment(pose1, pose2):
@@ -411,56 +411,307 @@ class HybridAStarNode(Node):
                     return True
             return False
 
+        def first_collision_on_segment(pose1, pose2):
+            """Return first collision sample (x, y, theta, i, steps) or None."""
+            x1, y1, theta1 = pose1
+            x2, y2, theta2 = pose2
+            dist = math.hypot(x2 - x1, y2 - y1)
+            steps = max(10, int(dist / sample_step_mm))
+            for i in range(steps + 1):
+                t = i / steps
+                x = x1 + t * (x2 - x1)
+                y = y1 + t * (y2 - y1)
+                theta = theta1 + t * (theta2 - theta1)
+                if self.pathfinder.is_collision(x, y, theta, grid_resolution):
+                    return (x, y, theta, i, steps)
+            return None
+
         def segment_distance(p1, p2):
             return math.hypot(p2[0] - p1[0], p2[1] - p1[1])
 
+        def normalize_angle(theta):
+            while theta > math.pi:
+                theta -= 2 * math.pi
+            while theta < -math.pi:
+                theta += 2 * math.pi
+            return theta
+
+        def heading_candidates(theta):
+            primary = normalize_angle(theta)
+            reverse = normalize_angle(theta + math.pi)
+            return [primary, reverse]
+
+        def rotation_safe_at_point(x, y, theta_from, theta_to):
+            """Check if in-place rotation at one point is collision-free."""
+            angle_diff = theta_to - theta_from
+            while angle_diff > math.pi:
+                angle_diff -= 2 * math.pi
+            while angle_diff < -math.pi:
+                angle_diff += 2 * math.pi
+
+            checks = max(8, int(abs(angle_diff) / math.radians(5)))
+            for i in range(checks + 1):
+                ratio = i / checks
+                check_theta = theta_from + ratio * angle_diff
+                if self.pathfinder.is_collision(x, y, check_theta, grid_resolution):
+                    return False
+            return True
+
+        def first_collision_on_rotation(x, y, theta_from, theta_to):
+            """Return first colliding angle (theta, i, checks) or None."""
+            angle_diff = theta_to - theta_from
+            while angle_diff > math.pi:
+                angle_diff -= 2 * math.pi
+            while angle_diff < -math.pi:
+                angle_diff += 2 * math.pi
+            checks = max(8, int(abs(angle_diff) / math.radians(5)))
+            for i in range(checks + 1):
+                ratio = i / checks
+                check_theta = theta_from + ratio * angle_diff
+                if self.pathfinder.is_collision(x, y, check_theta, grid_resolution):
+                    return (check_theta, i, checks)
+            return None
+
         optimized = path.copy()
-        index = 0
-        removed = 0
+        max_rounds = 6
+        total_removed_intersection = 0
+        total_removed_direct = 0
+        rounds_used = 0
+        max_debug_rejections = 30
+        debug_rejections_logged = 0
 
-        while index <= len(optimized) - 4:
-            x1, y1, t1 = optimized[index]
-            x2, y2, t2 = optimized[index + 1]
-            x3, y3, t3 = optimized[index + 2]
-            x4, y4, t4 = optimized[index + 3]
+        for round_idx in range(max_rounds):
+            rounds_used = round_idx + 1
 
-            # Compute intersection of (p1,p2) with (p3,p4)
-            den = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
-            if abs(den) < 1e-6:
+            # First pass: intersection-based simplification
+            removed = 0
+            index = 0
+            while index <= len(optimized) - 4:
+                x1, y1, t1 = optimized[index]
+                x2, y2, t2 = optimized[index + 1]
+                x3, y3, t3 = optimized[index + 2]
+                x4, y4, t4 = optimized[index + 3]
+
+                # Compute intersection of (p1,p2) with (p3,p4)
+                den = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+                if abs(den) < 1e-6:
+                    index += 1
+                    continue
+
+                px = ((x1 * y2 - y1 * x2) * (x3 - x4) -
+                    (x1 - x2) * (x3 * y4 - y3 * x4)) / den
+                py = ((x1 * y2 - y1 * x2) * (y3 - y4) -
+                    (y1 - y2) * (x3 * y4 - y3 * x4)) / den
+
+                first_theta = math.atan2(py - y1, px - x1)
+                second_theta_base = math.atan2(y4 - py, x4 - px)
+
+                # More permissive and consistent with A->C simplification:
+                # translation is checked with fixed travel heading, while
+                # rotations are validated separately at waypoints.
+                first_seg_collision = first_collision_on_segment((x1, y1, first_theta), (px, py, first_theta))
+                start_rotation_ok = rotation_safe_at_point(x1, y1, t1, first_theta)
+                start_rot_collision = None if start_rotation_ok else first_collision_on_rotation(x1, y1, t1, first_theta)
+
+                second_candidate_results = []
+                chosen_second_theta = None
+                chosen_second_seg_collision = None
+                chosen_mid_rotation_ok = False
+                chosen_end_rotation_ok = False
+                chosen_mid_rot_collision = None
+                chosen_end_rot_collision = None
+
+                for second_theta in heading_candidates(second_theta_base):
+                    second_seg_collision = first_collision_on_segment((px, py, second_theta), (x4, y4, second_theta))
+                    intersection_rotation_ok = rotation_safe_at_point(px, py, first_theta, second_theta)
+                    end_rotation_ok = rotation_safe_at_point(x4, y4, second_theta, t4)
+                    mid_rot_collision = None if intersection_rotation_ok else first_collision_on_rotation(px, py, first_theta, second_theta)
+                    end_rot_collision = None if end_rotation_ok else first_collision_on_rotation(x4, y4, second_theta, t4)
+
+                    second_candidate_results.append({
+                        'theta': second_theta,
+                        'seg_collision': second_seg_collision,
+                        'mid_ok': intersection_rotation_ok,
+                        'end_ok': end_rotation_ok,
+                        'mid_rot_collision': mid_rot_collision,
+                        'end_rot_collision': end_rot_collision,
+                    })
+
+                    if (
+                        first_seg_collision is None
+                        and start_rotation_ok
+                        and second_seg_collision is None
+                        and intersection_rotation_ok
+                        and end_rotation_ok
+                    ):
+                        chosen_second_theta = second_theta
+                        chosen_second_seg_collision = second_seg_collision
+                        chosen_mid_rotation_ok = intersection_rotation_ok
+                        chosen_end_rotation_ok = end_rotation_ok
+                        chosen_mid_rot_collision = mid_rot_collision
+                        chosen_end_rot_collision = end_rot_collision
+                        break
+
+                if chosen_second_theta is None:
+                    best_candidate = second_candidate_results[0]
+                    chosen_second_theta = best_candidate['theta']
+                    chosen_second_seg_collision = best_candidate['seg_collision']
+                    chosen_mid_rotation_ok = best_candidate['mid_ok']
+                    chosen_end_rotation_ok = best_candidate['end_ok']
+                    chosen_mid_rot_collision = best_candidate['mid_rot_collision']
+                    chosen_end_rot_collision = best_candidate['end_rot_collision']
+
+                translation_collision = (first_seg_collision is not None) or (chosen_second_seg_collision is not None)
+
+                old_dist = segment_distance((x1, y1), (x2, y2)) + segment_distance((x2, y2), (x3, y3)) + segment_distance((x3, y3), (x4, y4))
+                new_dist = segment_distance((x1, y1), (px, py)) + segment_distance((px, py), (x4, y4))
+                added_distance = new_dist - old_dist
+
+                distance_ok = added_distance <= max_added_distance_mm
+
+                if (
+                    (not translation_collision)
+                    and start_rotation_ok
+                    and chosen_mid_rotation_ok
+                    and chosen_end_rotation_ok
+                    and distance_ok
+                ):
+                    optimized[index + 1] = (px, py, first_theta)
+                    del optimized[index + 2]
+                    removed += 1
+                    continue
+
+                if debug_rejections_logged < max_debug_rejections:
+                    trans_detail = "none"
+                    if first_seg_collision is not None:
+                        cx, cy, cth, ci, csteps = first_seg_collision
+                        trans_detail = f"first_seg@({cx:.1f},{cy:.1f}) θ={math.degrees(cth):.1f}° step={ci}/{csteps}"
+                    elif chosen_second_seg_collision is not None:
+                        cx, cy, cth, ci, csteps = chosen_second_seg_collision
+                        trans_detail = f"second_seg@({cx:.1f},{cy:.1f}) θ={math.degrees(cth):.1f}° step={ci}/{csteps}"
+
+                    start_rot_detail = "none"
+                    if start_rot_collision is not None:
+                        cth, ci, cchecks = start_rot_collision
+                        start_rot_detail = f"θ={math.degrees(cth):.1f}° step={ci}/{cchecks}"
+
+                    mid_rot_detail = "none"
+                    if chosen_mid_rot_collision is not None:
+                        cth, ci, cchecks = chosen_mid_rot_collision
+                        mid_rot_detail = f"θ={math.degrees(cth):.1f}° step={ci}/{cchecks}"
+
+                    end_rot_detail = "none"
+                    if chosen_end_rot_collision is not None:
+                        cth, ci, cchecks = chosen_end_rot_collision
+                        end_rot_detail = f"θ={math.degrees(cth):.1f}° step={ci}/{cchecks}"
+
+                    self.get_logger().info(
+                        "🛑 Intersection reject "
+                        f"(round={rounds_used}, idx={index}): "
+                        f"trans_ok={not translation_collision}, "
+                        f"rot_start_ok={start_rotation_ok}, "
+                        f"rot_mid_ok={chosen_mid_rotation_ok}, "
+                        f"rot_end_ok={chosen_end_rotation_ok}, "
+                        f"dist_ok={distance_ok}, "
+                        f"trans_fail={trans_detail}, "
+                        f"rot_start_fail={start_rot_detail}, "
+                        f"rot_mid_fail={mid_rot_detail}, "
+                        f"rot_end_fail={end_rot_detail}, "
+                        f"second_theta={math.degrees(chosen_second_theta):.1f}°, "
+                        f"added={added_distance:.1f}mm, limit={max_added_distance_mm:.1f}mm, "
+                        f"p1=({x1:.1f},{y1:.1f}), p2=({x2:.1f},{y2:.1f}), p3=({x3:.1f},{y3:.1f}), p4=({x4:.1f},{y4:.1f}), "
+                        f"I=({px:.1f},{py:.1f})"
+                    )
+                    debug_rejections_logged += 1
                 index += 1
-                continue
 
-            px = ((x1 * y2 - y1 * x2) * (x3 - x4) -
-                (x1 - x2) * (x3 * y4 - y3 * x4)) / den
-            py = ((x1 * y2 - y1 * x2) * (y3 - y4) -
-                (y1 - y2) * (x3 * y4 - y3 * x4)) / den
+            # Second pass: simplify 3-point bends (A->B->C => A->C)
+            triple_removed = 0
+            index = 0
+            while index <= len(optimized) - 3:
+                x1, y1, t1 = optimized[index]
+                x2, y2, _ = optimized[index + 1]
+                x3, y3, t3 = optimized[index + 2]
 
-            # Orientation from previous to intersection
-            new_theta = math.atan2(py - y1, px - x1)
+                direct_theta_base = math.atan2(y3 - y1, x3 - x1)
+                chosen_direct_theta = None
+                direct_seg_collision = None
+                end_rotation_ok = False
+                end_rot_collision = None
 
-            # Collision checks - now using full poses with orientation
-            collision = (
-                collision_check_segment((x1, y1, t1), (px, py, new_theta)) or
-                collision_check_segment((px, py, new_theta), (x4, y4, t4))
+                for direct_theta in heading_candidates(direct_theta_base):
+                    candidate_seg_collision = first_collision_on_segment(
+                        (x1, y1, direct_theta),
+                        (x3, y3, direct_theta)
+                    )
+                    candidate_end_rotation_ok = rotation_safe_at_point(x3, y3, direct_theta, t3)
+                    candidate_end_rot_collision = None if candidate_end_rotation_ok else first_collision_on_rotation(x3, y3, direct_theta, t3)
+
+                    if candidate_seg_collision is None and candidate_end_rotation_ok:
+                        chosen_direct_theta = direct_theta
+                        direct_seg_collision = candidate_seg_collision
+                        end_rotation_ok = candidate_end_rotation_ok
+                        end_rot_collision = candidate_end_rot_collision
+                        break
+
+                    if chosen_direct_theta is None:
+                        chosen_direct_theta = direct_theta
+                        direct_seg_collision = candidate_seg_collision
+                        end_rotation_ok = candidate_end_rotation_ok
+                        end_rot_collision = candidate_end_rot_collision
+
+                translation_collision = direct_seg_collision is not None
+
+                old_dist = segment_distance((x1, y1), (x2, y2)) + segment_distance((x2, y2), (x3, y3))
+                new_dist = segment_distance((x1, y1), (x3, y3))
+                added_distance = new_dist - old_dist
+
+                distance_ok = added_distance <= max_added_distance_mm
+
+                if (not translation_collision) and end_rotation_ok and distance_ok:
+                    del optimized[index + 1]
+                    triple_removed += 1
+                    continue
+
+                if debug_rejections_logged < max_debug_rejections:
+                    trans_detail = "none"
+                    if direct_seg_collision is not None:
+                        cx, cy, cth, ci, csteps = direct_seg_collision
+                        trans_detail = f"@({cx:.1f},{cy:.1f}) θ={math.degrees(cth):.1f}° step={ci}/{csteps}"
+
+                    end_rot_detail = "none"
+                    if end_rot_collision is not None:
+                        cth, ci, cchecks = end_rot_collision
+                        end_rot_detail = f"θ={math.degrees(cth):.1f}° step={ci}/{cchecks}"
+
+                    self.get_logger().info(
+                        "🛑 Direct-triple reject "
+                        f"(round={rounds_used}, idx={index}): "
+                        f"trans_ok={not translation_collision}, "
+                        f"rot_end_ok={end_rotation_ok}, "
+                        f"dist_ok={distance_ok}, "
+                        f"trans_fail={trans_detail}, "
+                        f"rot_end_fail={end_rot_detail}, "
+                        f"direct_theta={math.degrees(chosen_direct_theta):.1f}°, "
+                        f"added={added_distance:.1f}mm, limit={max_added_distance_mm:.1f}mm, "
+                        f"A=({x1:.1f},{y1:.1f}), B=({x2:.1f},{y2:.1f}), C=({x3:.1f},{y3:.1f})"
+                    )
+                    debug_rejections_logged += 1
+
+                index += 1
+
+            total_removed_intersection += removed
+            total_removed_direct += triple_removed
+
+            if (removed + triple_removed) == 0:
+                break
+
+        total_removed = total_removed_intersection + total_removed_direct
+        if total_removed > 0:
+            self.get_logger().info(
+                f"✨ Path simplification removed {total_removed} waypoints in {rounds_used} round(s) "
+                f"(intersection={total_removed_intersection}, direct={total_removed_direct})"
             )
-
-            # Calculate distance difference if we replace p2 + p3 with intersection
-            old_dist = segment_distance((x1, y1), (x2, y2)) + segment_distance((x2, y2), (x3, y3)) + segment_distance((x3, y3), (x4, y4))
-            new_dist = segment_distance((x1, y1), (px, py)) + segment_distance((px, py), (x4, y4))
-            added_distance = new_dist - old_dist
-
-            if not collision and added_distance <= max_added_distance_mm:
-                # Accept simplification
-                optimized[index + 1] = (px, py, new_theta)
-                del optimized[index + 2]
-                removed += 1
-                continue  # re-check same index
-            else:
-                # Skip this simplification due to collision or too much added distance
-                index += 1
-
-        if removed > 0:
-            self.get_logger().info(f"✨ Intersection optimization removed {removed} waypoints")
 
         return optimized
     
@@ -598,44 +849,9 @@ class HybridAStarNode(Node):
                 reduction = 100 * (1 - len(smoothed) / len(path)) if len(path) > 0 else 0
                 self.get_logger().info(f"🔄 Smoothed to {len(smoothed)} waypoints ({reduction:.1f}% reduction)")
                 
-                # Ensure final waypoint is at EXACT goal position and try to set goal orientation
+                # Ensure final waypoint is the exact requested goal pose.
                 if len(smoothed) > 0:
-                    # Replace last waypoint with exact goal position (preserving current orientation for now)
-                    _, _, current_theta = smoothed[-1]
-                    smoothed[-1] = (goal_x, goal_y, current_theta)
-                    
-                    self.get_logger().info(f"  Checking goal rotation at ({goal_x:.1f}, {goal_y:.1f}): {math.degrees(current_theta):.1f}° → {math.degrees(goal_theta):.1f}°")
-                    
-                    # Check multiple intermediate angles during rotation to ensure safe rotation
-                    angle_diff = goal_theta - current_theta
-                    # Normalize to [-pi, pi]
-                    while angle_diff > math.pi:
-                        angle_diff -= 2 * math.pi
-                    while angle_diff < -math.pi:
-                        angle_diff += 2 * math.pi
-                    
-                    # Check if rotation path is collision-free
-                    rotation_safe = True
-                    num_rotation_checks = max(18, int(abs(angle_diff) / math.radians(5)))  # Check every ~5°
-                    for i in range(num_rotation_checks + 1):
-                        ratio = i / num_rotation_checks
-                        check_angle = current_theta + ratio * angle_diff
-                        if self.pathfinder.is_collision(goal_x, goal_y, check_angle, grid_resolution):
-                            self.get_logger().info(f"    ⚠ Rotation collision at angle {math.degrees(check_angle):.1f}° (step {i}/{num_rotation_checks})")
-                            rotation_safe = False
-                            break
-                    
-                    if rotation_safe:
-                        # Add intermediate waypoint for rotation if angle change is large
-                        if abs(angle_diff) > math.radians(30):
-                            # Keep position but change orientation gradually
-                            smoothed.append((goal_x, goal_y, goal_theta))
-                            self.get_logger().info(f"✓ Added rotation waypoint: {math.degrees(current_theta):.1f}° → {math.degrees(goal_theta):.1f}°")
-                        else:
-                            smoothed[-1] = (goal_x, goal_y, goal_theta)
-                            self.get_logger().info(f"✓ Final orientation set to goal: {math.degrees(goal_theta):.1f}°")
-                    else:
-                        self.get_logger().info(f"⚠ Goal orientation {math.degrees(goal_theta):.1f}° would cause collision during rotation, keeping {math.degrees(current_theta):.1f}°")
+                    smoothed[-1] = (goal_x, goal_y, goal_theta)
                 
                 # Validate that each waypoint can safely rotate to travel angle
                 # Validate that each waypoint can safely rotate to travel angle
@@ -831,8 +1047,104 @@ class HybridAStarNode(Node):
                 smoothed = self.optimize_path_with_intersections(
                     smoothed, 
                     grid_resolution=grid_resolution,
-                    max_added_distance_mm=50.0  # Allow up to 20mm extra distance for straighter paths
+                    max_added_distance_mm=1000.0  # Allow up to 1000mm extra distance for straighter paths
                 )
+
+                # Post-optimization cleanup: remove waypoints that can be skipped
+                # without translation (rotation-only points created/left after simplification).
+                if len(smoothed) >= 3:
+                    def _rotation_safe_here(x, y, theta_from, theta_to):
+                        d = theta_to - theta_from
+                        while d > math.pi:
+                            d -= 2 * math.pi
+                        while d < -math.pi:
+                            d += 2 * math.pi
+                        checks = max(8, int(abs(d) / math.radians(5)))
+                        for s in range(checks + 1):
+                            r = s / checks
+                            th = theta_from + r * d
+                            if self.pathfinder.is_collision(x, y, th, grid_resolution):
+                                return False
+                        return True
+
+                    def _segment_clear_constant_theta(x1, y1, x2, y2, theta):
+                        dist = math.hypot(x2 - x1, y2 - y1)
+                        steps = max(10, int(dist / 10.0))
+                        for s in range(steps + 1):
+                            r = s / steps
+                            sx = x1 + r * (x2 - x1)
+                            sy = y1 + r * (y2 - y1)
+                            if self.pathfinder.is_collision(sx, sy, theta, grid_resolution):
+                                return False
+                        return True
+
+                    compact = [smoothed[0]]
+                    skipped_no_translation = 0
+                    i = 1
+                    no_translation_dist_mm = 60.0
+
+                    while i < len(smoothed) - 1:
+                        prev_x, prev_y, prev_theta = compact[-1]
+                        curr_x, curr_y, _ = smoothed[i]
+                        next_x, next_y, _ = smoothed[i + 1]
+
+                        prev_to_curr = math.hypot(curr_x - prev_x, curr_y - prev_y)
+
+                        if prev_to_curr <= no_translation_dist_mm:
+                            direct_theta = math.atan2(next_y - prev_y, next_x - prev_x)
+
+                            can_skip = (
+                                _rotation_safe_here(prev_x, prev_y, prev_theta, direct_theta)
+                                and _segment_clear_constant_theta(prev_x, prev_y, next_x, next_y, direct_theta)
+                            )
+
+                            if can_skip:
+                                skipped_no_translation += 1
+                                i += 1
+                                continue
+
+                        compact.append(smoothed[i])
+                        i += 1
+
+                    compact.append(smoothed[-1])
+
+                    if skipped_no_translation > 0:
+                        smoothed = compact
+                        self.get_logger().info(
+                            f"🧹 Removed {skipped_no_translation} no-translation waypoint(s) after simplification"
+                        )
+
+                # Final heading cleanup: align waypoint orientation to outgoing segment when safe.
+                if len(smoothed) >= 2:
+                    aligned = list(smoothed)
+
+                    def _rotation_safe_at_waypoint(x, y, theta_from, theta_to):
+                        d = theta_to - theta_from
+                        while d > math.pi:
+                            d -= 2 * math.pi
+                        while d < -math.pi:
+                            d += 2 * math.pi
+                        checks = max(8, int(abs(d) / math.radians(5)))
+                        for s in range(checks + 1):
+                            r = s / checks
+                            th = theta_from + r * d
+                            if self.pathfinder.is_collision(x, y, th, grid_resolution):
+                                return False
+                        return True
+
+                    for i in range(len(aligned) - 1):
+                        x, y, theta = aligned[i]
+                        nx, ny, _ = aligned[i + 1]
+                        desired_theta = math.atan2(ny - y, nx - x)
+
+                        if (
+                            not self.pathfinder.is_collision(x, y, desired_theta, grid_resolution)
+                            and _rotation_safe_at_waypoint(x, y, theta, desired_theta)
+                        ):
+                            aligned[i] = (x, y, desired_theta)
+
+                    smoothed = aligned
+
                 # Calculate path length
                 total_dist = 0
                 for i in range(len(smoothed) - 1):
@@ -845,10 +1157,9 @@ class HybridAStarNode(Node):
                 # Log waypoint summary (same as local script)
                 self.get_logger().info(f"📍 Path waypoints:")
                 for i, (x, y, theta) in enumerate(smoothed):
-                    if i < 3 or i >= len(smoothed) - 2:
-                        self.get_logger().info(f"   {i+1:3d}. ({x:7.1f}, {y:7.1f}) θ={math.degrees(theta):6.1f}°")
-                    elif i == 3:
-                        self.get_logger().info(f"   ... ({len(smoothed)-5} waypoints omitted)")
+                    self.get_logger().info(
+                        f"   {i+1:3d}. ({x:7.1f}, {y:7.1f}) θ={math.degrees(theta):6.1f}°"
+                    )
                 
                 # Convert to ROS2 Path message
                 response.path = self.convert_to_path_msg(smoothed, request.start_pose.header)

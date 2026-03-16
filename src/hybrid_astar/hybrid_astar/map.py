@@ -124,6 +124,7 @@ class MapManager:
         # Enemy obstacle freshness management (/obstacle_relative)
         self.enemy_obstacle_timeout_sec = params.get('rates', {}).get('enemy_obstacle_timeout_sec', 1.0)
         self.last_enemy_update_ns: Optional[int] = None
+        self.enemy_from_web: bool = False
         
         # Create publishers
         self.current_obs_pub = node.create_publisher(
@@ -177,6 +178,8 @@ class MapManager:
             count = len(self.obstacles)
             self.obstacles.clear()
             self.obstacle_sources.clear()
+            self.last_enemy_update_ns = None
+            self.enemy_from_web = False
             self.node.get_logger().info(f"🗑️  Cleared all {count} obstacles")
         
         # Clear batch obstacle tracking
@@ -201,6 +204,8 @@ class MapManager:
             obstacle_count = len(self.obstacles)
             self.obstacles.clear()
             self.obstacle_sources.clear()
+            self.last_enemy_update_ns = None
+            self.enemy_from_web = False
         
         # Clear all batches
         with self.batches_lock:
@@ -355,6 +360,7 @@ class MapManager:
             self.obstacles.append(obs)
             self.obstacle_sources[obs.id] = 'enemy'
             self.last_enemy_update_ns = self.node.get_clock().now().nanoseconds
+            self.enemy_from_web = (msg.header.frame_id == 'map_web_enemy')
         
         # Publish enemy marker to separate topic
         self._publish_enemy_marker(center_x_mm, center_y_mm, obs)
@@ -410,6 +416,10 @@ class MapManager:
 
     def _purge_stale_enemy_obstacle(self):
         """Remove enemy obstacle if /obstacle_relative has not been updated recently."""
+        # Keep web-provided enemy obstacle persistent until replaced/cleared
+        if self.enemy_from_web:
+            return
+
         if self.last_enemy_update_ns is None:
             return
 
@@ -429,6 +439,7 @@ class MapManager:
 
         # Reset freshness marker after stale removal
         self.last_enemy_update_ns = None
+        self.enemy_from_web = False
     
     def get_active_obstacles(self) -> List[dict]:
         """Get obstacles filtered by color (permanent areas are ALWAYS included in pathfinder)"""
