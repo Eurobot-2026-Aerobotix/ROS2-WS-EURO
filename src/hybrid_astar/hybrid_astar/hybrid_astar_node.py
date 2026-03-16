@@ -1179,8 +1179,6 @@ class HybridAStarNode(Node):
 
         # Geometry requested by user
         crate_length_mm = 150.0
-        crate_width_mm = 50.0
-        gap_between_crates_mm = 20.0
 
         # Forward offset: 150mm + 50mm, then center by +half crate length
         robot_to_batch_face_mm = 150.0 + 50.0
@@ -1190,50 +1188,32 @@ class HybridAStarNode(Node):
 
         ux = math.cos(robot_theta)
         uy = math.sin(robot_theta)
-        vx = -math.sin(robot_theta)  # left normal
-        vy = math.cos(robot_theta)
 
         batch_center_x = robot_x_mm + center_forward_offset_mm * ux
         batch_center_y = robot_y_mm + center_forward_offset_mm * uy
 
-        lateral_step_mm = crate_width_mm + gap_between_crates_mm
-        lateral_offsets = [
-            -1.5 * lateral_step_mm,
-            -0.5 * lateral_step_mm,
-            0.5 * lateral_step_mm,
-            1.5 * lateral_step_mm,
-        ]
-
         stamp = self.get_clock().now().to_msg()
-        ts_ns = self.get_clock().now().nanoseconds
-        created_ids: List[str] = []
-
-        with self.map_manager.obstacles_lock:
-            for idx, lat in enumerate(lateral_offsets):
-                obs = Obstacle()
-                obs.id = f"put_down_{ts_ns}_{idx}"
-                obs.type = 'put_down'
-                obs.color = color
-                obs.width_mm = crate_length_mm
-                obs.height_mm = crate_width_mm
-                obs.pose.x = batch_center_x + lat * vx
-                obs.pose.y = batch_center_y + lat * vy
-                obs.pose.theta = robot_theta
-                obs.detected_at = stamp
-
-                self.map_manager.obstacles.append(obs)
-                self.map_manager.obstacle_sources[obs.id] = 'put_down'
-                created_ids.append(obs.id)
-
-        self.map_manager.publish_obstacles(self.map_manager.get_active_obstacles())
-
-        response.success = True
-        response.message = (
-            f"Added 4 put_down obstacles ({'front' if direction == 1 else 'back'}) "
-            f"at robot pose ({robot_x_mm:.1f}, {robot_y_mm:.1f}, {math.degrees(robot_theta):.1f}deg)"
+        success, message, created_ids, _known_id = self.map_manager.register_put_down_batch(
+            batch_center_x_mm=batch_center_x,
+            batch_center_y_mm=batch_center_y,
+            robot_x_mm=robot_x_mm,
+            robot_y_mm=robot_y_mm,
+            robot_theta=robot_theta,
+            color=color,
+            stamp=stamp,
         )
+
+        response.success = success
         response.obstacle_ids = created_ids
-        self.get_logger().info(f"✅ {response.message}")
+        if success:
+            response.message = (
+                f"{message} ({'front' if direction == 1 else 'back'}) at robot pose "
+                f"({robot_x_mm:.1f}, {robot_y_mm:.1f}, {math.degrees(robot_theta):.1f}deg)"
+            )
+            self.get_logger().info(f"✅ {response.message}")
+        else:
+            response.message = message
+            self.get_logger().warning(f"⚠️ put_down failed: {message}")
         return response
 
     def handle_get_batch_color_pattern(self, request, response):

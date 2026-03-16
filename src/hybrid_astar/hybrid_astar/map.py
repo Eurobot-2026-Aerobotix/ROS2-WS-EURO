@@ -20,7 +20,7 @@ from visualization_msgs.msg import Marker, MarkerArray
 
 # Custom messages
 from hybrid_astar.msg import Obstacle, ObstacleArray
-from aruco_mapper_msgs.msg import ArucoMapperState, Batch
+from aruco_mapper_msgs.msg import ArucoMapperState, Batch, BatchMember
 from aruco_mapper_msgs.srv import GetStableBatches
 
 
@@ -62,6 +62,19 @@ class MapManager:
             "s7": {"x": 0.80, "y": 2.8, "phi_degrees": 90.0},
             "s8": {"x": 1.60, "y": 2.8, "phi_degrees": 90.0},
         }
+
+        # Predefined FX put-down zone centers (in mm)
+        self.putdown_fx_positions_mm = {
+            'f1': {'x': 1200.0, 'y': 100.0},
+            'f2': {'x': 1900.0, 'y': 700.0},
+            'f3': {'x': 1200.0, 'y': 800.0},
+            'f5': {'x': 1200.0, 'y': 1500.0},
+            'f6': {'x': 1900.0, 'y': 1500.0},
+            'f8': {'x': 1200.0, 'y': 2200.0},
+            'f9': {'x': 1900.0, 'y': 2300.0},
+            'f10': {'x': 1200.0, 'y': 2900.0},
+        }
+        self.putdown_zone_match_tolerance_mm = 400.0
         
         # Obstacle database (in-memory only) - tracking source
         self.obstacles: List[Obstacle] = []
@@ -106,6 +119,7 @@ class MapManager:
         
         # Set to track batches that already have obstacles created (prevents duplicates)
         self.batches_with_obstacles: set = set()
+        self.manual_putdown_batch_ids: set = set()
 
         # Retry management for auto update_map
         self.retry_timer = None
@@ -185,6 +199,7 @@ class MapManager:
         # Clear batch obstacle tracking
         with self.batches_lock:
             self.batches_with_obstacles.clear()
+            self.manual_putdown_batch_ids.clear()
         
         # Publish obstacle visualization after clearing
         self.publish_obstacles(self.get_active_obstacles())
@@ -214,6 +229,7 @@ class MapManager:
             self.batches_fx.clear()
             self.batches_sx.clear()
             self.batches_with_obstacles.clear()  # Clear tracking
+            self.manual_putdown_batch_ids.clear()
         
         # Reset state flags
         self.first_update_map = True
@@ -323,6 +339,209 @@ class MapManager:
         else:
             self.node.get_logger().warn(f"⚠️  Batch '{known_id}' was not in deleted list")
             return False
+
+    def _find_putdown_fx_known_id(self, batch_center_x_mm: float, batch_center_y_mm: float) -> Optional[str]:
+        """Match a put-down batch center to the nearest predefined FX zone known_id."""
+        best_known_id = None
+        best_distance = float('inf')
+
+        for known_id, pos in self.putdown_fx_positions_mm.items():
+            dx = batch_center_x_mm - pos['x']
+            dy = batch_center_y_mm - pos['y']
+            distance = math.sqrt(dx * dx + dy * dy)
+            if distance < best_distance:
+                best_distance = distance
+                best_known_id = known_id
+
+        if best_known_id is None or best_distance > self.putdown_zone_match_tolerance_mm:
+            self.node.get_logger().warn(
+                f"⚠️  Put-down batch center ({batch_center_x_mm:.1f}, {batch_center_y_mm:.1f}) "
+                f"did not match any FX zone within {self.putdown_zone_match_tolerance_mm:.0f}mm "
+                f"(best={best_known_id}, dist={best_distance:.1f}mm)"
+            )
+            return None
+
+        self.node.get_logger().info(
+            f"📍 Put-down batch center matched FX zone '{best_known_id}' "
+            f"(dist={best_distance:.1f}mm)"
+        )
+        return best_known_id
+
+    def register_put_down_batch(
+        self,
+        batch_center_x_mm: float,
+        batch_center_y_mm: float,
+        robot_x_mm: float,
+        robot_y_mm: float,
+        robot_theta: float,
+        color: str,
+        stamp=None,
+    ) -> tuple[bool, str, list[str], Optional[str]]:
+        """
+        Register a manual put-down batch as a tracked FX batch.
+
+        The batch is assigned to the nearest predefined FX zone (`f1`, `f2`, ...).
+        On later `update_map` calls, that FX known_id is preserved from the manually
+        placed pose while the beacon still reports it. If the beacon loses it, the
+        manual batch is removed.
+        """
+        known_id = self._find_putdown_fx_known_id(batch_center_x_mm, batch_center_y_mm)
+        if known_id is None:
+            return False, "Could not match put_down position to any FX known_id", [], None
+
+        if stamp is None:
+            stamp = self.node.get_clock().now().to_msg()
+
+        crate_length_mm = 150.0
+        crate_width_mm = 50.0
+        gap_between_crates_mm = 20.0
+        row_step_mm = crate_length_mm + gap_between_crates_mm
+        lateral_step_mm = crate_width_mm + gap_between_crates_mm
+        lateral_offsets = [
+            -1.5 * lateral_step_mm,
+            -0.5 * lateral_step_mm,
+            0.5 * lateral_step_mm,
+            1.5 * lateral_step_mm,
+        ]
+
+        ux = math.cos(robot_theta)
+        uy = math.sin(robot_theta)
+        vx = -math.sin(robot_theta)
+        vy = math.cos(robot_theta)
+
+        with self.batches_lock:
+            existing_batch = self.batches_fx.get(known_id)
+            existing_is_manual = known_id in self.manual_putdown_batch_ids
+
+        existing_members = list(existing_batch.members) if (existing_is_manual and existing_batch is not None) else []
+        existing_count = len(existing_members)
+        if existing_count >= 8:
+            return False, f"Batch {known_id} already contains 8 manually put-down members", [], known_id
+
+        member_positions = []
+        for lat in lateral_offsets:
+            member_positions.append((
+                batch_center_x_mm + lat * vx,
+                batch_center_y_mm + lat * vy,
+            ))
+
+        all_members = existing_members[:]
+        created_ids = []
+        start_idx = len(all_members)
+        for idx, (member_x_mm, member_y_mm) in enumerate(member_positions, start=start_idx):
+            member = BatchMember()
+            member.aruco_id = idx
+            member.color = color
+            member.map_pos = Point(
+                x=member_x_mm / 1000.0,
+                y=member_y_mm / 1000.0,
+                z=0.0,
+            )
+            all_members.append(member)
+
+        spread_dx = all_members[-1].map_pos.x - all_members[0].map_pos.x if len(all_members) > 1 else 0.0
+        spread_dy = all_members[-1].map_pos.y - all_members[0].map_pos.y if len(all_members) > 1 else 0.0
+        direction = 'horizontal' if abs(spread_dx) >= abs(spread_dy) else 'vertical'
+
+        batch = Batch()
+        batch.batch_id = 0
+        batch.known_id = known_id
+        batch.direction = direction
+        batch.count = len(all_members)
+        batch.state = 'TRACKING'
+        existing_pattern = existing_batch.pattern if (existing_is_manual and existing_batch is not None and existing_batch.pattern) else ''
+        batch.pattern = existing_pattern + ('yyyy' if color == 'yellow' else 'bbbb')
+
+        avg_x_mm = sum(member.map_pos.x for member in all_members) * 1000.0 / len(all_members)
+        avg_y_mm = sum(member.map_pos.y for member in all_members) * 1000.0 / len(all_members)
+        batch.center = Point(
+            x=avg_x_mm / 1000.0,
+            y=avg_y_mm / 1000.0,
+            z=0.0,
+        )
+        batch.members.extend(all_members)
+
+        with self.obstacles_lock:
+            if existing_count == 0:
+                self.obstacles = [
+                    obs for obs in self.obstacles
+                    if not (obs.id.startswith(f"fx_{known_id}_") or obs.id.startswith(f"sx_{known_id}_"))
+                ]
+                self.obstacle_sources = {
+                    k: v for k, v in self.obstacle_sources.items()
+                    if not (k.startswith(f"fx_{known_id}_") or k.startswith(f"sx_{known_id}_"))
+                }
+
+            for idx, member in enumerate(all_members[start_idx:], start=start_idx):
+                member_x_mm = member.map_pos.x * 1000.0
+                member_y_mm = member.map_pos.y * 1000.0
+                obs = Obstacle()
+                obs.id = f"fx_{known_id}_member{idx}"
+                obs.type = 'crate'
+                obs.color = member.color
+                obs.width_mm = crate_length_mm
+                obs.height_mm = crate_width_mm
+                obs.pose.x = member_x_mm
+                obs.pose.y = member_y_mm
+                obs.pose.theta = robot_theta
+                obs.detected_at = stamp
+                self.obstacles.append(obs)
+                self.obstacle_sources[obs.id] = 'put_down'
+                created_ids.append(obs.id)
+
+        with self.batches_lock:
+            self.batches_fx[known_id] = batch
+            self.batches_with_obstacles.add(known_id)
+            self.manual_putdown_batch_ids.add(known_id)
+            self.active_batch_ids.add(known_id)
+
+        self.publish_obstacles(self.get_active_obstacles())
+        if existing_count > 0:
+            return True, f"Appended put_down to {known_id} ({existing_count} -> {len(all_members)} members)", created_ids, known_id
+        return True, f"Registered put_down batch as {known_id}", created_ids, known_id
+
+    def _reconcile_manual_putdown_batches(self, received_batch_ids: set) -> set:
+        """
+        Keep manual put-down FX batches while the beacon still reports their known_id.
+        If the beacon loses that known_id, remove the manual batch.
+
+        Returns:
+            Set of manual put-down known_ids that should be preserved this cycle.
+        """
+        with self.batches_lock:
+            manual_ids = set(self.manual_putdown_batch_ids)
+
+        retained_manual_ids = manual_ids & received_batch_ids
+        lost_manual_ids = manual_ids - received_batch_ids
+
+        if lost_manual_ids:
+            with self.obstacles_lock:
+                self.obstacles = [
+                    obs for obs in self.obstacles
+                    if not any(obs.id.startswith(f"fx_{bid}_") for bid in lost_manual_ids)
+                ]
+                self.obstacle_sources = {
+                    k: v for k, v in self.obstacle_sources.items()
+                    if not any(k.startswith(f"fx_{bid}_") for bid in lost_manual_ids)
+                }
+
+            with self.batches_lock:
+                for bid in lost_manual_ids:
+                    self.batches_fx.pop(bid, None)
+                    self.batches_with_obstacles.discard(bid)
+                    self.manual_putdown_batch_ids.discard(bid)
+                    self.active_batch_ids.discard(bid)
+
+            self.node.get_logger().info(
+                f"🗑️  Removed {len(lost_manual_ids)} manual put_down batches lost by beacon: {lost_manual_ids}"
+            )
+
+        if retained_manual_ids:
+            self.node.get_logger().info(
+                f"📌 Preserving manual put_down batches from beacon refresh: {retained_manual_ids}"
+            )
+
+        return retained_manual_ids
     
     def handle_obstacle_relative(self, msg: PoseStamped):
         """Handle incoming obstacle from /obstacle_relative topic (only keeps one enemy)"""
@@ -840,6 +1059,18 @@ class MapManager:
             
             # Get known_ids from current response
             received_batch_ids = {batch.known_id for batch in filtered_batches}
+            retained_manual_putdown_ids = set()
+            preserved_manual_batches = {}
+
+            if specific_known_id is None:
+                retained_manual_putdown_ids = self._reconcile_manual_putdown_batches(received_batch_ids)
+                if retained_manual_putdown_ids:
+                    with self.batches_lock:
+                        preserved_manual_batches = {
+                            bid: self.batches_fx[bid]
+                            for bid in retained_manual_putdown_ids
+                            if bid in self.batches_fx
+                        }
             
             # CLEAR ALL FX/SX BATCHES AND OBSTACLES ONLY ON FIRST UPDATE
             # On subsequent updates, we do incremental updates
@@ -861,6 +1092,9 @@ class MapManager:
                             self.batches_with_obstacles.clear()  # Clear tracking
                             self.locked_baseline_batch_ids.clear()
                             self.pending_baseline_lock_ids.clear()
+                            self.batches_fx.update(preserved_manual_batches)
+                            self.batches_with_obstacles.update(preserved_manual_batches.keys())
+                            self.manual_putdown_batch_ids.update(preserved_manual_batches.keys())
                             self.node.get_logger().info(f"🗑️  Cleared all FX and SX batches and {removed} obstacles before first update")
                 else:
                     # SUBSEQUENT UPDATES: Incremental update
@@ -870,6 +1104,7 @@ class MapManager:
                     # 2. Remove obstacles ONLY for batches that disappeared OR are FX (FX always refreshed)
                     # Keep existing obstacles for SX batches that are still present
                     fx_batches_ids = {batch.known_id for batch in filtered_batches if batch.known_id.startswith('f')}
+                    fx_batches_ids -= retained_manual_putdown_ids
                     batches_to_remove = disappeared_ids | fx_batches_ids  # Disappeared + all FX
                     
                     if batches_to_remove:
@@ -927,6 +1162,17 @@ class MapManager:
                                 f"🚫 Filtered out {filtered_count} manually deleted batches: "
                                 f"{self.deleted_batch_ids & received_batch_ids}"
                             )
+
+                    # 3b. Keep manual put_down batches at their manually registered pose.
+                    if retained_manual_putdown_ids:
+                        pre_filter_count = len(filtered_batches)
+                        filtered_batches = [b for b in filtered_batches if b.known_id not in retained_manual_putdown_ids]
+                        skipped_count = pre_filter_count - len(filtered_batches)
+                        if skipped_count > 0:
+                            self.node.get_logger().info(
+                                f"📌 Skipping {skipped_count} beacon FX batches because manual put_down pose is preserved: "
+                                f"{retained_manual_putdown_ids}"
+                            )
                     
                     # 4. Filter out already-tracked SX/GX batches (keep existing obstacles, only add new ones)
                     # FX batches are always processed (refreshed every update)
@@ -962,6 +1208,17 @@ class MapManager:
                 # If no update needed, skip processing for this batch (keep existing obstacles)
                 if not should_update and specific_known_id:
                     filtered_batches = []  # Clear to prevent reprocessing
+
+            # Never re-add a beacon FX batch if a manual put_down batch currently owns that known_id.
+            if specific_known_id is None and retained_manual_putdown_ids:
+                pre_filter_count = len(filtered_batches)
+                filtered_batches = [b for b in filtered_batches if b.known_id not in retained_manual_putdown_ids]
+                skipped_count = pre_filter_count - len(filtered_batches)
+                if skipped_count > 0:
+                    self.node.get_logger().info(
+                        f"📌 Preserving {skipped_count} manual put_down batches at their registered pose: "
+                        f"{retained_manual_putdown_ids}"
+                    )
             
             # Determine source - for 'sfg' we process both SX and FX
             # Process SX batches (s prefix)
@@ -1646,6 +1903,7 @@ class MapManager:
             self.locked_baseline_batch_ids.discard(known_id)
             self.pending_baseline_lock_ids.discard(known_id)
             self.short_pattern_ids.discard(known_id)
+            self.manual_putdown_batch_ids.discard(known_id)
             
             if not (deleted_from_fx or deleted_from_sx):
                 self.node.get_logger().warn(f"⚠️  Batch '{known_id}' not found in FX or SX storage")
