@@ -348,10 +348,9 @@ class MapManager:
             obs.width_mm = enemy_radius_mm
             obs.height_mm = enemy_radius_mm
             
-            # Convert to top-left corner (what the planner expects)
-            # For a square centered at (center_x, center_y), top-left = center - (width/2)
-            obs.pose.x = center_x_mm - (obs.width_mm / 2.0)
-            obs.pose.y = center_y_mm - (obs.height_mm / 2.0)
+            # Store center position (center convention used throughout)
+            obs.pose.x = center_x_mm
+            obs.pose.y = center_y_mm
             obs.pose.theta = self.quaternion_to_yaw(msg.pose.orientation)
             
             obs.detected_at = msg.header.stamp
@@ -490,9 +489,9 @@ class MapManager:
             crate_marker.type = Marker.CUBE
             crate_marker.action = Marker.ADD
             
-            # Position (on ground level)
-            crate_marker.pose.position.x = (obs['x'] + (obs['width'] / 2.0))/ 1000.0
-            crate_marker.pose.position.y = (obs['y'] +(obs['height'] / 2.0))/ 1000.0
+            # Position (on ground level) - x/y are centers
+            crate_marker.pose.position.x = obs['x'] / 1000.0
+            crate_marker.pose.position.y = obs['y'] / 1000.0
             crate_marker.pose.position.z = 0.03  # 30mm high (half of 150mm)
             crate_marker.pose.orientation = self.yaw_to_quaternion(obs.get('theta', 0.0))
             
@@ -1549,8 +1548,8 @@ class MapManager:
                         obs.height_mm = obs_height_mm
                         obs_center_x = batch_center_x_mm + offset_x
                         obs_center_y = batch_center_y_mm + offset_y
-                        obs.pose.x = obs_center_x - (obs_width_mm / 2.0)
-                        obs.pose.y = obs_center_y - (obs_height_mm / 2.0)
+                        obs.pose.x = obs_center_x  # center convention
+                        obs.pose.y = obs_center_y  # center convention
                         obs.pose.theta = 0.0
                         obs.detected_at = msg.stamp
                         self.obstacles.append(obs)
@@ -1589,8 +1588,8 @@ class MapManager:
 
                     center_x_mm = member.map_pos.x * 1000.0
                     center_y_mm = member.map_pos.y * 1000.0
-                    obs.pose.x = center_x_mm - (obs.width_mm / 2.0)
-                    obs.pose.y = center_y_mm - (obs.height_mm / 2.0)
+                    obs.pose.x = center_x_mm  # center convention
+                    obs.pose.y = center_y_mm  # center convention
                     obs.pose.theta = 0.0
                     obs.detected_at = msg.stamp
 

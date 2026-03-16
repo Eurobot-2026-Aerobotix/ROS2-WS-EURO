@@ -260,8 +260,8 @@ class HybridAStarNode(Node):
                     obs.id = f"static_{obs_dict.get('name', 'wall')}"
                     obs.type = 'wall'  # Special type for walls
                     obs.color = 'wall'  # Special color that can't be filtered
-                    obs.pose.x = float(obs_dict.get('x', 0.0))
-                    obs.pose.y = float(obs_dict.get('y', 0.0))
+                    obs.pose.x = float(obs_dict.get('x', 0.0))  # center X (mm)
+                    obs.pose.y = float(obs_dict.get('y', 0.0))  # center Y (mm)
                     obs.pose.theta = 0.0
                     obs.width_mm = float(obs_dict.get('width', 50.0))
                     obs.height_mm = float(obs_dict.get('height', 50.0))
@@ -345,9 +345,9 @@ class HybridAStarNode(Node):
             crate_marker.type = Marker.CUBE
             crate_marker.action = Marker.ADD
             
-            # Position (on ground level)
-            crate_marker.pose.position.x = (obs['x'] + (obs['width'] / 2.0))/ 1000.0
-            crate_marker.pose.position.y = (obs['y'] +(obs['height'] / 2.0))/ 1000.0
+            # Position (on ground level) - x/y are centers
+            crate_marker.pose.position.x = obs['x'] / 1000.0
+            crate_marker.pose.position.y = obs['y'] / 1000.0
             crate_marker.pose.position.z = 0.03  # 30mm high (half of 150mm)
             crate_marker.pose.orientation = MapManager.yaw_to_quaternion(obs.get('theta', 0.0))
             
@@ -477,8 +477,6 @@ class HybridAStarNode(Node):
         total_removed_intersection = 0
         total_removed_direct = 0
         rounds_used = 0
-        max_debug_rejections = 30
-        debug_rejections_logged = 0
 
         for round_idx in range(max_rounds):
             rounds_used = round_idx + 1
@@ -511,30 +509,23 @@ class HybridAStarNode(Node):
                 # rotations are validated separately at waypoints.
                 first_seg_collision = first_collision_on_segment((x1, y1, first_theta), (px, py, first_theta))
                 start_rotation_ok = rotation_safe_at_point(x1, y1, t1, first_theta)
-                start_rot_collision = None if start_rotation_ok else first_collision_on_rotation(x1, y1, t1, first_theta)
 
                 second_candidate_results = []
                 chosen_second_theta = None
                 chosen_second_seg_collision = None
                 chosen_mid_rotation_ok = False
                 chosen_end_rotation_ok = False
-                chosen_mid_rot_collision = None
-                chosen_end_rot_collision = None
 
                 for second_theta in heading_candidates(second_theta_base):
                     second_seg_collision = first_collision_on_segment((px, py, second_theta), (x4, y4, second_theta))
                     intersection_rotation_ok = rotation_safe_at_point(px, py, first_theta, second_theta)
                     end_rotation_ok = rotation_safe_at_point(x4, y4, second_theta, t4)
-                    mid_rot_collision = None if intersection_rotation_ok else first_collision_on_rotation(px, py, first_theta, second_theta)
-                    end_rot_collision = None if end_rotation_ok else first_collision_on_rotation(x4, y4, second_theta, t4)
 
                     second_candidate_results.append({
                         'theta': second_theta,
                         'seg_collision': second_seg_collision,
                         'mid_ok': intersection_rotation_ok,
                         'end_ok': end_rotation_ok,
-                        'mid_rot_collision': mid_rot_collision,
-                        'end_rot_collision': end_rot_collision,
                     })
 
                     if (
@@ -548,8 +539,6 @@ class HybridAStarNode(Node):
                         chosen_second_seg_collision = second_seg_collision
                         chosen_mid_rotation_ok = intersection_rotation_ok
                         chosen_end_rotation_ok = end_rotation_ok
-                        chosen_mid_rot_collision = mid_rot_collision
-                        chosen_end_rot_collision = end_rot_collision
                         break
 
                 if chosen_second_theta is None:
@@ -558,8 +547,6 @@ class HybridAStarNode(Node):
                     chosen_second_seg_collision = best_candidate['seg_collision']
                     chosen_mid_rotation_ok = best_candidate['mid_ok']
                     chosen_end_rotation_ok = best_candidate['end_ok']
-                    chosen_mid_rot_collision = best_candidate['mid_rot_collision']
-                    chosen_end_rot_collision = best_candidate['end_rot_collision']
 
                 translation_collision = (first_seg_collision is not None) or (chosen_second_seg_collision is not None)
 
@@ -581,48 +568,6 @@ class HybridAStarNode(Node):
                     removed += 1
                     continue
 
-                if debug_rejections_logged < max_debug_rejections:
-                    trans_detail = "none"
-                    if first_seg_collision is not None:
-                        cx, cy, cth, ci, csteps = first_seg_collision
-                        trans_detail = f"first_seg@({cx:.1f},{cy:.1f}) θ={math.degrees(cth):.1f}° step={ci}/{csteps}"
-                    elif chosen_second_seg_collision is not None:
-                        cx, cy, cth, ci, csteps = chosen_second_seg_collision
-                        trans_detail = f"second_seg@({cx:.1f},{cy:.1f}) θ={math.degrees(cth):.1f}° step={ci}/{csteps}"
-
-                    start_rot_detail = "none"
-                    if start_rot_collision is not None:
-                        cth, ci, cchecks = start_rot_collision
-                        start_rot_detail = f"θ={math.degrees(cth):.1f}° step={ci}/{cchecks}"
-
-                    mid_rot_detail = "none"
-                    if chosen_mid_rot_collision is not None:
-                        cth, ci, cchecks = chosen_mid_rot_collision
-                        mid_rot_detail = f"θ={math.degrees(cth):.1f}° step={ci}/{cchecks}"
-
-                    end_rot_detail = "none"
-                    if chosen_end_rot_collision is not None:
-                        cth, ci, cchecks = chosen_end_rot_collision
-                        end_rot_detail = f"θ={math.degrees(cth):.1f}° step={ci}/{cchecks}"
-
-                    self.get_logger().info(
-                        "🛑 Intersection reject "
-                        f"(round={rounds_used}, idx={index}): "
-                        f"trans_ok={not translation_collision}, "
-                        f"rot_start_ok={start_rotation_ok}, "
-                        f"rot_mid_ok={chosen_mid_rotation_ok}, "
-                        f"rot_end_ok={chosen_end_rotation_ok}, "
-                        f"dist_ok={distance_ok}, "
-                        f"trans_fail={trans_detail}, "
-                        f"rot_start_fail={start_rot_detail}, "
-                        f"rot_mid_fail={mid_rot_detail}, "
-                        f"rot_end_fail={end_rot_detail}, "
-                        f"second_theta={math.degrees(chosen_second_theta):.1f}°, "
-                        f"added={added_distance:.1f}mm, limit={max_added_distance_mm:.1f}mm, "
-                        f"p1=({x1:.1f},{y1:.1f}), p2=({x2:.1f},{y2:.1f}), p3=({x3:.1f},{y3:.1f}), p4=({x4:.1f},{y4:.1f}), "
-                        f"I=({px:.1f},{py:.1f})"
-                    )
-                    debug_rejections_logged += 1
                 index += 1
 
             # Second pass: simplify 3-point bends (A->B->C => A->C)
@@ -637,7 +582,6 @@ class HybridAStarNode(Node):
                 chosen_direct_theta = None
                 direct_seg_collision = None
                 end_rotation_ok = False
-                end_rot_collision = None
 
                 for direct_theta in heading_candidates(direct_theta_base):
                     candidate_seg_collision = first_collision_on_segment(
@@ -645,20 +589,17 @@ class HybridAStarNode(Node):
                         (x3, y3, direct_theta)
                     )
                     candidate_end_rotation_ok = rotation_safe_at_point(x3, y3, direct_theta, t3)
-                    candidate_end_rot_collision = None if candidate_end_rotation_ok else first_collision_on_rotation(x3, y3, direct_theta, t3)
 
                     if candidate_seg_collision is None and candidate_end_rotation_ok:
                         chosen_direct_theta = direct_theta
                         direct_seg_collision = candidate_seg_collision
                         end_rotation_ok = candidate_end_rotation_ok
-                        end_rot_collision = candidate_end_rot_collision
                         break
 
                     if chosen_direct_theta is None:
                         chosen_direct_theta = direct_theta
                         direct_seg_collision = candidate_seg_collision
                         end_rotation_ok = candidate_end_rotation_ok
-                        end_rot_collision = candidate_end_rot_collision
 
                 translation_collision = direct_seg_collision is not None
 
@@ -672,31 +613,6 @@ class HybridAStarNode(Node):
                     del optimized[index + 1]
                     triple_removed += 1
                     continue
-
-                if debug_rejections_logged < max_debug_rejections:
-                    trans_detail = "none"
-                    if direct_seg_collision is not None:
-                        cx, cy, cth, ci, csteps = direct_seg_collision
-                        trans_detail = f"@({cx:.1f},{cy:.1f}) θ={math.degrees(cth):.1f}° step={ci}/{csteps}"
-
-                    end_rot_detail = "none"
-                    if end_rot_collision is not None:
-                        cth, ci, cchecks = end_rot_collision
-                        end_rot_detail = f"θ={math.degrees(cth):.1f}° step={ci}/{cchecks}"
-
-                    self.get_logger().info(
-                        "🛑 Direct-triple reject "
-                        f"(round={rounds_used}, idx={index}): "
-                        f"trans_ok={not translation_collision}, "
-                        f"rot_end_ok={end_rotation_ok}, "
-                        f"dist_ok={distance_ok}, "
-                        f"trans_fail={trans_detail}, "
-                        f"rot_end_fail={end_rot_detail}, "
-                        f"direct_theta={math.degrees(chosen_direct_theta):.1f}°, "
-                        f"added={added_distance:.1f}mm, limit={max_added_distance_mm:.1f}mm, "
-                        f"A=({x1:.1f},{y1:.1f}), B=({x2:.1f},{y2:.1f}), C=({x3:.1f},{y3:.1f})"
-                    )
-                    debug_rejections_logged += 1
 
                 index += 1
 
@@ -734,27 +650,24 @@ class HybridAStarNode(Node):
         batch_obstacles = [obs for obs in obstacles if obs.get('id', '').startswith(('fx_', 'sx_'))]
         
         if not batch_obstacles:
-            self.log_once(f"  No batch obstacles found in {len(obstacles)} total obstacles")
             return False
         
-        self.log_once(f"  Checking goal ({goal_x:.1f}, {goal_y:.1f}) against {len(batch_obstacles)} batches (margin={margin}mm)")
-        
-        # Check if goal center is inside any batch obstacle
+        # Check if goal center is inside any batch obstacle (x/y are centers)
         for obs in batch_obstacles:
             obs_id = obs.get('id', '')
-            obs_x = obs['x']
-            obs_y = obs['y']
+            obs_x = obs['x']  # center X
+            obs_y = obs['y']  # center Y
             obs_width = obs['width']
             obs_height = obs['height']
             
-            # Calculate distance from goal to batch center
-            batch_center_x = obs_x + obs_width / 2.0
-            batch_center_y = obs_y + obs_height / 2.0
+            # x/y are already centers
+            batch_center_x = obs_x
+            batch_center_y = obs_y
             distance = math.sqrt((goal_x - batch_center_x)**2 + (goal_y - batch_center_y)**2)
             
             # Check if goal is inside obstacle bounds (with margin)
-            in_x_range = obs_x - margin <= goal_x <= obs_x + obs_width + margin
-            in_y_range = obs_y - margin <= goal_y <= obs_y + obs_height + margin
+            in_x_range = obs_x - obs_width / 2.0 - margin <= goal_x <= obs_x + obs_width / 2.0 + margin
+            in_y_range = obs_y - obs_height / 2.0 - margin <= goal_y <= obs_y + obs_height / 2.0 + margin
             
             if in_x_range and in_y_range:
                 self.get_logger().info(

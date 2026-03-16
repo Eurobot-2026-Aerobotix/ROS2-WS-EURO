@@ -188,34 +188,34 @@ class HybridAStarPathfinder:
         if static_walls is None:
             static_walls = []
         
-        # Mark static walls first
+        # Mark static walls first (x/y are CENTER positions)
         for wall in static_walls:
-            x_world = wall['x']
-            y_world = wall['y']
+            x_world = wall['x']  # center X
+            y_world = wall['y']  # center Y
             width = wall['width']
             height = wall['height']
             
-            grid_x_start = int(x_world / grid_resolution)
-            grid_y_start = int(y_world / grid_resolution)
-            grid_x_end = int((x_world + width) / grid_resolution) + 1
-            grid_y_end = int((y_world + height) / grid_resolution) + 1
+            grid_x_start = int((x_world - width / 2.0) / grid_resolution)
+            grid_y_start = int((y_world - height / 2.0) / grid_resolution)
+            grid_x_end = int((x_world + width / 2.0) / grid_resolution) + 1
+            grid_y_end = int((y_world + height / 2.0) / grid_resolution) + 1
             
             grid_x_start = max(0, min(grid_x_start, self.grid_width - 1))
             grid_x_end = max(0, min(grid_x_end, self.grid_width))
             self.grid[grid_y_start:grid_y_end, grid_x_start:grid_x_end] = True
         
-        # Mark dynamic obstacles
+        # Mark dynamic obstacles (x/y are CENTER positions)
         for obstacle in obstacles:
-            x_world = obstacle['x']
-            y_world = obstacle['y']
+            x_world = obstacle['x']  # center X
+            y_world = obstacle['y']  # center Y
             width = obstacle['width']
             height = obstacle['height']
             
-            # Convert to grid (no inflation)
-            grid_x_start = int(x_world / grid_resolution)
-            grid_y_start = int(y_world / grid_resolution)
-            grid_x_end = int((x_world + width) / grid_resolution) + 1
-            grid_y_end = int((y_world + height) / grid_resolution) + 1
+            # Convert to grid using center ± half-size
+            grid_x_start = int((x_world - width / 2.0) / grid_resolution)
+            grid_y_start = int((y_world - height / 2.0) / grid_resolution)
+            grid_x_end = int((x_world + width / 2.0) / grid_resolution) + 1
+            grid_y_end = int((y_world + height / 2.0) / grid_resolution) + 1
             
             # Clamp to boundaries
             grid_x_start = max(0, min(grid_x_start, self.grid_width - 1))
