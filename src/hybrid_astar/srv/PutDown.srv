@@ -1,0 +1,8 @@
+# Request
+uint8 direction   # 1 = front of robot, 0 = back of robot
+string color      # "yellow" or "blue"
+---
+# Response
+bool success
+string message
+string[] obstacle_ids

@@ -34,12 +34,13 @@ from std_srvs.srv import Trigger
 from geometry_msgs.msg import PoseStamped, Pose2D, Quaternion
 from nav_msgs.msg import Path
 from visualization_msgs.msg import Marker, MarkerArray
+from tf2_ros import Buffer, TransformListener, LookupException, ConnectivityException, ExtrapolationException
 
 # Custom messages (will be generated)
 from hybrid_astar.msg import Obstacle, ObstacleArray, ColorCommand
 from aruco_mapper_msgs.msg import ArucoMapperState, Batch, BatchMember
 from aruco_mapper_msgs.srv import GetStableBatches
-from hybrid_astar.srv import ComputePath, GetBatchColorPattern, DeleteBatch, DeleteBatch, GetActiveBatches
+from hybrid_astar.srv import ComputePath, GetBatchColorPattern, DeleteBatch, GetActiveBatches, PutDown
 
 # Import the pathfinding algorithm
 from hybrid_astar.hybrid_astar import HybridAStarPathfinder
@@ -59,6 +60,7 @@ class HybridAStarNode(Node):
     
     Services:
         - /compute_path: Compute path from start to goal
+        - /put_down: Add 4 placed crate obstacles in front/back of robot
         - /get_batch_color_pattern: Get color pattern for a batch
         - /update_map: Trigger to fetch stable batches from ArUco mapper
     
@@ -80,6 +82,11 @@ class HybridAStarNode(Node):
         # This fixes multithreading deadlock when update_map calls get_stable_batches
         from rclpy.callback_groups import ReentrantCallbackGroup
         self.reentrant_group = ReentrantCallbackGroup()
+
+        # TF for current robot pose lookup (map -> base_link/base_footprint)
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
+        self.last_robot_pose_mm: Optional[Tuple[float, float, float]] = None
         
         # Create clients for GetStableBatches service with reentrant callback group
         # 1. Web handler service (for pathfinding simulation batches)
@@ -103,6 +110,10 @@ class HybridAStarNode(Node):
         # Create services with reentrant callback group for parallel execution
         self.path_service = self.create_service(
             ComputePath, '/compute_path', self.handle_compute_path,
+            callback_group=self.reentrant_group)
+
+        self.put_down_service = self.create_service(
+            PutDown, '/put_down', self.handle_put_down,
             callback_group=self.reentrant_group)
         
         self.batch_color_service = self.create_service(
@@ -694,6 +705,7 @@ class HybridAStarNode(Node):
         start_x = request.start_pose.pose.position.x * 1000.0
         start_y = request.start_pose.pose.position.y * 1000.0
         start_theta = MapManager.quaternion_to_yaw(request.start_pose.pose.orientation)
+        self.last_robot_pose_mm = (start_x, start_y, start_theta)
         
         goal_x = request.goal_pose.pose.position.x * 1000.0
         goal_y = request.goal_pose.pose.position.y * 1000.0
@@ -1110,6 +1122,120 @@ class HybridAStarNode(Node):
             self.get_logger().info(f"   Planning time: {response.planning_time_ms:.1f}ms")
             self.get_logger().info('='*60)
         return response
+
+    def _get_robot_pose_for_put_down(self) -> Optional[Tuple[float, float, float]]:
+        """Get robot pose (x_mm, y_mm, theta_rad) from TF, fallback to last start pose."""
+        base_frames = ['base_link', 'base_footprint']
+
+        for base_frame in base_frames:
+            try:
+                tf_msg = self.tf_buffer.lookup_transform(
+                    'map',
+                    base_frame,
+                    rclpy.time.Time()
+                )
+                x_mm = tf_msg.transform.translation.x * 1000.0
+                y_mm = tf_msg.transform.translation.y * 1000.0
+                theta = MapManager.quaternion_to_yaw(tf_msg.transform.rotation)
+                self.last_robot_pose_mm = (x_mm, y_mm, theta)
+                return self.last_robot_pose_mm
+            except (LookupException, ConnectivityException, ExtrapolationException):
+                continue
+            except Exception:
+                continue
+
+        return self.last_robot_pose_mm
+
+    def handle_put_down(self, request: PutDown.Request, response: PutDown.Response) -> PutDown.Response:
+        """
+        Add a placed 4-member batch as obstacles using robot pose and heading.
+
+        Request:
+          - direction: 1 (front) or 0 (back)
+          - color: 'yellow' or 'blue'
+        """
+        direction = int(request.direction)
+        if direction not in (0, 1):
+            response.success = False
+            response.message = "direction must be 0 (back) or 1 (front)"
+            response.obstacle_ids = []
+            return response
+
+        color = request.color.strip().lower()
+        if color not in ('yellow', 'blue'):
+            response.success = False
+            response.message = "color must be 'yellow' or 'blue'"
+            response.obstacle_ids = []
+            return response
+
+        robot_pose = self._get_robot_pose_for_put_down()
+        if robot_pose is None:
+            response.success = False
+            response.message = "Robot pose unavailable (no TF and no previous start pose)"
+            response.obstacle_ids = []
+            return response
+
+        robot_x_mm, robot_y_mm, robot_theta = robot_pose
+
+        # Geometry requested by user
+        crate_length_mm = 150.0
+        crate_width_mm = 50.0
+        gap_between_crates_mm = 20.0
+
+        # Forward offset: 150mm + 50mm, then center by +half crate length
+        robot_to_batch_face_mm = 150.0 + 50.0
+        center_forward_offset_mm = robot_to_batch_face_mm + (crate_length_mm / 2.0)
+        if direction == 0:
+            center_forward_offset_mm *= -1.0
+
+        ux = math.cos(robot_theta)
+        uy = math.sin(robot_theta)
+        vx = -math.sin(robot_theta)  # left normal
+        vy = math.cos(robot_theta)
+
+        batch_center_x = robot_x_mm + center_forward_offset_mm * ux
+        batch_center_y = robot_y_mm + center_forward_offset_mm * uy
+
+        lateral_step_mm = crate_width_mm + gap_between_crates_mm
+        lateral_offsets = [
+            -1.5 * lateral_step_mm,
+            -0.5 * lateral_step_mm,
+            0.5 * lateral_step_mm,
+            1.5 * lateral_step_mm,
+        ]
+
+        stamp = self.get_clock().now().to_msg()
+        ts_ns = self.get_clock().now().nanoseconds
+        created_ids: List[str] = []
+
+        with self.map_manager.obstacles_lock:
+            for idx, lat in enumerate(lateral_offsets):
+                obs = Obstacle()
+                obs.id = f"put_down_{ts_ns}_{idx}"
+                obs.type = 'put_down'
+                obs.color = color
+                obs.width_mm = crate_length_mm
+                obs.height_mm = crate_width_mm
+                obs.pose.x = batch_center_x + lat * vx
+                obs.pose.y = batch_center_y + lat * vy
+                obs.pose.theta = robot_theta
+                obs.detected_at = stamp
+
+                self.map_manager.obstacles.append(obs)
+                self.map_manager.obstacle_sources[obs.id] = 'put_down'
+                created_ids.append(obs.id)
+
+        self.map_manager.publish_obstacles(self.map_manager.get_active_obstacles())
+
+        response.success = True
+        response.message = (
+            f"Added 4 put_down obstacles ({'front' if direction == 1 else 'back'}) "
+            f"at robot pose ({robot_x_mm:.1f}, {robot_y_mm:.1f}, {math.degrees(robot_theta):.1f}deg)"
+        )
+        response.obstacle_ids = created_ids
+        self.get_logger().info(f"✅ {response.message}")
+        return response
+
     def handle_get_batch_color_pattern(self, request, response):
         """
         Service handler: Get color pattern for a batch by known_id or position

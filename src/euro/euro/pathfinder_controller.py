@@ -6,7 +6,7 @@ from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped, Point,Vector3
 from nav_msgs.msg import Path
 
-from hybrid_astar.srv import ComputePath, GetBatchColorPattern, DeleteBatch, GetActiveBatches
+from hybrid_astar.srv import ComputePath, GetBatchColorPattern, DeleteBatch, GetActiveBatches, PutDown
 from std_srvs.srv import Trigger
 
 class PathfinderClient(Node):
@@ -54,6 +54,11 @@ class PathfinderClient(Node):
             '/pathfinder/get_active_batches'
         )
 
+        self.put_down_client = self.create_client(
+            PutDown,
+            '/put_down'
+        )
+
         # Don't block on wait_for_service - it will timeout if service isn't available
         self.get_logger().info('Waiting for /compute_path service...')
         if not self.path_client.wait_for_service(timeout_sec=5.0):
@@ -90,6 +95,12 @@ class PathfinderClient(Node):
             self.get_logger().warning('⚠️  /clear_map service not available after 5 seconds')
         else:
             self.get_logger().info('✅ /clear_map service is ready')
+
+        self.get_logger().info('Waiting for /put_down service...')
+        if not self.put_down_client.wait_for_service(timeout_sec=5.0):
+            self.get_logger().warning('⚠️  /put_down service not available after 5 seconds')
+        else:
+            self.get_logger().info('✅ /put_down service is ready')
 
         # Goal storage
         self.goal_x = None
@@ -577,6 +588,55 @@ class PathfinderClient(Node):
         )
 
         return batch_info
+
+    # =========================================================
+    # 4️⃣ PUT DOWN BATCH (4 crates)
+    # =========================================================
+    def put_down(self, front: int = 1, color: str = 'yellow'):
+        """
+        Request /put_down to add a 4-member placed batch near robot pose.
+
+        Args:
+            front: 1 => front, 0 => back
+            color: 'yellow' or 'blue'
+
+        Returns:
+            success (bool), message (str), obstacle_ids (list[str])
+        """
+        # Check service readiness
+        if not self.put_down_client.service_is_ready():
+            self.get_logger().error('❌ /put_down service is not available!')
+            return False, 'Service not available', []
+
+        # Normalize input
+        direction = 1 if int(front) == 1 else 0
+        normalized_color = str(color).strip().lower()
+        if normalized_color not in ('yellow', 'blue'):
+            self.get_logger().error("❌ put_down color must be 'yellow' or 'blue'")
+            return False, "Invalid color (must be 'yellow' or 'blue')", []
+
+        request = PutDown.Request()
+        request.direction = direction
+        request.color = normalized_color
+
+        future = self.put_down_client.call_async(request)
+        rclpy.spin_until_future_complete(self, future, timeout_sec=5.0)
+
+        if not future.done():
+            self.get_logger().error('❌ put_down service call timed out after 5s')
+            return False, 'Timeout', []
+
+        if not future.result():
+            self.get_logger().error('❌ put_down service call failed')
+            return False, 'No response', []
+
+        response = future.result()
+        if response.success:
+            self.get_logger().info(f"✅ put_down success: {response.message}")
+            return True, response.message, list(response.obstacle_ids)
+
+        self.get_logger().warning(f"⚠️ put_down failed: {response.message}")
+        return False, response.message, []
 
 
 def main(args=None):

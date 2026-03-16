@@ -881,6 +881,28 @@ def put_down(controller,pneumatic,strategy,front):
     if front:
         pneumatic.front(16)
     else: pneumatic.back(16)
+
+    # Sync placed batch into pathfinder obstacle map
+    if hasattr(strategy, 'pathfinder') and strategy.pathfinder is not None:
+        put_down_front = 1 if front else 0
+        put_down_color = (strategy.color or 'yellow').strip().lower() if hasattr(strategy, 'color') else 'yellow'
+        if put_down_color not in ('yellow', 'blue'):
+            put_down_color = 'yellow'
+
+        success, message, obstacle_ids = strategy.pathfinder.put_down(
+            front=put_down_front,
+            color=put_down_color
+        )
+
+        if success:
+            strategy.get_logger().info(
+                f"✅ Pathfinder put_down synced ({'front' if front else 'back'}, color={put_down_color}) "
+                f"-> {len(obstacle_ids)} obstacles"
+            )
+        else:
+            strategy.get_logger().warning(
+                f"⚠️ Pathfinder put_down failed ({'front' if front else 'back'}, color={put_down_color}): {message}"
+            )
 def front_task(strategy, front_controller=None,pneumatic_controller=None):
     global color_pt_front
     global SHUTDOWN_REQUESTED
