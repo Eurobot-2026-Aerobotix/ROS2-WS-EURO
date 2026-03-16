@@ -500,10 +500,10 @@ class MapManager:
             return True, f"Appended put_down to {known_id} ({existing_count} -> {len(all_members)} members)", created_ids, known_id
         return True, f"Registered put_down batch as {known_id}", created_ids, known_id
 
-    def _reconcile_manual_putdown_batches(self, received_batch_ids: set) -> set:
+    def _reconcile_manual_putdown_batches(self, received_batch_ids: set, lost_batch_ids: set) -> set:
         """
-        Keep manual put-down FX batches while the beacon still reports their known_id.
-        If the beacon loses that known_id, remove the manual batch.
+        Keep manual put-down FX batches unless the beacon explicitly reports
+        that known_id with state LOST.
 
         Returns:
             Set of manual put-down known_ids that should be preserved this cycle.
@@ -511,8 +511,9 @@ class MapManager:
         with self.batches_lock:
             manual_ids = set(self.manual_putdown_batch_ids)
 
-        retained_manual_ids = manual_ids & received_batch_ids
-        lost_manual_ids = manual_ids - received_batch_ids
+        # Preserve manual batches by default, and only remove if explicitly LOST.
+        retained_manual_ids = set(manual_ids)
+        lost_manual_ids = manual_ids & lost_batch_ids
 
         if lost_manual_ids:
             with self.obstacles_lock:
@@ -531,9 +532,10 @@ class MapManager:
                     self.batches_with_obstacles.discard(bid)
                     self.manual_putdown_batch_ids.discard(bid)
                     self.active_batch_ids.discard(bid)
+                    retained_manual_ids.discard(bid)
 
             self.node.get_logger().info(
-                f"🗑️  Removed {len(lost_manual_ids)} manual put_down batches lost by beacon: {lost_manual_ids}"
+                f"🗑️  Removed {len(lost_manual_ids)} manual put_down batches reported LOST by beacon: {lost_manual_ids}"
             )
 
         if retained_manual_ids:
@@ -864,6 +866,11 @@ class MapManager:
             # Process the received ArucoMapperState
             aruco_state = stable_response.stable_state
             num_batches = len(aruco_state.batches)
+            lost_batch_ids = {
+                batch.known_id
+                for batch in aruco_state.batches
+                if batch.state.upper() == 'LOST'
+            }
             
             # Initialize variables that may be used in final summary
             disappeared_ids = set()
@@ -1063,7 +1070,10 @@ class MapManager:
             preserved_manual_batches = {}
 
             if specific_known_id is None:
-                retained_manual_putdown_ids = self._reconcile_manual_putdown_batches(received_batch_ids)
+                retained_manual_putdown_ids = self._reconcile_manual_putdown_batches(
+                    received_batch_ids,
+                    lost_batch_ids
+                )
                 if retained_manual_putdown_ids:
                     with self.batches_lock:
                         preserved_manual_batches = {
