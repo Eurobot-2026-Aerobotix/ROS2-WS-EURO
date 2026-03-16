@@ -107,6 +107,11 @@ class DecisionMaker:
         
         self.strategy.get_logger().info('🧠 Decision Maker initialized')
 
+    def _log_duration_ms(self, label: str, start_time: float):
+        """Log elapsed duration in milliseconds for profiling decision flow."""
+        elapsed_ms = (time.perf_counter() - start_time) * 1000.0
+        self.strategy.get_logger().info(f'⏱️ {label}: {elapsed_ms:.1f}ms')
+
     def _update_map_during_round(self):
         """Refresh the map once per elapsed game second until the round reaches 100s."""
         round_timer = getattr(self.strategy, 'round', None)
@@ -483,6 +488,8 @@ class DecisionMaker:
         Returns:
             Tuple of (zone_name, zone_dict) with zone information, or None if no reference available
         """
+        zone_timer = time.perf_counter()
+
         # Use provided reference position, otherwise fall back to robot pose
         if reference_x is not None and reference_y is not None:
             robot_x_mm = reference_x
@@ -562,6 +569,7 @@ class DecisionMaker:
             f'🎯 Selected putdown zone: {best_name} at ({best_zone["x"]}mm, {best_zone["y"]}mm) '
             f'- distance: {best_distance:.0f}mm'
         )
+        self._log_duration_ms('choose_best_putdown_zone total', zone_timer)
         
         return (best_name, best_zone)
     
@@ -577,8 +585,12 @@ class DecisionMaker:
         Returns:
             Dictionary with batch info, pickup_pose, distance, and score, or None if no batches
         """
+        total_timer = time.perf_counter()
+
         # Update batch list
+        update_timer = time.perf_counter()
         self.update_available_batches()
+        self._log_duration_ms('get_optimal_batch update_available_batches', update_timer)
         
         # Get current robot position
         robot_pose = self.strategy.latest_robot_pose
@@ -693,6 +705,7 @@ class DecisionMaker:
             f'members={best["member_count"]}, distance={best["distance_mm"]:.0f}mm, '
             f'enemy_penalty={best.get("enemy_penalty", 0.0):.2f}, score={best["score"]:.2f})'
         )
+        self._log_duration_ms('get_optimal_batch total', total_timer)
         
         return best
     
@@ -710,16 +723,21 @@ class DecisionMaker:
         Returns:
             List containing [pickup_task, putdown_task], or None if generation fails
         """
+        steal_timer = time.perf_counter()
+
         self.strategy.get_logger().info(
             f'🎯 steal_batch() called - searching for optimal batch '
             f'(type={batch_type or "any"}, min_members={min_members})'
         )
         
         # Get optimal batch
+        phase_timer = time.perf_counter()
         optimal_batch = self.get_optimal_batch(batch_type, min_members)
+        self._log_duration_ms('steal_batch phase select_optimal_batch', phase_timer)
         
         if optimal_batch is None:
             self.strategy.get_logger().warning('⚠️ No batches available to steal')
+            self._log_duration_ms('steal_batch total (failed: no optimal batch)', steal_timer)
             return None
         
         # Extract batch information
@@ -795,19 +813,29 @@ class DecisionMaker:
         self.pathfinder.set_goal(adjusted_x, adjusted_y, pickup_theta_rad)
         
         # Get path waypoints from pathfinder
+        phase_timer = time.perf_counter()
         stm32_commands, path_success = self.pathfinder.path()
+        pickup_waypoint_count = len(stm32_commands) if stm32_commands else 0
+        self.strategy.get_logger().info(
+            f'⏱️ steal_batch phase pickup_path: {(time.perf_counter() - phase_timer) * 1000.0:.1f}ms '
+            f'({pickup_waypoint_count} waypoint commands)'
+        )
         
         if not path_success:
             self.strategy.get_logger().error(f'❌ Failed to generate path to {known_id}')
+            self._log_duration_ms('steal_batch total (failed: pickup path)', steal_timer)
             return None
         
         self.strategy.get_logger().info(f'✅ Path generated: {len(stm32_commands)} waypoints')
         
         # NOW select device based on actual path trajectory (if not manually specified)
         if device is None:
+            phase_timer = time.perf_counter()
             device = self.get_optimal_device_from_path(stm32_commands)
+            self._log_duration_ms('steal_batch phase select_device_from_path', phase_timer)
             if device is None:
                 self.strategy.get_logger().error('❌ No available device (both front and back are full)')
+                self._log_duration_ms('steal_batch total (failed: no device)', steal_timer)
                 return None
             self.strategy.get_logger().info(f'🔧 Selected device: {device}')
         
@@ -903,14 +931,17 @@ class DecisionMaker:
         # ========== NOW CREATE PUTDOWN TASK ==========
         
         # Select best putdown zone (type B only for now) based on pickup position
+        phase_timer = time.perf_counter()
         putdown_zone_result = self.choose_best_putdown_zone(
             reference_x=pickup_x_mm,
             reference_y=pickup_y_mm
         )
+        self._log_duration_ms('steal_batch phase choose_putdown_zone', phase_timer)
         if putdown_zone_result is None:
             self.strategy.get_logger().warning('⚠️ No putdown zone available, returning pickup task only')
             if hasattr(self.pathfinder, 'remove_untracked_batch'):
                 self.pathfinder.remove_untracked_batch(known_id)
+            self._log_duration_ms('steal_batch total (pickup only)', steal_timer)
             return [pickup_task]
         
         zone_name, zone = putdown_zone_result
@@ -941,21 +972,25 @@ class DecisionMaker:
 
         # Calculate optimal putdown position within 30cm radius circle
         # Use pickup position as reference (robot will be there after pickup)
+        phase_timer = time.perf_counter()
         putdown_pos = self.find_optimal_putdown_position(
             zone['x'], 
             zone['y'],
             reference_x=pickup_x_mm,
             reference_y=pickup_y_mm
         )
+        self._log_duration_ms('steal_batch phase compute_putdown_position', phase_timer)
         if putdown_pos is None:
             self.strategy.get_logger().warning('⚠️ Could not calculate putdown position, returning pickup task only')
             if hasattr(self.pathfinder, 'remove_untracked_batch'):
                 self.pathfinder.remove_untracked_batch(known_id)
             if putdown_zone_fx_untracked and hasattr(self.pathfinder, 'remove_untracked_batch'):
                 self.pathfinder.remove_untracked_batch(putdown_zone_fx_batch_id)
+            self._log_duration_ms('steal_batch total (pickup only: no putdown pos)', steal_timer)
             return [pickup_task]
         
         # Create putdown task using the same device
+        phase_timer = time.perf_counter()
         putdown_task = self.create_put_down_task(
             device=device,
             target_x=putdown_pos['x'],
@@ -967,6 +1002,7 @@ class DecisionMaker:
             start_y=pickup_y_mm,
             start_theta=pickup_theta
         )
+        self._log_duration_ms('steal_batch phase create_put_down_task', phase_timer)
         
         if putdown_task is None:
             self.strategy.get_logger().warning('⚠️ Failed to generate putdown task, returning pickup task only')
@@ -974,6 +1010,7 @@ class DecisionMaker:
                 self.pathfinder.remove_untracked_batch(known_id)
             if putdown_zone_fx_untracked and hasattr(self.pathfinder, 'remove_untracked_batch'):
                 self.pathfinder.remove_untracked_batch(putdown_zone_fx_batch_id)
+            self._log_duration_ms('steal_batch total (pickup only: putdown failed)', steal_timer)
             return [pickup_task]
 
         # Putdown task is now generated. Restore default obstacle tracking for future planning calls.
@@ -986,6 +1023,7 @@ class DecisionMaker:
             )
         
         self.strategy.get_logger().info(f'✅ Generated complete steal sequence: pickup + putdown at {zone_name}')
+        self._log_duration_ms('steal_batch total', steal_timer)
         return [pickup_task, putdown_task]
     
     def create_put_down_task(self, device: str, target_x: float, target_y: float,
@@ -1009,6 +1047,8 @@ class DecisionMaker:
         Returns:
             Task dictionary for putting down batch, or None if path generation fails
         """
+        total_timer = time.perf_counter()
+
         self.strategy.get_logger().info(
             f'📦 Creating put_down task: device={device}, '
             f'target=({target_x}mm, {target_y}mm, {target_theta}°)'
@@ -1025,6 +1065,7 @@ class DecisionMaker:
         )
         
         # Get path waypoints (use explicit start pose if provided)
+        path_timer = time.perf_counter()
         if start_x is not None and start_y is not None and start_theta is not None:
             start_theta_rad = math.radians(start_theta)
             stm32_commands, path_success = self.pathfinder.path(
@@ -1034,9 +1075,15 @@ class DecisionMaker:
             )
         else:
             stm32_commands, path_success = self.pathfinder.path()
+        putdown_waypoint_count = len(stm32_commands) if stm32_commands else 0
+        self.strategy.get_logger().info(
+            f'⏱️ create_put_down_task path_generation: {(time.perf_counter() - path_timer) * 1000.0:.1f}ms '
+            f'({putdown_waypoint_count} waypoint commands)'
+        )
         
         if not path_success:
             self.strategy.get_logger().error('❌ Failed to generate path for put_down')
+            self._log_duration_ms('create_put_down_task total (failed)', total_timer)
             return None
         
         self.strategy.get_logger().info(f'✅ Path generated: {len(stm32_commands)} waypoints')
@@ -1131,6 +1178,7 @@ class DecisionMaker:
         # if the task fails or is interrupted.
         
         self.strategy.get_logger().info(f'✅ Generated put_down task: {task["name"]}')
+        self._log_duration_ms('create_put_down_task total', total_timer)
         return task
 
 
