@@ -122,7 +122,7 @@ def path_planning_task(strategy, lidar, round_timer, pneumatic_controller=None, 
                     strategy.get_logger().warning(f"⚠️ Return home path attempt #{attempt_count} failed - retrying...")
                     time.sleep(0.5)
         
-        time.sleep(0.1)  # 100ms
+        time.sleep(0.05)  # 50ms for quicker IDLE updates
 
 def prepare_path(strategy, lidar):
     """Prepare path in background while waiting for obstacle to clear.
@@ -292,7 +292,7 @@ def robot_status(strategy, stm32, lidar):
             # Log periodically when robot is idle to confirm the thread is running
             if status_loop_count % 100 == 0:  # Every 10 seconds
                 strategy.get_logger().info(f"✓ Robot status monitor: IDLE={IDLE}, EMERGENCY_STOP={EMERGENCY_STOP}")        
-        time.sleep(0.1)  # 100ms
+        time.sleep(0.02)  # 20ms to reduce command dispatch latency
 
 def lidar_status(strategy, stm32, lidar, round_timer):
     """Runs every 100ms to check lidar status and handle emergency stops"""
@@ -1044,7 +1044,7 @@ def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=No
                 params = to_float_list(params)
                 stm32_controller.set_position(params[0], params[1], params[2])
                 IDLE_FOR_SYSTEMS=True
-                IDLE=False
+                IDLE=True
 
             elif command == 'wait_end_game':
                 # Wait until game time reaches 1.25s + duration
@@ -1078,6 +1078,11 @@ def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=No
             # Remove command from queue after execution (if queue not cleared by another thread)
             if len(strategy.queues['RASP_PI']) > 0:
                 strategy.queues['RASP_PI'].popleft()
+
+            # If another command is already queued (e.g. set_position right after tirette),
+            # process it immediately instead of waiting for the next polling tick.
+            if len(strategy.queues['RASP_PI']) > 0:
+                continue
             
         
-        time.sleep(0.1)  # 100ms
+        time.sleep(0.02)  # 20ms to reduce post-tirette startup delay
