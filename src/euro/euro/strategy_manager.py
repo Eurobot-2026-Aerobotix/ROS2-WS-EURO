@@ -364,7 +364,7 @@ class StrategyManager(Node):
                                 
                                 self.get_logger().debug(f"Waiting for STM commands to be sent... STM queue size: {n}, SYSTEMS_IDLE_COUNT: {executor_module.SYSTEMS_IDLE_COUNT}")
                                 time.sleep(0.1)
-                    if device =="STM" and command =="set_position":
+                    if device =="SSTM" and command =="set_position":
                         self.queues["RASP_PI"].append(cmd)
                     else:
                         if device =="RASP_PI" and command=="Wait for manual start":
@@ -842,7 +842,7 @@ def main(args=None):
                     # Stop STM32 and reset all systems immediately (not queued)
                     try:
                         strategy.get_logger().info("Stopping and resetting all systems...")
-                        #reset_systems(pneumatic,front,back,stm32,strategy,immediate=True)
+                        reset_systems(pneumatic,front,back,stm32,strategy,immediate=True)
                         time.sleep(0.5)
                     except Exception as e:
                         strategy.get_logger().error(f"Failed to stop/reset systems: {e}")

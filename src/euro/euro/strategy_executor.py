@@ -99,7 +99,7 @@ def path_planning_task(strategy, lidar, round_timer, pneumatic_controller=None, 
             path_found = False
             attempt_count = 0
             
-            while not path_found and not SHUTDOWN_REQUESTED:
+            while not path_found and not SHUTDOWN_REQUESTED and (round_timer.time() < 100.0):
                 attempt_count += 1
                 strategy.get_logger().info(f"🏠 Return home path attempt #{attempt_count}")
                 
@@ -288,10 +288,10 @@ def robot_status(strategy, stm32, lidar):
             if  IDLE_FOR_SYSTEMS ==True and PREVIOUS_IDLE_FOR_SYSTEMS==False and last_stm_command!="emergency" :
                 SYSTEMS_IDLE_COUNT+=1
             PREVIOUS_IDLE_FOR_SYSTEMS=IDLE_FOR_SYSTEMS
-        else:
+        #else:
             # Log periodically when robot is idle to confirm the thread is running
-            if status_loop_count % 100 == 0:  # Every 10 seconds
-                strategy.get_logger().info(f"✓ Robot status monitor: IDLE={IDLE}, EMERGENCY_STOP={EMERGENCY_STOP}")        
+            # if status_loop_count % 100 == 0:  # Every 10 seconds
+            #     strategy.get_logger().info(f"✓ Robot status monitor: IDLE={IDLE}, EMERGENCY_STOP={EMERGENCY_STOP}")        
         time.sleep(0.02)  # 20ms to reduce command dispatch latency
 
 def lidar_status(strategy, stm32, lidar, round_timer):
@@ -333,8 +333,8 @@ def lidar_status(strategy, stm32, lidar, round_timer):
             first_emergency = True
         
         # Periodic status check
-        if lidar_loop_count % 100 == 0:  # Every 10 seconds
-            strategy.get_logger().info(f"✓ Lidar monitor: EMERGENCY_STOP={EMERGENCY_STOP}, round_time={round_timer.time():.1f}s")
+        #if lidar_loop_count % 100 == 0:  # Every 10 seconds
+            #strategy.get_logger().info(f"✓ Lidar monitor: EMERGENCY_STOP={EMERGENCY_STOP}, round_time={round_timer.time():.1f}s")
         
         time.sleep(0.01)  # 10ms
 
@@ -484,7 +484,7 @@ def stm32_task(strategy, stm32,lidar):
     last_params = None
     global SYSTEMS_IDLE_COUNT
     was_in_emergency = False
-    
+    global WAITING_TIRETTE
     strategy.get_logger().info("🚀 STM32 task started")
     
     main_loop_count = 0
@@ -520,9 +520,10 @@ def stm32_task(strategy, stm32,lidar):
             
             # Execute command using handler function
             strategy.get_logger().info(f"🎯 Executing STM command: {command} with params: {params[:3] if len(params) > 3 else params}")
+            while(command =="set_position" and WAITING_TIRETTE==True and not SHUTDOWN_REQUESTED):
+                time.sleep(0.01)
             handle_stm32_command(command, params, stm32, lidar, strategy)
-            if command !="set_position":
-                last_stm_command="navigation"
+            last_stm_command="navigation"
             
             strategy.get_logger().info(f"⏳ Entering wait loop - IDLE={IDLE}, EMERGENCY_STOP={EMERGENCY_STOP}, last_stm_command={last_stm_command}")
             
@@ -755,11 +756,22 @@ def convert_color_pattern(color_pattern, robot_color):
 def stana(controller):
     """Wait for controller to be idle, with shutdown check"""
     global SHUTDOWN_REQUESTED
-    
+    waiting_started = False
     # Use shorter timeout to allow quicker shutdown response
+
     idle = controller.IDLE(timeout=5.0)
+    if not waiting_started and idle:
+        idle=False
+    if not idle and waiting_started==False:
+        waiting_started = True
+        controller.get_logger().info("⏳ Waiting for controller to be idle...")
     while not idle and not SHUTDOWN_REQUESTED:
         idle = controller.IDLE(timeout=5.0)
+        if not waiting_started and idle:
+            idle=False
+        if not idle and waiting_started==False:
+            waiting_started = True
+            controller.get_logger().info("⏳ Waiting for controller to be idle...")
         time.sleep(0.1)
     
 def talaa(strategy, front_controller=None,front=True):
@@ -821,7 +833,8 @@ def pick_up(controller,pneumatic,strategy,front):
     if SHUTDOWN_REQUESTED:
         return
     
-    time.sleep(1)
+    
+    time.sleep(0.0)
     strategy.get_logger().info(f"🔍 Requesting NEW color pattern for {'FRONT' if front else 'BACK'} at position ({strategy.latest_robot_pose.x:.3f}, {strategy.latest_robot_pose.y:.3f})")
     color_pattern = talaa(strategy, controller,front)
     if front:
@@ -836,7 +849,6 @@ def pick_up(controller,pneumatic,strategy,front):
     if SHUTDOWN_REQUESTED:
         return
     controller.kabech(0)
-    time.sleep(1)
 def put_down(controller,pneumatic,strategy,front):
     global ESP_FRONT_IDLE
     global ESP_BACK_IDLE
@@ -859,12 +871,12 @@ def put_down(controller,pneumatic,strategy,front):
     
     if front:
         pneumatic.front(15)
-        time.sleep(0.5)
-        pneumatic.front(15)
+        # time.sleep(0.5)
+        # pneumatic.front(15)
     else: 
         pneumatic.back(15)
-        time.sleep(0.5)
-        pneumatic.back(15)
+        # time.sleep(0.5)
+        # pneumatic.back(15)
     if front:
         ESP_FRONT_IDLE=True
     else: ESP_BACK_IDLE=True
@@ -877,7 +889,7 @@ def put_down(controller,pneumatic,strategy,front):
     stana(controller)
     if SHUTDOWN_REQUESTED:
         return
-    
+    time.sleep(0.5)
     if front:
         pneumatic.front(16)
     else: pneumatic.back(16)
@@ -989,6 +1001,13 @@ def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=No
             if command == 'Wait for manual start':
                 WAITING_TIRETTE=True
                 if rpi_controller:
+                    # Check if tirette is already inserted
+                    tirette_status = rpi_controller.read_pin_17()
+                    if tirette_status == 0:
+                        strategy.get_logger().warning("⚠️ mafamech tirette ya maaahdi !")
+                    while(tirette_status == 0):  
+                        time.sleep(0.05)
+                        tirette_status = rpi_controller.read_pin_17()
                     result = rpi_controller.wait_start()
                     stm32_controller.reset()
                     WAITING_TIRETTE=False

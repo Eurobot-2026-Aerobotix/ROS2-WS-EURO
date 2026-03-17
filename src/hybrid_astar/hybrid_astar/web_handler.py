@@ -863,9 +863,9 @@ class WebHandlerNode(Node):
                     raise ValueError("Pneumatic command requires side='front' or 'back'")
 
                 if action == 'pump':
-                    command_value = 15
+                    command_value = 0
                 elif action == 'disable_pump':
-                    command_value = 16
+                    command_value = 15
                 else:
                     raise ValueError(f"Unsupported pneumatic action '{action}'")
 
