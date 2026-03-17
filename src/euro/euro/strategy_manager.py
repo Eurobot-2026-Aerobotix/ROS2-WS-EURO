@@ -3,16 +3,19 @@
 import rclpy
 from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
+from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
 import os
 import time
 import threading
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from collections import deque
 from geometry_msgs.msg import PoseStamped, Pose2D, Quaternion, Vector3, Point
+from std_msgs.msg import Int32
 from aruco_mapper_msgs.msg import ArucoMapperState
 from euro.yaml_loader import load_tasks_from_yaml
 import math
 from euro.pathfinder_controller import PathfinderClient
+from euro.decision_maker import DecisionMaker
 from euro.strategy_executor import robot_status, lidar_status, stm32_task, front_task, back_task,rasp_pi_task, path_planning_task, IDLE, EMERGENCY_STOP
 import euro.strategy_executor as executor_module  # Import module to access SHUTDOWN_REQUESTED and other globals
 
@@ -47,6 +50,11 @@ class StrategyManager(Node):
         
         # Flag to pause task loading during pathfinding
         self.is_replanning = False
+        # Flag to interrupt waiting loops (for enemy detection handling)
+        self.interrupt_wait = False
+        # Flags to track which wait loops were interrupted
+        self.load_task_to_queues_ended = False
+        self.stm32_task_wait_ended = False
         # Global goal position storage
         self.global_pos_x = None
         self.global_pos_y = None
@@ -77,8 +85,43 @@ class StrategyManager(Node):
             self.aruco_mapper_callback,
             10
         )
+
+        # Beacon readiness status for dashboard: 0 = not ready, 1 = ready
+        beacon_qos = QoSProfile(depth=1)
+        beacon_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
+        beacon_qos.reliability = ReliabilityPolicy.RELIABLE
+        self.beacon_status_pub = self.create_publisher(Int32, '/web/beacon_status', beacon_qos)
+
+        self.beacon_status_value = 0
+        self.publish_beacon_status(self.beacon_status_value)
+        self._beacon_startup_publish_count = 0
+        self._beacon_startup_timer = self.create_timer(0.5, self._publish_initial_beacon_status)
+
         self.pathfinder = PathfinderClient()
         self.path_called = False
+        
+        # Initialize decision maker for dynamic batch stealing
+        self.decision_maker = DecisionMaker(self, self.pathfinder)
+        self.get_logger().info('🧠 Decision Maker initialized with pathfinder access')
+
+    def publish_beacon_status(self, value: int) -> None:
+        self.beacon_status_value = int(value)
+        msg = Int32()
+        msg.data = self.beacon_status_value
+        self.beacon_status_pub.publish(msg)
+        self.get_logger().info(f"📡 Published beacon status: {msg.data}")
+
+    def _publish_initial_beacon_status(self) -> None:
+        # Republish initial 0 a few times so late-starting dashboard listeners get it.
+        if self._beacon_startup_publish_count >= 5:
+            if self._beacon_startup_timer is not None:
+                self._beacon_startup_timer.cancel()
+                self._beacon_startup_timer = None
+            return
+
+        self.publish_beacon_status(self.beacon_status_value)
+        self._beacon_startup_publish_count += 1
+
     def robot_pose_callback(self, msg):
         self.latest_robot_pose = msg
     
@@ -203,6 +246,7 @@ class StrategyManager(Node):
             return success
     def handle_global_goal(self, x, y, angle):
         global found_goal_batch
+        angle_rad = math.radians(float(angle)) if abs(float(angle)) > (2 * math.pi + 0.01) else float(angle)
         pos = Point()
         pos.x = float(x)
         pos.y = float(y)
@@ -235,11 +279,11 @@ class StrategyManager(Node):
                 global_y=y
                 global_angle=angle
                 self.get_logger().warn(f"Edge case: position equals batch center or unexpected direction '{direction}'")
-            self.pathfinder.set_goal(float(global_x), float(global_y), float(global_angle))
+            self.pathfinder.set_goal(float(global_x), float(global_y), angle_rad)
         else:
             found_goal_batch=False
             self.get_logger().info(f"pathfinder goal set to :x = {x}, y = {y}  angle=  {angle}without pickuo ")
-            self.pathfinder.set_goal(float(x), float(y), float(angle))
+            self.pathfinder.set_goal(float(x), float(y), angle_rad)
     def quaternion_to_yaw(self, quat: Quaternion) -> float:
         """Convert quaternion to yaw angle"""
         siny_cosp = 2 * (quat.w * quat.z + quat.x * quat.y)
@@ -292,6 +336,10 @@ class StrategyManager(Node):
                         self.get_logger().info(f"      ⏳ Waiting for dependencies...")
                         if(device == "STM"):
                             while not executor_module.ESP_FRONT_IDLE or not executor_module.ESP_BACK_IDLE:
+                                if self.interrupt_wait:
+                                    self.get_logger().warning("🛑 ESP wait interrupted")
+                                    self.load_task_to_queues_ended = True
+                                    return False
                                 time.sleep(0.1)
                         if(device == "ESP_front" or device == "ESP_back"):
                             executor_module.SYSTEMS_IDLE_COUNT=0
@@ -316,7 +364,7 @@ class StrategyManager(Node):
                                 
                                 self.get_logger().debug(f"Waiting for STM commands to be sent... STM queue size: {n}, SYSTEMS_IDLE_COUNT: {executor_module.SYSTEMS_IDLE_COUNT}")
                                 time.sleep(0.1)
-                    if device =="STM" and command =="set_position":
+                    if device =="SSTM" and command =="set_position":
                         self.queues["RASP_PI"].append(cmd)
                     else:
                         if device =="RASP_PI" and command=="Wait for manual start":
@@ -335,12 +383,33 @@ class StrategyManager(Node):
                 return False
             return True
     
-    def wait_for_all_queues_empty(self):
-        """Wait until all device queues are empty (unless replanning)"""
-        
-        while (not (self.are_all_queues_empty() or(  executor_module.ESP_FRONT_IDLE==True and executor_module.ESP_BACK_IDLE==True ))) or (not executor_module.IDLE) or executor_module.WAITING_TIRETTE or len(self.queues["STM"])!=0 or len(self.queues["RASP_PI"])!=0 or executor_module.replanning or self.end_game==True:
+    def wait_for_all_queues_empty(self, ignore_rasp_pi: bool = False):
+        """Wait until all device queues are empty (unless replanning or interrupted).
+
+        Args:
+            ignore_rasp_pi: When True, do not block on the RASP_PI queue.
+                This is useful when called from a currently executing RASP_PI
+                command (e.g. 'steal'), where the queue head is popped only
+                after the handler returns.
+        """
+
+        while (
+            (not (self.are_all_queues_empty() or (executor_module.ESP_FRONT_IDLE is True and executor_module.ESP_BACK_IDLE is True)))
+            or (not executor_module.IDLE)
+            or executor_module.WAITING_TIRETTE
+            or len(self.queues["STM"]) != 0
+            or ((not ignore_rasp_pi) and len(self.queues["RASP_PI"]) != 0)
+            or executor_module.replanning
+            or self.end_game is True
+        ):
             # Check if shutdown is requested
-            self.get_logger().debug(f"Waiting for queues to empty... STM queue size: {len(self.queues['STM'])}, RASP_PI queue size: {len(self.queues['RASP_PI'])}, ESP_FRONT_IDLE: {executor_module.ESP_FRONT_IDLE}, ESP_BACK_IDLE: {executor_module.ESP_BACK_IDLE}, IDLE: {executor_module.IDLE}, WAITING_TIRETTE: {executor_module.WAITING_TIRETTE}, replanning: {executor_module.replanning}")
+            self.get_logger().debug(
+                f"Waiting for queues to empty... STM queue size: {len(self.queues['STM'])}, "
+                f"RASP_PI queue size: {len(self.queues['RASP_PI'])}, ignore_rasp_pi={ignore_rasp_pi}, "
+                f"ESP_FRONT_IDLE: {executor_module.ESP_FRONT_IDLE}, ESP_BACK_IDLE: {executor_module.ESP_BACK_IDLE}, "
+                f"IDLE: {executor_module.IDLE}, WAITING_TIRETTE: {executor_module.WAITING_TIRETTE}, "
+                f"replanning: {executor_module.replanning}"
+            )
             if executor_module.SHUTDOWN_REQUESTED:
                 self.get_logger().info("Shutdown requested, stopping queue wait")
                 return
@@ -357,6 +426,139 @@ class StrategyManager(Node):
     def display_queue_contents(self):
         """Display the full contents of all queues with parameters"""
         pass
+
+    def handle_steal_command(self, params: Optional[List[Any]] = None, wait: bool = False) -> bool:
+        """
+        Handle YAML command `RASP_PI -> steal`.
+
+        Params format:
+          - params[0]: number of SX batches to steal
+          - params[1]: number of FX batches to steal (currently ignored)
+
+        Current behavior:
+          - Only SX stealing is enabled.
+          - Will execute SX steal sequence N times (N = params[0]).
+        """
+        params = params or []
+
+        sx_count = 0
+        fx_count = 0
+
+        if len(params) >= 1:
+            try:
+                sx_count = max(0, int(float(params[0])))
+            except Exception:
+                self.get_logger().warning(f"⚠️ Invalid SX steal count '{params[0]}', using 0")
+
+        if len(params) >= 2:
+            try:
+                fx_count = max(0, int(float(params[1])))
+            except Exception:
+                self.get_logger().warning(f"⚠️ Invalid FX steal count '{params[1]}', using 0")
+
+        if sx_count <= 0:
+            self.get_logger().info("ℹ️ Steal command requested 0 SX steals; nothing to do")
+            return True
+
+        if fx_count > 0:
+            self.get_logger().info(
+                f"ℹ️ FX steal count requested ({fx_count}) but FX stealing is currently disabled; ignoring it"
+            )
+
+        self.get_logger().info(f"🏴‍☠️ Executing SX steal command {sx_count} time(s)")
+
+        def _enqueue_generated_tasks(generated_tasks: List[Dict], sequence_index: int) -> bool:
+            ts = int(time.time() * 1000)
+            for idx, generated_task in enumerate(generated_tasks):
+                # Ensure unique name to avoid collisions in self.tasks lookup
+                base_name = generated_task.get('name', f'steal_generated_{idx+1}')
+                generated_task['name'] = f"{base_name}_{ts}_{sequence_index}_{idx+1}"
+
+                # Refresh global goal for dynamically generated tasks so emergency
+                # replanning uses the current task goal instead of stale previous data.
+                global_goal = generated_task.get('global_goal')
+                if global_goal:
+                    self.global_pos_x = global_goal.get('x')
+                    self.global_pos_y = global_goal.get('y')
+                    self.global_pos_angle = global_goal.get('theta')
+
+                    if self.global_pos_x is not None and self.global_pos_y is not None and self.global_pos_angle is not None:
+                        self.handle_global_goal(
+                            float(self.global_pos_x) / 1000.0,
+                            float(self.global_pos_y) / 1000.0,
+                            float(self.global_pos_angle)
+                        )
+                        self.global_pos_x = float(self.global_pos_x) / 1000.0
+                        self.global_pos_y = float(self.global_pos_y) / 1000.0
+                        self.global_pos_angle = float(self.global_pos_angle)
+                        self.get_logger().info(
+                            f"🎯 Dynamic task global goal set: x={self.global_pos_x:.3f}, y={self.global_pos_y:.3f}, angle={self.global_pos_angle:.1f}°"
+                        )
+
+                # Track last actuator command info (same behavior as static tasks loop)
+                if generated_task.get('sequence') and len(generated_task['sequence']) > 0:
+                    last_cmd = generated_task['sequence'][-1]
+                    last_command = last_cmd.get('command')
+                    last_device = last_cmd.get('device')
+                    if last_command in ['pick_up', 'put_down'] and last_device in ['ESP_front', 'ESP_back']:
+                        self.last_task_command = last_command
+                        self.last_task_device = last_device
+
+                self.tasks.append(generated_task)
+                try:
+                    success = self.load_task_to_queues(generated_task['name'])
+                    if not success:
+                        self.get_logger().error(f"❌ Failed loading generated steal task: {generated_task['name']}")
+                        return False
+                finally:
+                    if generated_task in self.tasks:
+                        self.tasks.remove(generated_task)
+            return True
+
+        # Execute steals sequentially so each next steal uses updated state
+        for i in range(sx_count):
+            self.get_logger().info(f"🎯 SX steal {i+1}/{sx_count}")
+            generated_tasks = self.decision_maker.steal_batch(
+                batch_type='sx',
+                device=None,
+                min_members=1
+            )
+
+            if not generated_tasks:
+                self.get_logger().warning(
+                    f"⚠️ Could not generate SX steal task at iteration {i+1}/{sx_count}; stopping"
+                )
+                return i > 0
+
+            self.get_logger().info(
+                f"✅ Generated {len(generated_tasks)} task(s) for SX steal {i+1}/{sx_count}"
+            )
+
+            if not _enqueue_generated_tasks(generated_tasks, i + 1):
+                return False
+
+            # Run each steal cycle fully before generating the next one
+            self.wait_for_all_queues_empty(ignore_rasp_pi=True)
+
+        # keep compatibility with caller's wait flag (already executed sequential waits)
+        if wait:
+            self.wait_for_all_queues_empty(ignore_rasp_pi=True)
+
+        return True
+    
+    def interrupt_waiting(self):
+        """Set flag to interrupt all waiting loops.
+        This allows stopping wait_for_all_queues_empty() and other blocking operations
+        to handle emergency situations like enemy detection."""
+        self.interrupt_wait = True
+        self.get_logger().info("🛑 Wait interrupt triggered - will exit waiting loops")
+    
+    def clear_interrupt(self):
+        """Clear the interrupt flag after handling emergency."""
+        self.interrupt_wait = False
+        self.load_task_to_queues_ended = False
+        self.stm32_task_wait_ended = False
+        self.get_logger().info("✅ Wait interrupt cleared")
 
 def reset_systems(pneumatic_controller,front_controller,back_controller,stm32_controller=None,strategy=None,immediate=False,xd=True):
     """Reset all systems - can queue or execute immediately"""
@@ -422,7 +624,6 @@ def main(args=None):
     strategy.get_logger().info("Resetting STM32...")
     rpi.reset_stm32()
     strategy.get_logger().info("Resetting pneumatic, ESP back, and ESP front...")
-    time.sleep(5)
     rpi.reset_all_esps()
     # Wait longer for STM32 to boot and connect to micro-ROS agent
     strategy.get_logger().info("Waiting for STM32 to boot and connect to micro-ROS agent...")
@@ -439,7 +640,6 @@ def main(args=None):
     
      # Start background threads for each device
     strategy.get_logger().info("Starting background threads...")
-    
     # Reset ArUco stability in background thread (after executor starts spinning)
     def reset_aruco_stability():
         time.sleep(0.5)  # Wait for executor to start
@@ -535,19 +735,28 @@ def main(args=None):
         # Spin executor briefly to initialize publishers before sending reset
         for _ in range(5):
             executor.spin_once(timeout_sec=0.01)
+
+        # Ensure startup reset/clear completes before the first update_map.
+        # Without this wait, update_map can run first and then get wiped by the
+        # delayed reset thread, which breaks the expected first-update flow.
+        if reset_thread.is_alive():
+            strategy.get_logger().info("Waiting for reset/clear map startup sequence to finish...")
+            reset_thread.join(timeout=5.0)
+            if reset_thread.is_alive():
+                strategy.get_logger().warning("Startup reset thread did not finish before update_map timeout")
         
         #reset_systems(pneumatic,front,back,None,strategy,True,False)
-        #time.sleep(2)
+        time.sleep(1)
         strategy.pathfinder.update_map()
         # Execute tasks sequentially
         # Start a thread to execute tasks one by one
         def execute_tasks_sequentially():
-            for task in strategy.tasks:
+            # Execute all static tasks first
+            for idx, task in enumerate(strategy.tasks):
                 # Check if shutdown was requested
                 if executor_module.SHUTDOWN_REQUESTED:
                     strategy.get_logger().info("Shutdown requested, stopping task execution")
                     return
-                
                 # Check last command in task sequence
                 if task.get('sequence') and len(task['sequence']) > 0:
                     last_cmd = task['sequence'][-1]
@@ -590,7 +799,6 @@ def main(args=None):
                 
                 # Wait for all commands to complete
                 strategy.wait_for_all_queues_empty()
-        
         # Start task execution in a background thread
         task_executor_thread = threading.Thread(
             target=execute_tasks_sequentially,
@@ -634,7 +842,7 @@ def main(args=None):
                     # Stop STM32 and reset all systems immediately (not queued)
                     try:
                         strategy.get_logger().info("Stopping and resetting all systems...")
-                        #reset_systems(pneumatic,front,back,stm32,strategy,immediate=True)
+                        reset_systems(pneumatic,front,back,stm32,strategy,immediate=True)
                         time.sleep(0.5)
                     except Exception as e:
                         strategy.get_logger().error(f"Failed to stop/reset systems: {e}")

@@ -38,7 +38,6 @@ def generate_launch_description():
     web_handler_node = Node(
         package='hybrid_astar',
         executable='web_handler.py',
-        name='web_handler_node',
         output='screen',
         emulate_tty=True,
     )

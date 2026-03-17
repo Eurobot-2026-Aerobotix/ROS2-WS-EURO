@@ -6,7 +6,7 @@ from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped, Point,Vector3
 from nav_msgs.msg import Path
 
-from hybrid_astar.srv import ComputePath, GetBatchColorPattern, DeleteBatch
+from hybrid_astar.srv import ComputePath, GetBatchColorPattern, DeleteBatch, GetActiveBatches, PutDown
 from std_srvs.srv import Trigger
 
 class PathfinderClient(Node):
@@ -48,6 +48,16 @@ class PathfinderClient(Node):
             Trigger,
             '/clear_map'
         )
+        
+        self.get_active_batches_client = self.create_client(
+            GetActiveBatches,
+            '/pathfinder/get_active_batches'
+        )
+
+        self.put_down_client = self.create_client(
+            PutDown,
+            '/put_down'
+        )
 
         # Don't block on wait_for_service - it will timeout if service isn't available
         self.get_logger().info('Waiting for /compute_path service...')
@@ -86,6 +96,12 @@ class PathfinderClient(Node):
         else:
             self.get_logger().info('✅ /clear_map service is ready')
 
+        self.get_logger().info('Waiting for /put_down service...')
+        if not self.put_down_client.wait_for_service(timeout_sec=5.0):
+            self.get_logger().warning('⚠️  /put_down service not available after 5 seconds')
+        else:
+            self.get_logger().info('✅ /put_down service is ready')
+
         # Goal storage
         self.goal_x = None
         self.goal_y = None
@@ -95,10 +111,18 @@ class PathfinderClient(Node):
         self.enemy_x = None
         self.enemy_y = None
 
+        # Batch known_ids to ignore as obstacles during path computation
+        self.untracked_batches = []
+
         # Robot pose storage
         self.latest_robot_pose_x = None
         self.latest_robot_pose_y = None
         self.latest_robot_pose_theta = None
+
+        # Active batches cache (for fast fallback on transient service delays)
+        self.active_batches_cache = None
+        self.active_batches_cache_time = 0.0
+        self.active_batches_cache_ttl_s = 2.0
 
         # Subscribe to robot pose
         self.robot_pose_subscription = self.create_subscription(
@@ -156,33 +180,51 @@ class PathfinderClient(Node):
     # =========================================================
     # PATH PLANNING
     # =========================================================
-    def path(self):
+    def path(self, start_x=None, start_y=None, start_theta=None):
         """
         Plan a path from current robot position to stored goal position
         Uses latest robot pose from /robot_pose_raw and stored goal from set_goal()
+        unless an explicit start pose is provided.
+
+        Args:
+            start_x: Optional start X in meters
+            start_y: Optional start Y in meters
+            start_theta: Optional start yaw in radians
         
         Returns:
             stm32_commands (list[str]): List of formatted STM32 commands
             success (bool): Whether path planning succeeded
         """
-        # Check if robot pose is available
-        if self.latest_robot_pose_x is None or self.latest_robot_pose_y is None or self.latest_robot_pose_theta is None:
-            self.get_logger().error("No robot pose received yet!")
-            return [], False
+        # Resolve start pose source: explicit args if provided, otherwise latest robot pose
+        use_override_start = (
+            start_x is not None and start_y is not None and start_theta is not None
+        )
+
+        if use_override_start:
+            resolved_start_x = float(start_x)
+            resolved_start_y = float(start_y)
+            resolved_start_theta = float(start_theta)
+        else:
+            if self.latest_robot_pose_x is None or self.latest_robot_pose_y is None or self.latest_robot_pose_theta is None:
+                self.get_logger().error("No robot pose received yet!")
+                return [], False
+            resolved_start_x = self.latest_robot_pose_x
+            resolved_start_y = self.latest_robot_pose_y
+            resolved_start_theta = self.latest_robot_pose_theta
         
         # Check if goal is set
         if self.goal_x is None or self.goal_y is None or self.goal_angle is None:
             self.get_logger().error("No goal set! Use set_goal(x, y, angle) first.")
             return [], False
         
-        # Create start pose from latest robot position
+        # Create start pose from resolved source
         start_pose = PoseStamped()
         start_pose.header.stamp = self.get_clock().now().to_msg()
         start_pose.header.frame_id = "map"
-        start_pose.pose.position.x = self.latest_robot_pose_x
-        start_pose.pose.position.y = self.latest_robot_pose_y
+        start_pose.pose.position.x = resolved_start_x
+        start_pose.pose.position.y = resolved_start_y
         start_pose.pose.position.z = 0.0
-        start_pose.pose.orientation = self._yaw_to_quaternion(self.latest_robot_pose_theta)
+        start_pose.pose.orientation = self._yaw_to_quaternion(resolved_start_theta)
         
         # Create goal pose from stored goal
         goal_pose = PoseStamped()
@@ -232,6 +274,7 @@ class PathfinderClient(Node):
         request = ComputePath.Request()
         request.start_pose = start_pose
         request.goal_pose = goal_pose
+        request.untracked_batches = list(self.untracked_batches)
 
         future = self.path_client.call_async(request)
         
@@ -254,6 +297,26 @@ class PathfinderClient(Node):
         else:
             self.get_logger().warning(f'⚠ Path failed: {response.message}')
             return [], False
+
+    def add_untracked_batch(self, known_id: str):
+        """Add a batch known_id to be ignored as obstacle during path planning."""
+        if not known_id:
+            return
+        if known_id not in self.untracked_batches:
+            self.untracked_batches.append(known_id)
+            self.get_logger().info(f"🙈 Added untracked batch for planning: {known_id}")
+
+    def remove_untracked_batch(self, known_id: str):
+        """Remove a known_id from untracked planning list."""
+        if known_id in self.untracked_batches:
+            self.untracked_batches.remove(known_id)
+            self.get_logger().info(f"👁️ Restored tracked batch for planning: {known_id}")
+
+    def clear_untracked_batches(self):
+        """Clear all untracked batch known_ids used for planning."""
+        if self.untracked_batches:
+            self.get_logger().info(f"🧹 Clearing untracked planning batches: {self.untracked_batches}")
+        self.untracked_batches.clear()
 
     # =========================================================
     # 2️⃣ UPDATE MAP
@@ -456,6 +519,124 @@ class PathfinderClient(Node):
         else:
             self.get_logger().warning(f'⚠️  Failed to delete batch "{known_id}": {response.message}')
             return False
+    
+    def get_active_batches(self):
+        """
+        Get information about all active batches
+        
+        Returns:
+            Dictionary with batch information arrays or None on error:
+            {
+                'known_ids': List[str],
+                'batch_types': List[str],  # 'fx', 'sx', 'gx'
+                'member_counts': List[int],
+                'directions': List[str],  # 'horizontal', 'vertical', or ''
+                'centers': List[Point],
+                'qualities': List[int]
+            }
+        """
+        import time
+
+        # If service is not ready, return fresh-enough cache immediately
+        if not self.get_active_batches_client.service_is_ready():
+            now = time.time()
+            if self.active_batches_cache is not None and (now - self.active_batches_cache_time) <= self.active_batches_cache_ttl_s:
+                self.get_logger().warning('⚠️ /pathfinder/get_active_batches not ready, using cached active batches')
+                return self.active_batches_cache
+            self.get_logger().error('❌ /pathfinder/get_active_batches service not ready')
+            return None
+
+        request = GetActiveBatches.Request()
+        future = self.get_active_batches_client.call_async(request)
+
+        # Keep this call responsive: short timeout, then fallback to cache
+        timeout_sec = 1.5
+        rclpy.spin_until_future_complete(self, future, timeout_sec=timeout_sec)
+
+        if not future.done() or not future.result():
+            now = time.time()
+            if self.active_batches_cache is not None and (now - self.active_batches_cache_time) <= self.active_batches_cache_ttl_s:
+                self.get_logger().warning(
+                    f'⚠️ Get active batches delayed (> {timeout_sec:.1f}s), using cache '
+                    f'age={now - self.active_batches_cache_time:.2f}s'
+                )
+                return self.active_batches_cache
+
+            self.get_logger().error(f'❌ Get active batches service call timed out after {timeout_sec:.1f}s (no cache)')
+            return None
+
+        response = future.result()
+
+        # Convert response to dictionary
+        batch_info = {
+            'known_ids': list(response.known_ids),
+            'batch_types': list(response.batch_types),
+            'member_counts': list(response.member_counts),
+            'directions': list(response.directions),
+            'centers': list(response.centers),
+            'qualities': list(response.qualities)
+        }
+
+        # Refresh cache
+        self.active_batches_cache = batch_info
+        self.active_batches_cache_time = time.time()
+
+        self.get_logger().info(
+            f'📊 Retrieved {len(batch_info["known_ids"])} active batches: '
+            f'FX={batch_info["batch_types"].count("fx")}, '
+            f'SX={batch_info["batch_types"].count("sx")}'
+        )
+
+        return batch_info
+
+    # =========================================================
+    # 4️⃣ PUT DOWN BATCH (4 crates)
+    # =========================================================
+    def put_down(self, front: int = 1, color: str = 'yellow'):
+        """
+        Request /put_down to add a 4-member placed batch near robot pose.
+
+        Args:
+            front: 1 => front, 0 => back
+            color: 'yellow' or 'blue'
+
+        Returns:
+            success (bool), message (str), obstacle_ids (list[str])
+        """
+        # Check service readiness
+        if not self.put_down_client.service_is_ready():
+            self.get_logger().error('❌ /put_down service is not available!')
+            return False, 'Service not available', []
+
+        # Normalize input
+        direction = 1 if int(front) == 1 else 0
+        normalized_color = str(color).strip().lower()
+        if normalized_color not in ('yellow', 'blue'):
+            self.get_logger().error("❌ put_down color must be 'yellow' or 'blue'")
+            return False, "Invalid color (must be 'yellow' or 'blue')", []
+
+        request = PutDown.Request()
+        request.direction = direction
+        request.color = normalized_color
+
+        future = self.put_down_client.call_async(request)
+        rclpy.spin_until_future_complete(self, future, timeout_sec=5.0)
+
+        if not future.done():
+            self.get_logger().error('❌ put_down service call timed out after 5s')
+            return False, 'Timeout', []
+
+        if not future.result():
+            self.get_logger().error('❌ put_down service call failed')
+            return False, 'No response', []
+
+        response = future.result()
+        if response.success:
+            self.get_logger().info(f"✅ put_down success: {response.message}")
+            return True, response.message, list(response.obstacle_ids)
+
+        self.get_logger().warning(f"⚠️ put_down failed: {response.message}")
+        return False, response.message, []
 
 
 def main(args=None):

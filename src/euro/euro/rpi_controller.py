@@ -112,7 +112,6 @@ class RPiController(Node):
         # Wait until pin 17 goes LOW (jbeda l tirtette)
         while self.button_device.value:
             time.sleep(0.01)  # 10ms polling
-        
         value = self.button_device.value
         
         return value

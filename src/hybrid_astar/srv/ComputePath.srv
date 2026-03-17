@@ -1,6 +1,7 @@
 # Request
 geometry_msgs/PoseStamped start_pose
 geometry_msgs/PoseStamped goal_pose
+string[] untracked_batches
 ---
 # Response
 nav_msgs/Path path

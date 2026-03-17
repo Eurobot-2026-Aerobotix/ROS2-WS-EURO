@@ -59,7 +59,14 @@ class HybridAStarPathfinder:
         
         # Precomputed footprint masks for each orientation
         self.footprints = {}
+        # Keep internal planner logs quiet by default.
+        # Main ROS node already logs request/response summaries and waypoints.
+        self.verbose = False
         self._precompute_footprints()
+
+    def _vprint(self, message: str):
+        if self.verbose:
+            print(message)
     
     def _precompute_footprints(self):
         """
@@ -67,7 +74,7 @@ class HybridAStarPathfinder:
         Each footprint is a list of (dx, dy) offsets in grid cells from robot center.
         This dramatically speeds up collision checking.
         """
-        print(f"🔧 Precomputing footprints for {self.num_orientations} orientations...")
+        self._vprint(f"🔧 Precomputing footprints for {self.num_orientations} orientations...")
         
         for theta_idx in range(self.num_orientations):
             theta = -math.pi + theta_idx * self.orientation_step
@@ -103,7 +110,7 @@ class HybridAStarPathfinder:
             self.footprints[theta_idx] = footprint
         
         avg_cells = sum(len(fp) for fp in self.footprints.values()) / len(self.footprints)
-        print(f"✅ Footprints precomputed (avg {avg_cells:.1f} cells per orientation)")
+        self._vprint(f"✅ Footprints precomputed (avg {avg_cells:.1f} cells per orientation)")
     
     def add_permanent_obstacle_area(self, x_min: float, y_min: float, 
                                      x_max: float, y_max: float):
@@ -135,9 +142,9 @@ class HybridAStarPathfinder:
         
         width = x_max - x_min
         height = y_max - y_min
-        print(f"🚫 Added permanent obstacle area: ({x_min:.0f},{y_min:.0f}) to ({x_max:.0f},{y_max:.0f})")
-        print(f"   Size: {width:.0f}mm × {height:.0f}mm")
-        print(f"   ⚠️ Grid indices will be calculated when obstacles are set with actual resolution")
+        self._vprint(f"🚫 Added permanent obstacle area: ({x_min:.0f},{y_min:.0f}) to ({x_max:.0f},{y_max:.0f})")
+        self._vprint(f"   Size: {width:.0f}mm × {height:.0f}mm")
+        self._vprint(f"   ⚠️ Grid indices will be calculated when obstacles are set with actual resolution")
     
     def set_obstacles(self, obstacles: List[dict], grid_resolution: float, static_walls: List[dict] = None):
         """
@@ -181,34 +188,34 @@ class HybridAStarPathfinder:
         if static_walls is None:
             static_walls = []
         
-        # Mark static walls first
+        # Mark static walls first (x/y are CENTER positions)
         for wall in static_walls:
-            x_world = wall['x']
-            y_world = wall['y']
+            x_world = wall['x']  # center X
+            y_world = wall['y']  # center Y
             width = wall['width']
             height = wall['height']
             
-            grid_x_start = int(x_world / grid_resolution)
-            grid_y_start = int(y_world / grid_resolution)
-            grid_x_end = int((x_world + width) / grid_resolution) + 1
-            grid_y_end = int((y_world + height) / grid_resolution) + 1
+            grid_x_start = int((x_world - width / 2.0) / grid_resolution)
+            grid_y_start = int((y_world - height / 2.0) / grid_resolution)
+            grid_x_end = int((x_world + width / 2.0) / grid_resolution) + 1
+            grid_y_end = int((y_world + height / 2.0) / grid_resolution) + 1
             
             grid_x_start = max(0, min(grid_x_start, self.grid_width - 1))
             grid_x_end = max(0, min(grid_x_end, self.grid_width))
             self.grid[grid_y_start:grid_y_end, grid_x_start:grid_x_end] = True
         
-        # Mark dynamic obstacles
+        # Mark dynamic obstacles (x/y are CENTER positions)
         for obstacle in obstacles:
-            x_world = obstacle['x']
-            y_world = obstacle['y']
+            x_world = obstacle['x']  # center X
+            y_world = obstacle['y']  # center Y
             width = obstacle['width']
             height = obstacle['height']
             
-            # Convert to grid (no inflation)
-            grid_x_start = int(x_world / grid_resolution)
-            grid_y_start = int(y_world / grid_resolution)
-            grid_x_end = int((x_world + width) / grid_resolution) + 1
-            grid_y_end = int((y_world + height) / grid_resolution) + 1
+            # Convert to grid using center ± half-size
+            grid_x_start = int((x_world - width / 2.0) / grid_resolution)
+            grid_y_start = int((y_world - height / 2.0) / grid_resolution)
+            grid_x_end = int((x_world + width / 2.0) / grid_resolution) + 1
+            grid_y_end = int((y_world + height / 2.0) / grid_resolution) + 1
             
             # Clamp to boundaries
             grid_x_start = max(0, min(grid_x_start, self.grid_width - 1))
@@ -221,7 +228,7 @@ class HybridAStarPathfinder:
         
         num_static = len(static_walls) if static_walls else 0
         num_permanent = len(self.permanent_obstacles)
-        print(f"✓ Set {len(obstacles)} dynamic obstacles + {num_static} static walls + {num_permanent} permanent areas")
+        self._vprint(f"✓ Set {len(obstacles)} dynamic obstacles + {num_static} static walls + {num_permanent} permanent areas")
     
     def get_robot_corners(self, x: float, y: float, theta: float) -> List[Tuple[float, float]]:
         """
@@ -399,36 +406,36 @@ class HybridAStarPathfinder:
         start_x, start_y, start_theta = start_pose
         goal_x, goal_y, goal_theta = goal_pose
         
-        print(f"🚀 Starting Hybrid A* search...")
-        print(f"   Start: ({start_x:.1f}, {start_y:.1f}, {math.degrees(start_theta):.1f}°)")
-        print(f"   Goal: ({goal_x:.1f}, {goal_y:.1f}, {math.degrees(goal_theta):.1f}°)")
+        self._vprint(f"🚀 Starting Hybrid A* search...")
+        self._vprint(f"   Start: ({start_x:.1f}, {start_y:.1f}, {math.degrees(start_theta):.1f}°)")
+        self._vprint(f"   Goal: ({goal_x:.1f}, {goal_y:.1f}, {math.degrees(goal_theta):.1f}°)")
         if allow_goal_collision:
-            print(f"   🎯 Goal collision allowed (batch pickup mode)")
+            self._vprint(f"   🎯 Goal collision allowed (batch pickup mode)")
         
         # Check start/goal validity
         start_collision = self.is_collision(start_x, start_y, start_theta, grid_resolution)
         if start_collision:
-            print(f"✗ Start position ({start_x:.1f}, {start_y:.1f}) is in collision!")
+            self._vprint(f"✗ Start position ({start_x:.1f}, {start_y:.1f}) is in collision!")
             # Check which grid cell
             gx = int(start_x / grid_resolution)
             gy = int(start_y / grid_resolution)
-            print(f"   Grid cell: ({gx}, {gy})")
+            self._vprint(f"   Grid cell: ({gx}, {gy})")
             if 0 <= gx < self.grid_width and 0 <= gy < self.grid_height:
-                print(f"   Grid occupied: {self.grid[gy, gx]}")
+                self._vprint(f"   Grid occupied: {self.grid[gy, gx]}")
             return None
         
         goal_collision = self.is_collision(goal_x, goal_y, goal_theta, grid_resolution)
         if goal_collision and not allow_goal_collision:
-            print(f"✗ Goal position ({goal_x:.1f}, {goal_y:.1f}) is in collision!")
+            self._vprint(f"✗ Goal position ({goal_x:.1f}, {goal_y:.1f}) is in collision!")
             # Check which grid cell
             gx = int(goal_x / grid_resolution)
             gy = int(goal_y / grid_resolution)
-            print(f"   Grid cell: ({gx}, {gy})")
+            self._vprint(f"   Grid cell: ({gx}, {gy})")
             if 0 <= gx < self.grid_width and 0 <= gy < self.grid_height:
-                print(f"   Grid occupied: {self.grid[gy, gx]}")
+                self._vprint(f"   Grid occupied: {self.grid[gy, gx]}")
             return None
         elif goal_collision and allow_goal_collision:
-            print(f"⚠ Goal position ({goal_x:.1f}, {goal_y:.1f}) is in collision, but proceeding (batch pickup mode)")
+            self._vprint(f"⚠ Goal position ({goal_x:.1f}, {goal_y:.1f}) is in collision, but proceeding (batch pickup mode)")
         
         # Priority queue: (f_score, counter, pose)
         counter = 0
@@ -458,7 +465,7 @@ class HybridAStarPathfinder:
             #                            math.cos(current_theta - goal_theta)))
             
             if dist_to_goal < goal_tolerance:  # Only check position, not angle
-                print(f"✅ Path found in {iterations} iterations!")
+                self._vprint(f"✅ Path found in {iterations} iterations!")
                 path = self._reconstruct_path(came_from, current)
                 
                 # ALWAYS ensure final waypoint is at exact goal position
@@ -476,14 +483,14 @@ class HybridAStarPathfinder:
                                                            grid_resolution):
                                 # Replace last waypoint with exact goal
                                 path[-1] = (goal_x, goal_y, goal_theta)
-                                print(f"✓ Set final waypoint to exact goal at ({goal_x:.1f}, {goal_y:.1f})")
+                                self._vprint(f"✓ Set final waypoint to exact goal at ({goal_x:.1f}, {goal_y:.1f})")
                             else:
                                 # Path blocked - try adding as separate waypoint
                                 if len(path) > 1:
                                     path[-1] = (goal_x, goal_y, goal_theta)
-                                    print(f"⚠ Forced final waypoint to exact goal (path may need validation)")
+                                    self._vprint(f"⚠ Forced final waypoint to exact goal (path may need validation)")
                         else:
-                            print(f"⚠ Goal position in collision, keeping approximate waypoint")
+                            self._vprint(f"⚠ Goal position in collision, keeping approximate waypoint")
                 
                 return path
             
@@ -491,8 +498,30 @@ class HybridAStarPathfinder:
                 continue
             closed_set.add(current_discrete)
             
-            # Expand forward only (rotate-in-place handles orientation changes)
-            for is_forward in [True]:
+            # Determine if robot should move forward or backward based on orientation to goal
+            # Calculate angle to goal from current position
+            dx_to_goal = goal_x - current_x
+            dy_to_goal = goal_y - current_y
+            angle_to_goal = math.atan2(dy_to_goal, dx_to_goal)
+            
+            # Calculate angle difference (how much robot is facing away from goal)
+            angle_diff = angle_to_goal - current_theta
+            # Normalize to [-pi, pi]
+            while angle_diff > math.pi:
+                angle_diff -= 2 * math.pi
+            while angle_diff < -math.pi:
+                angle_diff += 2 * math.pi
+            
+            # If robot is facing significantly away from goal (> 90°), allow backward movement
+            # This helps when starting at 180° from goal direction
+            allow_backward = abs(angle_diff) > math.radians(90)
+            
+            # Expand both forward and (optionally) backward
+            directions = [True]
+            if allow_backward:
+                directions.append(False)
+            
+            for is_forward in directions:
                 for new_x, new_y, new_theta, move_cost in self.get_motion_primitives(
                     current_x, current_y, current_theta, grid_resolution, is_forward
                 ):
@@ -511,7 +540,7 @@ class HybridAStarPathfinder:
                         heapq.heappush(open_set, (f_score, counter, new_pose))
                         counter += 1
         
-        print(f"✗ No path found after {iterations} iterations")
+        self._vprint(f"✗ No path found after {iterations} iterations")
         return None
     
     def _reconstruct_path(self, came_from: dict, current: Tuple[float, float, float]) -> List[Tuple[float, float, float]]:

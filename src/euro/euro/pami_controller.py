@@ -136,6 +136,7 @@ class PamiController(Node):
             msg: Strategy message to publish
             max_retries: Maximum number of retry attempts
         """
+        max_retries = 3
         strategy_topic = f'/pami{pami_number}/strategy'
         
         for attempt in range(1, max_retries + 1):
