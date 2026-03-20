@@ -25,6 +25,8 @@ import json
 import requests
 import socket
 import uuid
+import threading
+import time
 from typing import List, Dict, Optional
 import sys
 import os
@@ -106,6 +108,26 @@ class PathfinderAdapter:
             'theta_deg': math.degrees(theta)
         }
         self.goal_angle = theta
+
+    def _wait_future(self, future, timeout_sec: float) -> bool:
+        """
+        Wait for a service future safely.
+
+        - Main thread: use spin_until_future_complete.
+        - Background thread: poll `future.done()` to avoid nested wait-set issues.
+        """
+        import rclpy
+
+        if threading.current_thread() is threading.main_thread():
+            rclpy.spin_until_future_complete(self.web_handler, future, timeout_sec=timeout_sec)
+            return future.done()
+
+        deadline = time.monotonic() + timeout_sec
+        while time.monotonic() < deadline:
+            if future.done():
+                return True
+            time.sleep(0.005)
+        return future.done()
         
     def path(self, start_x=None, start_y=None, start_theta=None):
         """Generate path - returns (stm32_commands, success)
@@ -169,12 +191,8 @@ class PathfinderAdapter:
             
             # Call service
             future = self.compute_path_client.call_async(request)
-            
-            # Use proper spinning
-            import rclpy
-            rclpy.spin_until_future_complete(self.web_handler, future, timeout_sec=10.0)
-            
-            if not future.done():
+
+            if not self._wait_future(future, timeout_sec=10.0):
                 self.web_handler.get_logger().error('❌ Path computation timeout')
                 return [], False
             
@@ -198,6 +216,42 @@ class PathfinderAdapter:
             import traceback
             self.web_handler.get_logger().error(traceback.format_exc())
             return [], False
+
+    def update_map(self):
+        """
+        Trigger map update in hybrid_astar via /update_map service.
+
+        Returns:
+            (success: bool, message: str)
+        """
+        client = self.web_handler.update_map_client
+        if not client.service_is_ready():
+            self.web_handler.get_logger().warning('⚠️ /update_map service is not ready')
+            return False, 'Service not available'
+
+        try:
+            request = Trigger.Request()
+            future = client.call_async(request)
+
+            if not self._wait_future(future, timeout_sec=10.0):
+                self.web_handler.get_logger().error('❌ /update_map timeout')
+                return False, 'Timeout'
+
+            response = future.result()
+            if response is None:
+                self.web_handler.get_logger().error('❌ /update_map failed - no response')
+                return False, 'No response'
+
+            if response.success:
+                self.web_handler.get_logger().info(f'✅ Map updated: {response.message}')
+                return True, response.message
+
+            self.web_handler.get_logger().warning(f'⚠️ Map update failed: {response.message}')
+            return False, response.message
+
+        except Exception as e:
+            self.web_handler.get_logger().error(f'❌ Error calling /update_map: {e}')
+            return False, str(e)
     
     def get_active_batches(self):
         """
@@ -215,11 +269,8 @@ class PathfinderAdapter:
         try:
             # Call service and spin until complete (allows executor to process)
             future = self.get_active_batches_client.call_async(request)
-            
-            import rclpy
-            rclpy.spin_until_future_complete(self.web_handler, future, timeout_sec=5.0)
-            
-            if not future.done():
+
+            if not self._wait_future(future, timeout_sec=5.0):
                 self.web_handler.get_logger().error('❌ Get active batches timeout')
                 return None
             
