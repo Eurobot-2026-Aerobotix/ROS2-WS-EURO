@@ -31,13 +31,15 @@ class TaskScheduler:
         "distance_to_enemy": 0.003,
         "number_of_opposite_crates": 1
     }
-    def __init__(self, map: Map, pathfinder_client=None, ros_node=None):
+    def __init__(self, map: Map, pathfinder_client=None, ros_node=None, loop_period_s: float = 0.05):
         self.map = map
         self.pathfinder = pathfinder_client
         self.task_queue: List[Task] = []
         self.tracked_task: Task = None
         self.tracked_task_invalid = False
         self._map_qos = 10
+        self._loop_period_s = float(loop_period_s)
+        self._loop_timer = None
 
         # Explicit ROS wiring only:
         # - If a node is provided and map is a plain data-map, attach subscribers on it.
@@ -45,6 +47,14 @@ class TaskScheduler:
         # - No internal node/executor is created by TaskScheduler.
         if ros_node is not None:
             self.attach_map_subscribers(ros_node, self._map_qos)
+            self.attach_loop_timer(ros_node, self._loop_period_s)
+
+    def attach_loop_timer(self, ros_node, period_s: float = 0.05) -> None:
+        """Attach periodic scheduler `loop()` timer on provided ROS node."""
+        if self._loop_timer is not None:
+            return
+        self._loop_period_s = max(0.01, float(period_s))
+        self._loop_timer = ros_node.create_timer(self._loop_period_s, self.loop)
 
     def attach_map_subscribers(self, ros_node, qos: int = 10) -> None:
         """
