@@ -212,6 +212,7 @@ class Map:
         self.robot_front_empty = True
         self.robot_back_empty = True
         self.nest_position = Pose2D(x=0.2, y=2.7)  # Assuming nest is at origin for simplicity
+        self.ninja_on_map = True
         self._subscriptions = []
         self._update_map_timer = None
         self._round_update_start_s = 5.0
@@ -415,6 +416,7 @@ class Map:
         return self.batches.get(known_id)
 
     def update_drop_off_status(self, drop_off_id: str, status: str) -> None:
+        #TODO update from update batch
         if drop_off_id in self.drop_offs:
             self.drop_offs[drop_off_id]["status"] = status
     
@@ -428,9 +430,16 @@ class Map:
         self.robot_color = color
         if color == "blue":
             self.nest_position = Pose2D(x=0.2, y=2.7)  # Blue nest at origin
+    
+    def set_ninja_status(self, on_map: bool) -> None:
+        self.ninja_on_map = on_map
 
     def distance_from(self, point_1: Pose2D, point_2: Pose2D) -> float:
         return ((point_1.x - point_2.x) ** 2 + (point_1.y - point_2.y) ** 2) ** 0.5
+
+    def calculate_number_of_obstacles_to(self, target_pos: Pose2D) -> int:
+        """Calculate the number of obstacles between the robot and a target position."""
+        return 0
 
     # -----------------------------
     # ROS topic integration
