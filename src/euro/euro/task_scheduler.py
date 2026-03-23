@@ -35,6 +35,7 @@ class TaskScheduler:
         self.map = map
         self.pathfinder = pathfinder_client
         self.task_queue: List[Task] = []
+        self.rpi_queue: List[Dict[str, Any]] = []
         self.tracked_task: Task = None
         self.tracked_task_invalid = False
         self._map_qos = 10
@@ -689,6 +690,112 @@ class TaskScheduler:
         }
 
         return [putdown_task, putdown_insert_task]
+
+    def _select_pickup_face(self) -> Optional[str]:
+        """Choose pickup face based on current holder availability."""
+        if self.map.robot_front_empty:
+            return 'front'
+        if self.map.robot_back_empty:
+            return 'back'
+        return None
+
+    def _select_pickup_pose_selector(self, task: Task) -> int:
+        """Choose pickup pose selector (0/1) using task options or robot proximity."""
+        normalized_id = str(task.target_id).upper()
+        poses = self.map.pickup_poses.get(normalized_id, [])
+        if len(poses) <= 1:
+            return 0
+
+        # If task already contains chosen point (from choose_side), map it to nearest pose.
+        if 'x' in task.options and 'y' in task.options:
+            tx = float(task.options['x'])
+            ty = float(task.options['y'])
+        else:
+            tx = float(self.map.robot_position.x)
+            ty = float(self.map.robot_position.y)
+
+        sorted_poses = sorted(poses, key=lambda p: p['x'])
+
+        def _d2(p):
+            return (float(p['x']) - tx) ** 2 + (float(p['y']) - ty) ** 2
+
+        best_idx = min(range(len(sorted_poses)), key=lambda i: _d2(sorted_poses[i]))
+        return 0 if best_idx == 0 else 1
+
+    def _select_putdown_device(self, task: Task) -> Optional[str]:
+        """Choose putdown device based on holder occupancy (front/back)."""
+        drop_pref = str(task.options.get('drop', '')).lower()
+        if drop_pref in ('front', 'back'):
+            return drop_pref
+
+        # Prefer dropping what is currently held.
+        if not self.map.robot_front_empty:
+            return 'front'
+        if not self.map.robot_back_empty:
+            return 'back'
+        return None
+
+    def get_optimal_task(self, start_pose: Optional[Dict[str, float]] = None) -> Optional[List[Dict[str, Any]]]:
+        """
+        Pop the best scored high-level task, build executable task(s), and enqueue them in `rpi_queue`.
+
+        Returns:
+            List of executable task dict(s) that were enqueued, or None if no valid task.
+        """
+        task = self.pop_task()
+        if task is None:
+            return None
+
+        generated_tasks: Optional[List[Dict[str, Any]]] = None
+
+        if task.type == 'pickup':
+            pickup_face = self._select_pickup_face()
+            if pickup_face is None:
+                self.tracked_task_invalid = True
+                return None
+
+            pose_selector = self._select_pickup_pose_selector(task)
+            pickup_task = self.build_pickup_task(
+                batch_known_id=str(task.target_id),
+                pickup_face=pickup_face,
+                pose_selector=pose_selector,
+                start_pose=start_pose,
+            )
+            if pickup_task is not None:
+                generated_tasks = [pickup_task]
+
+        elif task.type == 'dropoff':
+            device = self._select_putdown_device(task)
+            if device is None:
+                self.tracked_task_invalid = True
+                return None
+
+            zone = self.map.drop_offs.get(str(task.target_id).lower())
+            if zone is None:
+                self.tracked_task_invalid = True
+                return None
+
+            target_x = float(task.options.get('x', zone['x']))
+            target_y = float(task.options.get('y', zone['y']))
+
+            generated_tasks = self.build_put_down(
+                batch_known_id=str(task.target_id),
+                x=target_x,
+                y=target_y,
+                device=device,
+                start_pose=start_pose,
+            )
+
+        else:
+            # Only pickup/dropoff are converted here.
+            return None
+
+        if not generated_tasks:
+            self.tracked_task_invalid = True
+            return None
+
+        self.rpi_queue.extend(generated_tasks)
+        return generated_tasks
     
     def loop(self) -> None:
         """Main loop to update tasks based on the current map state."""
