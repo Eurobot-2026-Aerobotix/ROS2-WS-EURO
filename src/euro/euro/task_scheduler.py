@@ -1,6 +1,10 @@
 import math
 import re
-from simple_map import Map, Pose2D
+try:
+    from .simple_map import Map, Pose2D
+except ImportError:
+    # Fallback for direct execution in development contexts.
+    from simple_map import Map, Pose2D
 from typing import Any, List, Dict, Optional
 from dataclasses import dataclass, field
 
@@ -181,7 +185,19 @@ class TaskScheduler:
     def calculate_score(self, task: Task) -> float:
         """Calculate a score for the given task based on the current map state."""
         # Placeholder scoring logic - can be expanded with more complex heuristics
-        target_pos = Pose2D(x=self.map.batches[task.target_id].x, y=self.map.batches[task.target_id].y)
+        if task.type == "pickup":
+            batch = self.map.batches.get(task.target_id)
+            if batch is None:
+                return float("-inf")
+            target_pos = Pose2D(x=batch.x, y=batch.y)
+        elif task.type == "dropoff":
+            dropoff = self.map.drop_offs.get(task.target_id)
+            if dropoff is None:
+                return float("-inf")
+            target_pos = Pose2D(x=float(dropoff["x"]), y=float(dropoff["y"]))
+        else:
+            return 0.0
+
         score = 0.0
         if self.predicted_enemy_goal != "unknown" and task.target_id == self.predicted_enemy_goal:
             score += self.coeffs["is_enemy_goal"] * (self.map.distance_from(self.map.robot_position, target_pos) - self.map.distance_from(self.map.enemy_absolute, target_pos))
@@ -194,7 +210,10 @@ class TaskScheduler:
         else:
             score += self.coeffs["distance_to_enemy"] * 1000.0  # If enemy not detected, assume far away
         if task.type == "pickup":
-            score += self.coeffs["number_of_opposite_crates"] * (len(self.map.batches[task.target_id]) - self.map.batches[task.target_id].color.count(self.map.robot_color[0]))
+            batch = self.map.batches.get(task.target_id)
+            if batch is not None:
+                pattern = str(batch.color or "")
+                score += self.coeffs["number_of_opposite_crates"] * (len(pattern) - pattern.count(self.map.robot_color[0]))
         return score
     
     def choose_side(self, task: Task) -> bool:
@@ -336,23 +355,24 @@ class TaskScheduler:
         # generate dropoff tasks if we have crates in the robot
         if not self.map.robot_front_empty or not self.map.robot_back_empty:
             for dropoff_id, dropoff in self.map.drop_offs.items():
-                if dropoff_id in ["f3", "f5", "f8"] or dropoff["status"] == "empty":
-                    task = Task(target_id=dropoff_id, type="dropoff")
-                    task.score = self.calculate_score(task)
-                    if (self.choose_side(task)):
-                        queue.append(task)
+                if dropoff_id in ["f3", "f5", "f8"] or dropoff["status"] != "empty":
+                    continue
+                task = Task(target_id=dropoff_id, type="dropoff")
+                task.score = self.calculate_score(task)
+                if (self.choose_side(task)):
+                    queue.append(task)
         
-        if self.tracked_task != None and self.tracked_task.target_id in queue.keys():
-            queue.remove(self.tracked_task.target_id)
+        if self.tracked_task is not None:
+            queue = [t for t in queue if t.target_id != self.tracked_task.target_id]
+
         if self.map.ninja_on_map:
-            if self.map.robot_color == "blue":
-                queue.remove("f7")
-            else:
-                queue.remove("f4")
+            blocked_id = "f7" if self.map.robot_color == "blue" else "f4"
+            queue = [t for t in queue if t.target_id != blocked_id]
+
         # sorting tasks
         queue.sort(key=lambda t: t.score, reverse=True)
 
-        queue = [t for t in queue if t.batch_id[0] == "s"] + [t for t in queue if t.batch_id[0] == "f"]
+        queue = [t for t in queue if t.target_id[0] == "s"] + [t for t in queue if t.target_id[0] == "f"]
 
         if self.map.get_time_left() < self.must_dropoff_time:
             # If time is running out, prioritize dropoff tasks
@@ -371,6 +391,9 @@ class TaskScheduler:
     
     def check_tracked_task_validity(self) -> Optional[str]:
         """Check the validity of the currently tracked task."""
+        if self.tracked_task is None:
+            return
+
         if self.tracked_task.type == "pickup":
             batch = self.map.batches.get(self.tracked_task.target_id)
             if batch is None:
@@ -381,6 +404,9 @@ class TaskScheduler:
                 return
         elif self.tracked_task.type == "dropoff":
             dropoff = self.map.drop_offs.get(self.tracked_task.target_id)
+            if dropoff is None:
+                self.tracked_task_invalid = True
+                return
             if dropoff["status"] != "empty" and dropoff["type"] != "center":
                 self.tracked_task_invalid = True
                 return

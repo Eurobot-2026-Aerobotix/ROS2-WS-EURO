@@ -39,9 +39,10 @@ from aruco_mapper_msgs.msg import ArucoMapperState, Batch, BatchMember
 from aruco_mapper_msgs.srv import GetStableBatches
 from hybrid_astar.srv import ComputePath, GetBatchColorPattern, GetActiveBatches
 
-# Import DecisionMaker from euro package
+# Import scheduler stack from euro package
 try:
-    from euro.decision_maker import DecisionMaker
+    from euro.simple_map import Map  # type: ignore[import]
+    from euro.task_scheduler import TaskScheduler  # type: ignore[import]
     from euro.front_systems_controller import FrontSystemsController
     from euro.back_systems_controller import BackSystemsController
     from euro.pneumatic_controller import PneumaticController
@@ -52,22 +53,15 @@ except ImportError:
     )
     if os.path.exists(euro_pkg_root) and euro_pkg_root not in sys.path:
         sys.path.insert(0, euro_pkg_root)
-    from euro.decision_maker import DecisionMaker
+    from euro.simple_map import Map  # type: ignore[import]
+    from euro.task_scheduler import TaskScheduler  # type: ignore[import]
     from euro.front_systems_controller import FrontSystemsController
     from euro.back_systems_controller import BackSystemsController
     from euro.pneumatic_controller import PneumaticController
 
 
-class RobotPose:
-    """Simple robot pose container for DecisionMaker"""
-    def __init__(self, x=0.0, y=0.0, z=0.0):
-        self.x = x  # meters
-        self.y = y  # meters
-        self.z = z  # radians or degrees
-
-
 class PathfinderAdapter:
-    """Adapter to make WebHandler compatible with DecisionMaker's pathfinder interface"""
+    """Adapter to make WebHandler compatible with TaskScheduler pathfinder interface."""
     def __init__(self, web_handler, callback_group=None):
         self.web_handler = web_handler
         self.goal_angle = None
@@ -216,6 +210,19 @@ class PathfinderAdapter:
             import traceback
             self.web_handler.get_logger().error(traceback.format_exc())
             return [], False
+
+    def path_full(
+        self,
+        target_x: float,
+        target_y: float,
+        target_theta: float,
+        start_x: float = None,
+        start_y: float = None,
+        start_theta: float = None,
+    ):
+        """Plan path with explicit target and optional explicit start (same contract as euro PathfinderClient)."""
+        self.set_goal(float(target_x), float(target_y), float(target_theta))
+        return self.path(start_x=start_x, start_y=start_y, start_theta=start_theta)
 
     def update_map(self):
         """
@@ -542,12 +549,15 @@ class WebHandlerNode(Node):
         self.back_controller = BackSystemsController('web_back_systems_controller')
         self.pneumatic_controller = PneumaticController('web_pneumatic_controller')
         
-        # Robot pose tracking for DecisionMaker
-        self.latest_robot_pose = RobotPose()
-        
-        # Initialize DecisionMaker with reentrant callback group
+        # Initialize TaskScheduler stack for dynamic task generation from web.
         pathfinder_adapter = PathfinderAdapter(self, callback_group=self.reentrant_group)
-        self.decision_maker = DecisionMaker(self, pathfinder_adapter)
+        self.scheduler_map = Map(round_timer=None)
+        self.task_scheduler = TaskScheduler(
+            map=self.scheduler_map,
+            pathfinder_client=pathfinder_adapter,
+            ros_node=self,
+            loop_period_s=0.05,
+        )
         
         self.get_logger().info("=" * 60)
         self.get_logger().info("🌐 Web Handler Node Ready!")
@@ -562,7 +572,7 @@ class WebHandlerNode(Node):
         self.get_logger().info("   - /web/goal_pose")
         self.get_logger().info("   - /web/enemy_pose → /obstacle_relative")
         self.get_logger().info("   - /web/compute_path")
-        self.get_logger().info("   - /web/steal_batch (DecisionMaker)")
+        self.get_logger().info("   - /web/steal_batch (TaskScheduler)")
         self.get_logger().info("   - /web/test_controller (manual euro controllers)")
         self.get_logger().info("   Services:")
         self.get_logger().info("   - /aruco_mapper/get_stable_batches_web (provides batches to map)")
@@ -698,6 +708,14 @@ class WebHandlerNode(Node):
                 f"{self.start_pose['y_mm']:.0f}) mm, "
                 f"θ={self.start_pose['theta_deg']:.1f}°"
             )
+
+            # Keep scheduler map robot pose in sync (meters, degrees).
+            if hasattr(self, 'scheduler_map') and self.scheduler_map is not None:
+                self.scheduler_map.set_robot_position(
+                    self.mm_to_m(self.start_pose['x_mm']),
+                    self.mm_to_m(self.start_pose['y_mm']),
+                    float(self.start_pose['theta_deg']),
+                )
         except Exception as e:
             self.get_logger().error(f"❌ Error parsing start pose: {e}")
     
@@ -759,6 +777,15 @@ class WebHandlerNode(Node):
             self.get_logger().info(
                 f"📤 Published enemy obstacle to /obstacle_relative"
             )
+
+            # Keep scheduler map enemy state in sync (meters).
+            if hasattr(self, 'scheduler_map') and self.scheduler_map is not None:
+                self.scheduler_map.set_enemy_relative(
+                    self.mm_to_m(self.enemy_pose['x_mm']),
+                    self.mm_to_m(self.enemy_pose['y_mm']),
+                    theta=float(self.enemy_pose['theta_deg']),
+                    detected=True,
+                )
             
         except Exception as e:
             self.get_logger().error(f"❌ Error parsing enemy pose: {e}")
@@ -824,18 +851,22 @@ class WebHandlerNode(Node):
                 f"device={device or 'auto'}, min_members={min_members}"
             )
             
-            # Update robot pose from start pose if available
+            # Refresh scheduler once immediately, then generate best executable task set.
+            if hasattr(self, 'task_scheduler') and self.task_scheduler is not None:
+                self.task_scheduler.loop()
+
+            # Optional explicit start pose for path building (mm + degrees expected by TaskScheduler).
+            explicit_start_pose = None
             if self.start_pose:
-                self.latest_robot_pose.x = self.mm_to_m(self.start_pose['x_mm'])
-                self.latest_robot_pose.y = self.mm_to_m(self.start_pose['y_mm'])
-                self.latest_robot_pose.z = self.deg_to_rad(self.start_pose['theta_deg'])
-            
-            # Call DecisionMaker to steal batch
-            tasks = self.decision_maker.steal_batch(
-                batch_type=batch_type,
-                device=device,
-                min_members=min_members
-            )
+                explicit_start_pose = {
+                    'x': float(self.start_pose['x_mm']),
+                    'y': float(self.start_pose['y_mm']),
+                    'theta': float(self.start_pose['theta_deg']),
+                }
+
+            # Note: batch_type/device/min_members are currently informational for scheduler flow.
+            # TaskScheduler ranks by map state and returns one optimal task set.
+            tasks = self.task_scheduler.get_optimal_task(start_pose=explicit_start_pose) if hasattr(self, 'task_scheduler') else None
             
             if tasks:
                 # steal_batch now returns a list of tasks [pickup_task, putdown_task]
@@ -851,7 +882,7 @@ class WebHandlerNode(Node):
             else:
                 result = {
                     "success": False,
-                    "message": "No available batches to steal or path generation failed",
+                    "message": "No available scheduler task or task generation failed",
                     "tasks": None,
                     "task_count": 0
                 }
