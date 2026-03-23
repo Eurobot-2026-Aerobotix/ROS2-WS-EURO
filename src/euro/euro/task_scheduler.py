@@ -268,11 +268,9 @@ class TaskScheduler:
         if device_key in ('esp_front', 'front'):
             esp_device = 'ESP_front'
             stm_command = 'go_to'
-            is_back = False
         elif device_key in ('esp_back', 'back'):
             esp_device = 'ESP_back'
             stm_command = 'go_to_backwards'
-            is_back = True
         else:
             return None
 
@@ -361,12 +359,9 @@ class TaskScheduler:
             return [putdown_task]
 
         dist = max(0.0, float(insert_distance_mm))
-        if is_back:
-            insert_x = target_x - dist * math.cos(theta_to_center_rad)
-            insert_y = target_y - dist * math.sin(theta_to_center_rad)
-        else:
-            insert_x = target_x + dist * math.cos(theta_to_center_rad)
-            insert_y = target_y + dist * math.sin(theta_to_center_rad)
+        # Always insert toward the center, regardless of front/back device.
+        insert_x = target_x + dist * math.cos(theta_to_center_rad)
+        insert_y = target_y + dist * math.sin(theta_to_center_rad)
 
         putdown_insert_task = {
             'name': f'putdown_insert_{normalized_id}_{esp_device.split("_")[1]}',
