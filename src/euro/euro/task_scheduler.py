@@ -1,7 +1,8 @@
 import math
+import re
 from simple_map import Map
 from typing import Any, List, Dict, Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -9,8 +10,12 @@ class Task:
     """Represents a task for the robot to perform."""
     target_id: str
     type: str
-    options: Dict[str, str] = {}
+    options: Dict[str, str] = field(default_factory=dict)
     score: float = 0.0
+    # Runtime metadata for execution tracking
+    end_action: str = ""          # '', 'pick_up', or 'put_down'
+    batch_known_id: str = ""      # e.g. 's3', 'f5'
+    task_name: str = ""           # source task name from strategy list
 
 class TaskScheduler:
     """Simple task scheduler that generates tasks based on the current map state."""
@@ -82,6 +87,75 @@ class TaskScheduler:
         """Track the specified task."""
         self.tracked_task = task
         self.tracked_task_invalid = False
+
+    @staticmethod
+    def _infer_end_action_from_sequence(sequence: List[Dict[str, Any]]) -> str:
+        """Infer terminal actuator action from task sequence."""
+        if not sequence:
+            return ""
+        for cmd in reversed(sequence):
+            command = str(cmd.get('command', '')).strip().lower()
+            if command in ('pick_up', 'put_down'):
+                return command
+        return ""
+
+    @staticmethod
+    def _infer_batch_known_id_from_name(task_name: str) -> str:
+        """
+        Best-effort extraction of batch known_id from task name.
+
+        Supported prefixes:
+        - pickup_<known_id>_...
+        - putdown_<known_id>_...
+        - putdown_insert_<known_id>_...
+        - steal_<known_id>_...
+        """
+        if not task_name:
+            return ""
+
+        name = str(task_name).strip()
+        patterns = [
+            r'^pickup_([^_]+)_',
+            r'^putdown_insert_([^_]+)_',
+            r'^putdown_([^_]+)_',
+            r'^steal_([^_]+)_',
+        ]
+        for pattern in patterns:
+            m = re.match(pattern, name, flags=re.IGNORECASE)
+            if m:
+                return str(m.group(1)).lower()
+        return ""
+
+    def build_tracking_task_from_runtime_dict(self, runtime_task: Dict[str, Any]) -> Task:
+        """Build a `Task` instance from strategy runtime task dict for tracking."""
+        task_name = str(runtime_task.get('name', '') or '')
+        sequence = runtime_task.get('sequence', []) or []
+        end_action = self._infer_end_action_from_sequence(sequence)
+        batch_known_id = self._infer_batch_known_id_from_name(task_name)
+
+        inferred_type = 'runtime'
+        if end_action == 'pick_up':
+            inferred_type = 'pickup'
+        elif end_action == 'put_down':
+            inferred_type = 'dropoff'
+
+        target_id = batch_known_id if batch_known_id else task_name
+
+        return Task(
+            target_id=target_id,
+            type=inferred_type,
+            options={},
+            score=0.0,
+            end_action=end_action,
+            batch_known_id=batch_known_id,
+            task_name=task_name,
+        )
+
+    def track_runtime_task_dict(self, runtime_task: Dict[str, Any]) -> Task:
+        """Infer and track runtime task execution metadata from strategy-manager task dict."""
+        task = self.build_tracking_task_from_runtime_dict(runtime_task)
+        self.track_task(task)
+        return task
 
     def untrack_task(self) -> None:
         """Untrack the currently tracked task."""

@@ -48,7 +48,8 @@ last_stm_command=""
 PATH_PREPARED = False  # Flag indicating path is prepared in background
 PREPARING_PATH = False  # Flag indicating path preparation is in progress
 return_home_triggered = False  # Flag to ensure return home logic only triggers once
-
+known_id_front=None
+known_id_back=None
 
 def path_planning_task(strategy, lidar, round_timer, pneumatic_controller=None, front_controller=None, back_controller=None,stm32_controller=None):
     """Dedicated thread for handling return home at 90s"""
@@ -669,6 +670,8 @@ def stm32_task(strategy, stm32,lidar):
         
         time.sleep(0.1)  # 100ms
 def handle_color_pattner(strategy,front):
+    global known_id_back
+    global known_id_front
     """Handle color pattern retrieval"""
     x = strategy.latest_robot_pose.x
     y = strategy.latest_robot_pose.y
@@ -682,9 +685,8 @@ def handle_color_pattner(strategy,front):
     known_id = ''
 
     color_pattern, success, direction, batch_center, batch_known_id = strategy.pathfinder.get_batch_color(known_id, pos)
-    
     # Default to "yyyy" if no pattern received or failed
-    if not color_pattern or not success:
+    if not color_pattern or not success or len(color_pattern) != 4:
         color_pattern = "yyyy"
         strategy.get_logger().info(f"⚠️  No batch found or failed - defaulting to pattern: {color_pattern}")
     else:
@@ -697,7 +699,11 @@ def handle_color_pattner(strategy,front):
             strategy.get_logger().info(f"🗑️  Batch '{batch_known_id}' deleted from map after pickup")
         else:
             strategy.get_logger().warning(f"⚠️  Failed to delete batch '{batch_known_id}' from map")
-
+    if success and batch_known_id:
+        if front:
+            known_id_front = batch_known_id
+        else:
+            known_id_back = batch_known_id
     if success and batch_center:
         theta = math.degrees(z)  # Convert radians to degrees
         
