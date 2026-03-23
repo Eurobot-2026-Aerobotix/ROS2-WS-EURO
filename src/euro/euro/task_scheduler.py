@@ -28,8 +28,8 @@ class TaskScheduler:
         "is_enemy_goal": 0.001,
         "distance_to_goal": -0.001,
         "number_of_obstacles_between": -0.5,
-        "distance_to_enemy": 0.0005,
-        "number_of_opposite_crates": 0.1
+        "distance_to_enemy": 0.003,
+        "number_of_opposite_crates": 1
     }
     def __init__(self, map: Map, pathfinder_client=None, ros_node=None):
         self.map = map
@@ -88,10 +88,6 @@ class TaskScheduler:
             self.track_task(task)
             return task
         return None
-    
-    def check_return_home_flag(self) -> bool:
-        """Check if the return home flag is set."""
-        return self.return_home_flag
     
     def track_task(self, task: Task) -> None:
         """Track the specified task."""
@@ -364,8 +360,19 @@ class TaskScheduler:
     
     def check_tracked_task_validity(self) -> Optional[str]:
         """Check the validity of the currently tracked task."""
-        #TODO: Implement logic to check if the currently tracked task is still valid based on the current map state. Return a string indicating the reason for invalidity if it is no longer valid, or None if it is still valid.
-        self.tracked_task_invalid = False
+        if self.tracked_task.type == "pickup":
+            batch = self.map.batches.get(self.tracked_task.target_id)
+            if batch is None:
+                self.tracked_task_invalid = True
+                return
+            if (len(batch.color) != 4) or (batch.color.count(self.map.robot_color[0]) == 4):
+                self.tracked_task_invalid = True
+                return
+        elif self.tracked_task.type == "dropoff":
+            dropoff = self.map.drop_offs.get(self.tracked_task.target_id)
+            if dropoff["status"] != "empty" and dropoff["type"] != "center":
+                self.tracked_task_invalid = True
+                return
 
     def cancel_tracked_task(self) -> bool:
         return self.tracked_task_invalid
