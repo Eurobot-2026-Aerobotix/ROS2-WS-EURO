@@ -66,6 +66,7 @@ class PathfinderAdapter:
         self.web_handler = web_handler
         self.goal_angle = None
         self.untracked_batches = []
+        self._last_active_batches_count = None
         
         # Create service clients with callback group for concurrent execution
         self.get_active_batches_client = web_handler.create_client(
@@ -250,7 +251,7 @@ class PathfinderAdapter:
                 return False, 'No response'
 
             if response.success:
-                self.web_handler.get_logger().info(f'✅ Map updated: {response.message}')
+                self.web_handler.get_logger().debug(f'✅ Map updated: {response.message}')
                 return True, response.message
 
             self.web_handler.get_logger().warning(f'⚠️ Map update failed: {response.message}')
@@ -295,9 +296,16 @@ class PathfinderAdapter:
                 'qualities': list(response.qualities)
             }
             
-            self.web_handler.get_logger().info(
-                f'📊 Retrieved {len(batch_info["known_ids"])} active batches'
-            )
+            current_count = len(batch_info["known_ids"])
+            if current_count != self._last_active_batches_count:
+                self.web_handler.get_logger().info(
+                    f'📊 Retrieved {current_count} active batches'
+                )
+                self._last_active_batches_count = current_count
+            else:
+                self.web_handler.get_logger().debug(
+                    f'📊 Retrieved {current_count} active batches (unchanged)'
+                )
             
             return batch_info
             
@@ -543,6 +551,7 @@ class WebHandlerNode(Node):
         self.start_pose: Optional[Dict] = None
         self.goal_pose: Optional[Dict] = None
         self.enemy_pose: Optional[Dict] = None
+        self._last_web_batches_count: Optional[int] = None
 
         # TEST page controller instances from euro package
         self.front_controller = FrontSystemsController('web_front_systems_controller')
@@ -1069,7 +1078,7 @@ class WebHandlerNode(Node):
         Service handler for /aruco_mapper/get_stable_batches_web
         Fetches batches from the web server (server.py) and returns them as ArucoMapperState
         """
-        self.get_logger().info(f"🔍 GetStableBatches WEB service called (filter: '{request.batch_types_filter}')")
+        self.get_logger().debug(f"🔍 GetStableBatches WEB service called (filter: '{request.batch_types_filter}')")
         
         try:
             # Fetch batches from web server
@@ -1086,7 +1095,12 @@ class WebHandlerNode(Node):
             web_data = web_response.json()
             web_batches = web_data.get('batches', [])
             
-            self.get_logger().info(f"📦 Retrieved {len(web_batches)} batches from web server")
+            web_batch_count = len(web_batches)
+            if web_batch_count != self._last_web_batches_count:
+                self.get_logger().info(f"📦 Retrieved {web_batch_count} batches from web server")
+                self._last_web_batches_count = web_batch_count
+            else:
+                self.get_logger().debug(f"📦 Retrieved {web_batch_count} batches from web server (unchanged)")
             
             # Convert web batches to ArucoMapperState
             aruco_state = ArucoMapperState()
@@ -1144,7 +1158,7 @@ class WebHandlerNode(Node):
                 aruco_state.batches.append(batch)
             
             response.stable_state = aruco_state
-            self.get_logger().info(f"✅ Returning {len(aruco_state.batches)} batches to caller")
+            self.get_logger().debug(f"✅ Returning {len(aruco_state.batches)} batches to caller")
             return response
             
         except requests.RequestException as e:

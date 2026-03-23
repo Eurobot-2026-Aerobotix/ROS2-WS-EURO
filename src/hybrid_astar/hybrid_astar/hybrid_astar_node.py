@@ -74,6 +74,7 @@ class HybridAStarNode(Node):
         # Log deduplication - track last N messages to prevent spam
         self._last_log_messages = []
         self._max_log_history = 5
+        self._last_active_batches_signature = None
         
         # Load all parameters
         self.load_parameters()
@@ -1401,10 +1402,22 @@ class HybridAStarNode(Node):
             response.centers = batch_info['centers']
             response.qualities = batch_info['qualities']
             
-            self.get_logger().info(
-                f"📊 Active batches query: {len(response.known_ids)} batches "
-                f"(FX: {response.batch_types.count('fx')}, SX: {response.batch_types.count('sx')})"
+            signature = (
+                len(response.known_ids),
+                response.batch_types.count('fx'),
+                response.batch_types.count('sx'),
             )
+            if signature != self._last_active_batches_signature:
+                self.get_logger().info(
+                    f"📊 Active batches query: {signature[0]} batches "
+                    f"(FX: {signature[1]}, SX: {signature[2]})"
+                )
+                self._last_active_batches_signature = signature
+            else:
+                self.get_logger().debug(
+                    f"📊 Active batches query unchanged: {signature[0]} batches "
+                    f"(FX: {signature[1]}, SX: {signature[2]})"
+                )
             
         except Exception as e:
             self.get_logger().error(f"❌ Error getting active batches: {e}")

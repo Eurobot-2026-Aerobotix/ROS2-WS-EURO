@@ -41,6 +41,7 @@ class MapUpdater:
         self._last_state_log_s = 0.0
         self._last_update_map_call_s = 0.0
         self._last_get_active_batches_call_s = 0.0
+        self._last_synced_batch_count: Optional[int] = None
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -112,8 +113,12 @@ class MapUpdater:
 
             updated_count = self.map.update_batches_from_active_batch_info(batch_info)
             now = time.time()
-            if now - self._last_state_log_s >= 2.0:
+            if self._last_synced_batch_count != updated_count:
                 self.node.get_logger().info(f'🧠 SimpleMap batch sync: {updated_count} batches')
+                self._last_synced_batch_count = updated_count
+                self._last_state_log_s = now
+            elif now - self._last_state_log_s >= 10.0:
+                self.node.get_logger().debug(f'🧠 SimpleMap batch sync unchanged: {updated_count} batches')
                 self._last_state_log_s = now
 
         except Exception as exc:

@@ -38,6 +38,7 @@ class TaskScheduler:
     def __init__(self, map: Map, pathfinder_client=None, ros_node=None, loop_period_s: float = 0.05):
         self.map = map
         self.pathfinder = pathfinder_client
+        self.ros_node = ros_node
         self.task_queue: List[Task] = []
         self.rpi_queue: List[Dict[str, Any]] = []
         self.tracked_task: Task = None
@@ -770,7 +771,24 @@ class TaskScheduler:
         """
         task = self.pop_task()
         if task is None:
+            if self.ros_node is not None:
+                tracked = self.tracked_task.target_id if self.tracked_task is not None else 'none'
+                self.ros_node.get_logger().warning(
+                    f"⚠️ No task selected: queue is empty | batches={len(self.map.batches)} | tracked={tracked} | front_empty={self.map.robot_front_empty} | back_empty={self.map.robot_back_empty}"
+                )
+            else:
+                tracked = self.tracked_task.target_id if self.tracked_task is not None else 'none'
+                print(
+                    f"[TaskScheduler] No task selected: queue is empty | batches={len(self.map.batches)} | tracked={tracked} | front_empty={self.map.robot_front_empty} | back_empty={self.map.robot_back_empty}"
+                )
             return None
+
+        if self.ros_node is not None:
+            self.ros_node.get_logger().info(
+                f"🎯 Selected batch: id={task.target_id}, type={task.type}, score={task.score:.3f}"
+            )
+        else:
+            print(f"[TaskScheduler] Selected batch: id={task.target_id}, type={task.type}, score={task.score:.3f}")
 
         generated_tasks: Optional[List[Dict[str, Any]]] = None
 
@@ -818,6 +836,12 @@ class TaskScheduler:
 
         if not generated_tasks:
             self.tracked_task_invalid = True
+            if self.ros_node is not None:
+                self.ros_node.get_logger().warning(
+                    f"⚠️ Failed to build executable task for selected batch id={task.target_id}, type={task.type}"
+                )
+            else:
+                print(f"[TaskScheduler] Failed to build executable task for selected batch id={task.target_id}, type={task.type}")
             return None
 
         self.rpi_queue.extend(generated_tasks)

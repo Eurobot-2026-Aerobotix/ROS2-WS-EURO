@@ -1062,7 +1062,7 @@ class MapManager:
             
             filtered_batches = list(deduplicated_batches.values())
             if duplicates_found:
-                self.node.get_logger().info(f"✅ After deduplication: {len(filtered_batches)} unique batches")
+                self.node.get_logger().debug(f"✅ After deduplication: {len(filtered_batches)} unique batches")
             
             # Get known_ids from current response
             received_batch_ids = {batch.known_id for batch in filtered_batches}
@@ -1157,7 +1157,7 @@ class MapManager:
                                     f"🗑️  Removed {removed} obstacles from {len(disappeared_ids)} disappeared batches: {disappeared_ids}"
                                 )
                             elif fx_batches_ids:
-                                self.node.get_logger().info(
+                                self.node.get_logger().debug(
                                     f"🔄 Refreshing {len(fx_batches_ids)} FX batches (removed {removed} old obstacles)"
                                 )
                     else:
@@ -1306,7 +1306,7 @@ class MapManager:
                         f"📦 Map updated: FX={fx_count}, SX={sx_count}, Enemy={enemy_count}, Untracked={untracked_count}, Total={len(self.obstacles)}"
                     )
                 else:
-                    self.node.get_logger().info(
+                    self.node.get_logger().debug(
                         f"📦 Map updated: FX={fx_count}, SX={sx_count}, Enemy={enemy_count}, Total={len(self.obstacles)}"
                     )
             
@@ -1733,7 +1733,7 @@ class MapManager:
 
                 if source == 'fx':
                     member_count = len(batch.members) if batch.members else 0
-                    self.node.get_logger().info(
+                    self.node.get_logger().debug(
                         f"📦 FX batch '{batch.known_id}' received with {member_count} members"
                     )
                     if not batch.members:
