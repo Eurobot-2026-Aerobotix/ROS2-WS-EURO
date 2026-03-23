@@ -158,6 +158,10 @@ class Map:
     - Enemy relative obstacle
     """
 
+    robot_radius = 150.0  # Robot width is 300.
+    batch_radius = 100.0
+    enemy_radius = 170.0
+
     def __init__(self, round_timer: Optional[Any] = None, game_duration_s: float = 100.0):
         # Predefined batch positions from current hybrid_astar map
         self.predefined_batch_positions: Dict[str, Dict[str, float]] = {
@@ -390,6 +394,9 @@ class Map:
             phi_degrees=phi_degrees,
             color=color,
         )
+        if known_id[0] == "f" and known_id in self.drop_offs:
+            if color != "unknown":
+                self.drop_offs[known_id]["status"] = "full"
 
     def set_batch_from_predefined(self, known_id: str, color: str = "unknown") -> bool:
         """Create/update batch from predefined positions. Returns False if id is unknown."""
@@ -408,17 +415,16 @@ class Map:
 
     def remove_batch(self, known_id: str) -> None:
         self.batches.pop(known_id, None)
+        if known_id[0] == "f" and known_id in self.drop_offs:
+            self.drop_offs[known_id]["status"] = "empty"
 
     def clear_batches(self) -> None:
         self.batches.clear()
+        for dropoff in self.drop_offs.values():
+            dropoff["status"] = "empty"
 
     def get_batch(self, known_id: str) -> Optional[BatchInfo]:
         return self.batches.get(known_id)
-
-    def update_drop_off_status(self, drop_off_id: str, status: str) -> None:
-        #TODO update from update batch
-        if drop_off_id in self.drop_offs:
-            self.drop_offs[drop_off_id]["status"] = status
     
     def update_time_left(self, time_left: float) -> None:
         self.time_left = time_left
@@ -437,9 +443,60 @@ class Map:
     def distance_from(self, point_1: Pose2D, point_2: Pose2D) -> float:
         return ((point_1.x - point_2.x) ** 2 + (point_1.y - point_2.y) ** 2) ** 0.5
 
+    def check_collision(self, robot_pos: Pose2D, ignore_batch_id: Optional[str] = None, safety_margin: float = 0.0) -> bool:
+        """Return True when a robot placed at `robot_pos` intersects enemy or batch obstacles."""
+        px = float(robot_pos.x)
+        py = float(robot_pos.y)
+        clearance = self.robot_radius + float(safety_margin)
+
+        ignored_id = str(ignore_batch_id).lower() if ignore_batch_id is not None else None
+        for batch in self.batches.values():
+            if ignored_id is not None and str(batch.known_id).lower() == ignored_id:
+                continue
+            if math.hypot(px - float(batch.x), py - float(batch.y)) <= (clearance + self.batch_radius):
+                return True
+
+        if self.enemy_relative.detected:
+            if math.hypot(px - float(self.enemy_absolute.x), py - float(self.enemy_absolute.y)) <= (clearance + self.enemy_radius):
+                return True
+
+        return False
+
     def calculate_number_of_obstacles_to(self, target_pos: Pose2D) -> int:
         """Calculate the number of obstacles between the robot and a target position."""
-        return 0
+
+        start_x = float(self.robot_position.x)
+        start_y = float(self.robot_position.y)
+        end_x = float(target_pos.x)
+        end_y = float(target_pos.y)
+
+        dx = end_x - start_x
+        dy = end_y - start_y
+        seg_len_sq = dx * dx + dy * dy
+
+        def _distance_point_to_segment(px: float, py: float) -> float:
+            if seg_len_sq <= 1e-9:
+                return math.hypot(px - start_x, py - start_y)
+            t = ((px - start_x) * dx + (py - start_y) * dy) / seg_len_sq
+            t = max(0.0, min(1.0, t))
+            closest_x = start_x + t * dx
+            closest_y = start_y + t * dy
+            return math.hypot(px - closest_x, py - closest_y)
+
+        obstacle_count = 0
+
+        for batch in self.batches.values():
+            # Skip the destination batch itself when targeting a pickup point.
+            if math.hypot(batch.x - end_x, batch.y - end_y) <= 1e-6:
+                continue
+            if _distance_point_to_segment(float(batch.x), float(batch.y)) <= (self.robot_radius + self.batch_radius):
+                obstacle_count += 1
+
+        if self.enemy_relative.detected:
+            if _distance_point_to_segment(float(self.enemy_absolute.x), float(self.enemy_absolute.y)) <= (self.robot_radius + self.enemy_radius):
+                obstacle_count += 1
+
+        return obstacle_count
 
     # -----------------------------
     # ROS topic integration

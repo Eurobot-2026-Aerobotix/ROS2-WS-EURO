@@ -1,5 +1,5 @@
 import math
-from simple_map import Map
+from simple_map import Map, Pose2D
 from typing import Any, List, Dict, Optional
 from dataclasses import dataclass
 
@@ -17,11 +17,14 @@ class TaskScheduler:
     must_dropoff_time = 1200.0
     must_go_home_time = 7000.0 # time at 1m distance from nest
     max_distance_for_predict_enemy_goal = 1500.0 # in meters
+    drop_off_distance = 300.0
+    distance_from_wall = 200.0
     coeffs = {
         "is_enemy_goal": 0.001,
         "distance_to_goal": -0.001,
         "number_of_obstacles_between": -0.5,
         "distance_to_enemy": 0.0005,
+        "number_of_opposite_crates": 0.1
     }
     def __init__(self, map: Map, pathfinder_client=None, ros_node=None):
         self.map = map
@@ -95,7 +98,6 @@ class TaskScheduler:
         self.tracked_task = None
     
     def calculate_score(self, task: Task) -> float:
-        # TODO: Implement a more sophisticated scoring mechanism based on the current map state, task type, and other heuristics.
         """Calculate a score for the given task based on the current map state."""
         # Placeholder scoring logic - can be expanded with more complex heuristics
         target_pos = Pose2D(x=self.map.batches[task.target_id].x, y=self.map.batches[task.target_id].y)
@@ -110,11 +112,74 @@ class TaskScheduler:
             score += self.coeffs["distance_to_enemy"] * self.map.distance_from(self.map.enemy_absolute, target_pos)
         else:
             score += self.coeffs["distance_to_enemy"] * 1000.0  # If enemy not detected, assume far away
+        if task.type == "pickup":
+            score += self.coeffs["number_of_opposite_crates"] * (len(self.map.batches[task.target_id]) - self.map.batches[task.target_id].color.count(self.map.robot_color[0]))
         return score
     
-    def check_side(self, task: Task) -> None:
-        task.options["side"] = "back"
-        pass
+    def choose_side(self, task: Task) -> bool:
+        if task.type == "pickup":
+            pickup_pos = []
+            if task.target_id in ["s1", "f1", "s2"]:
+                pickup_pos.append(Pose2D(x=self.map.batches[task.target_id].x, y=self.map.batches[task.target_id].y + 175.0))
+            elif task.target_id in ["f2", "s4", "f6", "s6", "f9"]:
+                pickup_pos.append(Pose2D(x=self.map.batches[task.target_id].x - 175.0, y=self.map.batches[task.target_id].y))
+            elif task.target_id in ["s7", "f10", "s8"]:
+                pickup_pos.append(Pose2D(x=self.map.batches[task.target_id].x, y=self.map.batches[task.target_id].y - 175.0))
+            elif task.target_id in ["f4", "f7"]:
+                pickup_pos.append(Pose2D(x=self.map.batches[task.target_id].x + 175.0, y=self.map.batches[task.target_id].y))
+            elif task.target_id in ["s3", "f5"]:
+                pickup_pos.append(Pose2D(x=self.map.batches[task.target_id].x - 175.0, y=self.map.batches[task.target_id].y))
+                pickup_pos.append(Pose2D(x=self.map.batches[task.target_id].x + 175.0, y=self.map.batches[task.target_id].y))
+            for pos in pickup_pos:
+                if self.map.distance_from(self.map.enemy_absolute, pos) < self.map.enemy_radius + self.map.robot_radius + 50.0:
+                    pickup_pos.remove(pos)
+            pickup_pos.sort(key=lambda p: self.map.distance_from(self.map.robot_position, p))
+            if len(pickup_pos) == 0:
+                return False
+            task.options["x"] = pickup_pos[0].x
+            task.options["y"] = pickup_pos[0].y
+        elif task.type == "dropoff":
+            dropoff = self.map.drop_offs.get(task.target_id)
+            if dropoff is None:
+                return False
+
+            center_x = float(dropoff["x"])
+            center_y = float(dropoff["y"])
+            radius = float(self.drop_off_distance)
+            sample_count = 72
+
+            best_pos: Optional[Pose2D] = None
+            best_dist = float("inf")
+
+            for i in range(sample_count):
+                angle = (2.0 * math.pi * float(i)) / float(sample_count)
+                candidate = Pose2D(
+                    x=center_x + radius * math.cos(angle),
+                    y=center_y + radius * math.sin(angle),
+                )
+                if (task.target_id in ["f1"] and (candidate.y < self.distance_from_wall)):
+                    continue
+                if (task.target_id in ["f10"] and (candidate.y > 3000.0 - self.distance_from_wall)):
+                    continue
+                if (task.target_id in ["f2", "f6", "f9"] and (candidate.x > 2000.0 - self.distance_from_wall)):
+                    continue
+                if (task.target_id in ["f4", "f7"] and (candidate.x < 450.0 + self.distance_from_wall)):
+                    continue
+
+                if self.map.check_collision(candidate, ignore_batch_id=task.target_id):
+                    continue
+
+                dist = self.map.distance_from(self.map.robot_position, candidate)
+                if dist < best_dist:
+                    best_dist = dist
+                    best_pos = candidate
+
+            if best_pos is None:
+                return False
+
+            task.options["x"] = best_pos.x
+            task.options["y"] = best_pos.y
+        return True
     
     def predict_enemy_goal(self) -> None:
         """Predict the goal position of the enemy based on their current speed and position."""
@@ -172,22 +237,29 @@ class TaskScheduler:
         # generate pickup tasks if we have space in the robot
         if self.map.robot_front_empty or self.map.robot_back_empty:
             for batch_id, batch in self.map.batches.items():
-                if len(batch.color) == 4 and not (batch_id in ["f3", "f5", "f8"]):
-                    task = Task(target_id=batch_id, type="pickup")
-                    task.score = self.calculate_score(task)
-                    if batch_id in ["s3", "s5", "f3", "f5", "f8"]:
-                        self.check_side(task)
+                if batch_id in ["f3", "f5", "f8"]:
+                    continue
+                if (len(batch.color) != 4) or (batch.color.count(self.map.robot_color[0]) == 4):
+                    continue
+                if batch_id[0] == "f":
+                    possible_pickup_phi = 0.0
+                    if batch_id in ["f1", "f10"]:
+                        possible_pickup_phi = 90.0
+                    if batch.phi_degrees is None or abs(batch.phi_degrees - possible_pickup_phi) > 1.0:
+                        continue
+                task = Task(target_id=batch_id, type="pickup")
+                task.score = self.calculate_score(task)
+                if (self.choose_side(task)):
                     queue.append(task)
         
-        # generate dropoff tasks if we have something in the robot
+        # generate dropoff tasks if we have crates in the robot
         if not self.map.robot_front_empty or not self.map.robot_back_empty:
             for dropoff_id, dropoff in self.map.drop_offs.items():
-                if dropoff["status"] == "empty":
+                if dropoff_id in ["f3", "f5", "f8"] or dropoff["status"] == "empty":
                     task = Task(target_id=dropoff_id, type="dropoff")
                     task.score = self.calculate_score(task)
-                    if dropoff_id in ["f3", "f5", "f8"]:
-                        self.check_side(task)
-                    queue.append(task)
+                    if (self.choose_side(task)):
+                        queue.append(task)
         
         if self.tracked_task != None and self.tracked_task.target_id in queue.keys():
             queue.remove(self.tracked_task.target_id)
