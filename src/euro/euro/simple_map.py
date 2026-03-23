@@ -107,6 +107,7 @@ class Map:
         self.enemy_speed: Speed2D = Speed2D()
         self.time_left = 100.0
         self.robot_color = "unknown"
+        self._subscriptions = []
 
     # -----------------------------
     # Base setters / state updates
@@ -192,3 +193,46 @@ class Map:
     
     def set_robot_color(self, color: str) -> None:
         self.robot_color = color
+
+    # -----------------------------
+    # ROS topic integration
+    # -----------------------------
+
+    def _robot_pose_callback(self, msg) -> None:
+        """/robot_pose_raw callback (geometry_msgs/msg/Vector3)."""
+        self.set_robot_position(float(msg.x), float(msg.y), float(msg.z))
+
+    def _enemy_relative_callback(self, msg) -> None:
+        """/obstacle_relative callback (geometry_msgs/msg/PoseStamped)."""
+        
+        self.set_enemy_relative(
+            float(msg.pose.position.x),
+            float(msg.pose.position.y),
+            theta=0.0,
+            detected=True,
+        )
+
+    def _enemy_speed_callback(self, msg) -> None:
+        """/obstacle_relative_speed callback (geometry_msgs/msg/Twist)."""
+        self.set_enemy_speed(float(msg.linear.x), float(msg.linear.y))
+
+    def attach_ros_subscribers(self, node, qos: int = 10) -> None:
+        """
+        Attach map setters to ROS topics.
+
+        Topics:
+        - /robot_pose_raw           -> set_robot_position (Vector3)
+        - /obstacle_relative        -> set_enemy_relative (PoseStamped)
+        - /obstacle_relative_speed  -> set_enemy_speed (Twist)
+        """
+        from geometry_msgs.msg import PoseStamped, Twist, Vector3
+
+        self._subscriptions.append(
+            node.create_subscription(Vector3, '/robot_pose_raw', self._robot_pose_callback, qos)
+        )
+        self._subscriptions.append(
+            node.create_subscription(PoseStamped, '/obstacle_relative', self._enemy_relative_callback, qos)
+        )
+        self._subscriptions.append(
+            node.create_subscription(Twist, '/obstacle_relative_speed', self._enemy_speed_callback, qos)
+        )
