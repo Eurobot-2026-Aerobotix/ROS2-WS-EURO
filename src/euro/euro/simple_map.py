@@ -89,6 +89,16 @@ class Map:
             "f2": {"x": 1.9, "y": 2.3, "type": "front", "status": "empty"},
             "f1": {"x": 1.2, "y": 2.9, "type": "right", "status": "empty"},
         }
+        self.putdown_batches_center = {
+    'f1': {'x': 1200, 'y': 100, 'type': 'A'},
+    'f2': {'x': 1900, 'y': 700, 'type': 'A'},
+    'f3': {'x': 1200, 'y': 800, 'type': 'B'},
+    'f5': {'x': 1200, 'y': 1500, 'type': 'B'},
+    'f6': {'x': 1900, 'y': 1500, 'type': 'A'},
+    'f8': {'x': 1200, 'y': 2200, 'type': 'B'},
+    'f9': {'x': 1900, 'y': 2300, 'type': 'A'},
+    'f10': {'x': 1200, 'y': 2900, 'type': 'A'}
+    }
 
         self.batches: Dict[str, BatchInfo] = {}
         self.robot_position: Pose2D = Pose2D()

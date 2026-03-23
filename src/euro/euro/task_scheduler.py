@@ -222,6 +222,170 @@ class TaskScheduler:
             }
         }
         return task
+
+    def build_put_down(
+        self,
+        batch_known_id: str,
+        x: float,
+        y: float,
+        device: str,
+        start_pose: Optional[Dict[str, float]] = None,
+        insert_distance_mm: float = 200.0,
+    ) -> Optional[List[Dict[str, Any]]]:
+        """
+        Build a put_down task.
+
+        Flow:
+        1) Pathfind to (x, y)
+        2) Orientate toward target batch center from map.putdown_batches_center
+          3) Execute ESP put_down
+          4) If type B, create a separate follow-up task with 20cm insertion move
+              (front=go_to, back=go_to_backwards), preserving orientation
+
+        Args:
+            batch_known_id: Putdown zone batch id (e.g., 'f1', 'f5')
+            x: Target x in mm
+            y: Target y in mm
+            device: 'front'/'back' or 'ESP_front'/'ESP_back'
+            start_pose: Optional {'x','y','theta'} in mm/degrees for explicit path start
+            insert_distance_mm: Insertion move distance for type B zones (default 200mm)
+
+        Returns:
+            Ordered list of task dicts compatible with strategy_manager queue format:
+            - Type A: [putdown_task]
+            - Type B: [putdown_task, putdown_insert_task]
+            None on invalid inputs
+        """
+        if self.pathfinder is None:
+            return None
+
+        normalized_id = str(batch_known_id).lower()
+        zone = self.map.putdown_batches_center.get(normalized_id)
+        if zone is None:
+            return None
+
+        device_key = str(device).strip().lower()
+        if device_key in ('esp_front', 'front'):
+            esp_device = 'ESP_front'
+            stm_command = 'go_to'
+            is_back = False
+        elif device_key in ('esp_back', 'back'):
+            esp_device = 'ESP_back'
+            stm_command = 'go_to_backwards'
+            is_back = True
+        else:
+            return None
+
+        target_x = float(x)
+        target_y = float(y)
+        center_x = float(zone['x'])
+        center_y = float(zone['y'])
+        zone_type = str(zone.get('type', '')).upper()
+
+        # Angle at target point to face center of putdown zone
+        theta_to_center_deg = math.degrees(math.atan2(center_y - target_y, center_x - target_x))
+        theta_to_center_rad = math.radians(theta_to_center_deg)
+
+        # Path to target point only; explicit orientate is added in task sequence
+        current_theta_rad = math.radians(float(self.map.robot_position.theta))
+        self.pathfinder.set_goal(
+            target_x / 1000.0,
+            target_y / 1000.0,
+            current_theta_rad,
+        )
+
+        if start_pose is not None:
+            if not all(k in start_pose for k in ('x', 'y', 'theta')):
+                return None
+            stm32_commands, path_success = self.pathfinder.path(
+                start_x=float(start_pose['x']) / 1000.0,
+                start_y=float(start_pose['y']) / 1000.0,
+                start_theta=math.radians(float(start_pose['theta']))
+            )
+        else:
+            stm32_commands, path_success = self.pathfinder.path()
+
+        if not path_success:
+            return None
+
+        task_sequence: List[Dict[str, Any]] = []
+
+        # Waypoints from pathfinder
+        last_cmd = None
+        for cmd in stm32_commands:
+            values = cmd.replace('go_to(', '').replace(')', '').split(',')
+            waypoint_x = float(values[0].strip())
+            waypoint_y = float(values[1].strip())
+            if cmd != last_cmd:
+                task_sequence.append({
+                    'device': 'STM',
+                    'command': stm_command,
+                    'params': [waypoint_x, waypoint_y, 1100.0, 0.0, {'from_pathfinding': True, 'from_putdown_task': True}],
+                    'wait': False
+                })
+            last_cmd = cmd
+
+        # Final precise target + orientate to center
+        task_sequence.append({
+            'device': 'STM',
+            'command': stm_command,
+            'params': [target_x, target_y, 1100.0, 1.0, {'from_pathfinding': True, 'from_putdown_task': True}],
+            'wait': False
+        })
+        task_sequence.append({
+            'device': 'STM',
+            'command': 'orientate',
+            'params': [theta_to_center_deg, 0.0],
+            'wait': False
+        })
+
+        task_sequence.append({
+            'device': esp_device,
+            'command': 'put_down',
+            'params': {},
+            'wait': True
+        })
+
+        putdown_task = {
+            'name': f'putdown_{normalized_id}_{esp_device.split("_")[1]}',
+            'sequence': task_sequence,
+            'global_goal': {
+                'x': target_x,
+                'y': target_y,
+                'theta': theta_to_center_deg
+            }
+        }
+
+        # For type B, build insertion as a separate task executed after put_down
+        if zone_type != 'B':
+            return [putdown_task]
+
+        dist = max(0.0, float(insert_distance_mm))
+        if is_back:
+            insert_x = target_x - dist * math.cos(theta_to_center_rad)
+            insert_y = target_y - dist * math.sin(theta_to_center_rad)
+        else:
+            insert_x = target_x + dist * math.cos(theta_to_center_rad)
+            insert_y = target_y + dist * math.sin(theta_to_center_rad)
+
+        putdown_insert_task = {
+            'name': f'putdown_insert_{normalized_id}_{esp_device.split("_")[1]}',
+            'sequence': [
+                {
+                    'device': 'STM',
+                    'command': stm_command,
+                    'params': [insert_x, insert_y, 900.0, 1.0, {'from_putdown_task': True, 'type_b_insert': True}],
+                    'wait': True
+                }
+            ],
+            'global_goal': {
+                'x': insert_x,
+                'y': insert_y,
+                'theta': theta_to_center_deg
+            }
+        }
+
+        return [putdown_task, putdown_insert_task]
     
     def loop(self) -> None:
         """Main loop to update tasks based on the current map state."""
