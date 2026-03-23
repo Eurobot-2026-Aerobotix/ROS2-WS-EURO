@@ -9,6 +9,7 @@ steal/scoring/planning/services/visualization.
 import math
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional
+from rclpy.node import Node
 
 
 @dataclass
@@ -78,27 +79,17 @@ class Map:
         }
 
         self.drop_offs: Dict[str, Dict[str, float]] = {
-            "f1": {"x": 1.2, "y": 0.1, "type": "left", "status": "empty"},
-            "f2": {"x": 1.9, "y": 0.7, "type": "front", "status": "empty"},
-            "f3": {"x": 1.2, "y": 0.8, "type": "center", "status": "empty"},
-            "f4": {"x": 0.55, "y": 1.25, "type": "back", "status": "empty"},
-            "f5": {"x": 1.2, "y": 1.5, "type": "center", "status": "empty"},
-            "f6": {"x": 1.9, "y": 1.5, "type": "front", "status": "empty"},
-            "f7": {"x": 0.55, "y": 1.75, "type": "back", "status": "empty"},
-            "f3": {"x": 1.2, "y": 2.2, "type": "center", "status": "empty"},
-            "f2": {"x": 1.9, "y": 2.3, "type": "front", "status": "empty"},
-            "f1": {"x": 1.2, "y": 2.9, "type": "right", "status": "empty"},
+            "f1": {"x": 1200, "y": 100, "type": "left", "batch_type": "A", "status": "empty"},
+            "f2": {"x": 1900, "y": 700, "type": "front", "batch_type": "A", "status": "empty"},
+            "f3": {"x": 1200, "y": 800, "type": "center", "batch_type": "B", "status": "empty"},
+            "f4": {"x": 550, "y": 1250, "type": "back", "batch_type": "A", "status": "empty"},
+            "f5": {"x": 1200, "y": 1500, "type": "center", "batch_type": "B", "status": "empty"},
+            "f6": {"x": 1900, "y": 1500, "type": "front", "batch_type": "A", "status": "empty"},
+            "f7": {"x": 550, "y": 1750, "type": "back", "batch_type": "A", "status": "empty"},
+            "f8": {"x": 1200, "y": 2200, "type": "center", "batch_type": "B", "status": "empty"},
+            "f9": {"x": 1900, "y": 2300, "type": "front", "batch_type": "A", "status": "empty"},
+            "f10": {"x": 1200, "y": 2900, "type": "right", "batch_type": "A", "status": "empty"},
         }
-        self.putdown_batches_center = {
-    'f1': {'x': 1200, 'y': 100, 'type': 'A'},
-    'f2': {'x': 1900, 'y': 700, 'type': 'A'},
-    'f3': {'x': 1200, 'y': 800, 'type': 'B'},
-    'f5': {'x': 1200, 'y': 1500, 'type': 'B'},
-    'f6': {'x': 1900, 'y': 1500, 'type': 'A'},
-    'f8': {'x': 1200, 'y': 2200, 'type': 'B'},
-    'f9': {'x': 1900, 'y': 2300, 'type': 'A'},
-    'f10': {'x': 1200, 'y': 2900, 'type': 'A'}
-    }
 
         self.batches: Dict[str, BatchInfo] = {}
         self.robot_position: Pose2D = Pose2D()
@@ -236,3 +227,17 @@ class Map:
         self._subscriptions.append(
             node.create_subscription(Twist, '/obstacle_relative_speed', self._enemy_speed_callback, qos)
         )
+
+
+class MapNode(Map, Node):
+    """
+    ROS2 node version of `Map`.
+
+    This keeps all map data/methods directly on the node instance and
+    subscribes to map-update topics during initialization.
+    """
+
+    def __init__(self, node_name: str = 'simple_map_node', qos: int = 10):
+        Node.__init__(self, node_name)
+        Map.__init__(self)
+        self.attach_ros_subscribers(self, qos=qos)

@@ -1,5 +1,5 @@
 import math
-from simple_map import Map, Pose2D, Speed2D, EnemyRelativeObstacle, BatchInfo
+from simple_map import Map
 from typing import Any, List, Dict, Optional
 from dataclasses import dataclass
 
@@ -15,7 +15,7 @@ class Task:
 class TaskScheduler:
     """Simple task scheduler that generates tasks based on the current map state."""
     
-    def __init__(self, map: Map, pathfinder_client=None):
+    def __init__(self, map: Map, pathfinder_client=None, ros_node=None):
         self.map = map
         self.pathfinder = pathfinder_client
         self.pickup_queue: List[Task] = []
@@ -23,6 +23,36 @@ class TaskScheduler:
         self.return_home_flag = False
         self.tracked_task: Task = None
         self.tracked_task_invalid = False
+        self._map_qos = 10
+
+        # Explicit ROS wiring only:
+        # - If a node is provided and map is a plain data-map, attach subscribers on it.
+        # - If map is already a ROS node (e.g. MapNode), do not attach again.
+        # - No internal node/executor is created by TaskScheduler.
+        if ros_node is not None:
+            self.attach_map_subscribers(ros_node, self._map_qos)
+
+    def attach_map_subscribers(self, ros_node, qos: int = 10) -> None:
+        """
+        Attach simple_map topic subscribers using the provided ROS node.
+
+        Compatibility behavior:
+        - Plain `Map` + external node: subscribers are attached here.
+        - `MapNode`: subscribers are already attached in map-node init, so this is a no-op.
+        """
+        if not hasattr(self.map, 'attach_ros_subscribers'):
+            return
+
+        # If map itself is the provided node (MapNode pattern), avoid duplicate subscriptions.
+        if ros_node is self.map:
+            return
+
+        # If subscriptions already exist, assume map has already been wired.
+        existing_subs = getattr(self.map, '_subscriptions', None)
+        if isinstance(existing_subs, list) and len(existing_subs) > 0:
+            return
+
+        self.map.attach_ros_subscribers(ros_node, qos=qos)
 
     def pop_pickup_task(self) -> Optional[Task]:
         """Pop the next pickup task from the queue."""
@@ -238,7 +268,7 @@ class TaskScheduler:
 
         Flow:
         1) Pathfind to (x, y)
-        2) Orientate toward target batch center from map.putdown_batches_center
+        2) Orientate toward target batch center from map.drop_offs
           3) Execute ESP put_down
           4) If type B, create a separate follow-up task with 20cm insertion move
               (front=go_to, back=go_to_backwards), preserving orientation
@@ -261,7 +291,7 @@ class TaskScheduler:
             return None
 
         normalized_id = str(batch_known_id).lower()
-        zone = self.map.putdown_batches_center.get(normalized_id)
+        zone = self.map.drop_offs.get(normalized_id)
         if zone is None:
             return None
 
@@ -279,7 +309,7 @@ class TaskScheduler:
         target_y = float(y)
         center_x = float(zone['x'])
         center_y = float(zone['y'])
-        zone_type = str(zone.get('type', '')).upper()
+        zone_type = str(zone.get('batch_type', 'A')).upper()
 
         # Angle at target point to face center of putdown zone
         theta_to_center_deg = math.degrees(math.atan2(center_y - target_y, center_x - target_x))
