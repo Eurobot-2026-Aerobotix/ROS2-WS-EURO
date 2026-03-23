@@ -60,6 +60,22 @@ class Map:
             "s7": {"x": 0.80, "y": 2.8, "phi_degrees": 90.0},
             "s8": {"x": 1.60, "y": 2.8, "phi_degrees": 90.0},
         }
+        self.pickup_poses = {
+            'S1': [{'x': 800, 'y': 400, 'theta': [90, -90]}],
+            'S2': [{'x': 1600, 'y': 400, 'theta': [90, -90]}],
+            'S3': [
+                {'x': 1430, 'y': 1150, 'theta': [0, 180]},
+                {'x': 970, 'y': 1150, 'theta': [0, 180]}
+            ],
+            'S4': [{'x': 1600, 'y': 1100, 'theta': [0, 180]}],
+            'S5': [
+                {'x': 1430, 'y': 1850, 'theta': [0, 180]},
+                {'x': 970, 'y': 1850, 'theta': [0, 180]}
+            ],
+            'S6': [{'x': 1600, 'y': 1900, 'theta': [0, 180]}],
+            'S7': [{'x': 1600, 'y': 2600, 'theta': [0, 180]}],
+            'S8': [{'x': 800, 'y': 2600, 'theta': [0, 180]}]
+        }
 
         self.drop_offs: Dict[str, Dict[str, float]] = {
             "f1": {"x": 1.2, "y": 0.1, "type": "left", "status": "empty"},
@@ -73,6 +89,16 @@ class Map:
             "f2": {"x": 1.9, "y": 2.3, "type": "front", "status": "empty"},
             "f1": {"x": 1.2, "y": 2.9, "type": "right", "status": "empty"},
         }
+        self.putdown_batches_center = {
+    'f1': {'x': 1200, 'y': 100, 'type': 'A'},
+    'f2': {'x': 1900, 'y': 700, 'type': 'A'},
+    'f3': {'x': 1200, 'y': 800, 'type': 'B'},
+    'f5': {'x': 1200, 'y': 1500, 'type': 'B'},
+    'f6': {'x': 1900, 'y': 1500, 'type': 'A'},
+    'f8': {'x': 1200, 'y': 2200, 'type': 'B'},
+    'f9': {'x': 1900, 'y': 2300, 'type': 'A'},
+    'f10': {'x': 1200, 'y': 2900, 'type': 'A'}
+    }
 
         self.batches: Dict[str, BatchInfo] = {}
         self.robot_position: Pose2D = Pose2D()
