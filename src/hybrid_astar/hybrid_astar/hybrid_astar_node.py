@@ -1385,7 +1385,7 @@ class HybridAStarNode(Node):
     def handle_get_active_batches(self, request: GetActiveBatches.Request, response: GetActiveBatches.Response) -> GetActiveBatches.Response:
         """
         Service handler: Get information about all active batches
-        Returns arrays of batch information (known_id, batch_type, member_count, direction, center, quality)
+        Returns arrays of batch information (known_id, batch_type, member_count, direction, pattern, theta_degrees, center, quality)
         """
         try:
             # Get batch info from map manager
@@ -1396,6 +1396,8 @@ class HybridAStarNode(Node):
             response.batch_types = batch_info['batch_types']
             response.member_counts = batch_info['member_counts']
             response.directions = batch_info['directions']
+            response.patterns = batch_info['patterns']
+            response.theta_degrees = batch_info['theta_degrees']
             response.centers = batch_info['centers']
             response.qualities = batch_info['qualities']
             
@@ -1411,6 +1413,8 @@ class HybridAStarNode(Node):
             response.batch_types = []
             response.member_counts = []
             response.directions = []
+            response.patterns = []
+            response.theta_degrees = []
             response.centers = []
             response.qualities = []
         

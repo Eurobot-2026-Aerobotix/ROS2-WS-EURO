@@ -282,6 +282,8 @@ class PathfinderAdapter:
                 'batch_types': list(response.batch_types),
                 'member_counts': list(response.member_counts),
                 'directions': list(response.directions),
+                'patterns': list(response.patterns),
+                'theta_degrees': list(response.theta_degrees),
                 'centers': list(response.centers),
                 'qualities': list(response.qualities)
             }

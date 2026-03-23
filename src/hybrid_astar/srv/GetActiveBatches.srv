@@ -8,6 +8,8 @@ string known_id
 string batch_type  # 'fx', 'sx', or 'gx'
 int32 member_count
 string direction  # 'horizontal', 'vertical', or empty
+string pattern  # batch color pattern, e.g. 'ybyb'
+float32 theta_degrees  # batch orientation in degrees
 int32 quality  # Quality indicator (1 for now)
 
 # Array of all active batches
@@ -16,4 +18,6 @@ string[] known_ids
 string[] batch_types
 int32[] member_counts
 string[] directions
+string[] patterns
+float32[] theta_degrees
 int32[] qualities

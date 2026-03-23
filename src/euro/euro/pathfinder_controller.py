@@ -557,6 +557,8 @@ class PathfinderClient(Node):
                 'batch_types': List[str],  # 'fx', 'sx', 'gx'
                 'member_counts': List[int],
                 'directions': List[str],  # 'horizontal', 'vertical', or ''
+                'patterns': List[str],    # e.g., 'ybyb'
+                'theta_degrees': List[float],
                 'centers': List[Point],
                 'qualities': List[int]
             }
@@ -599,6 +601,8 @@ class PathfinderClient(Node):
             'batch_types': list(response.batch_types),
             'member_counts': list(response.member_counts),
             'directions': list(response.directions),
+            'patterns': list(response.patterns),
+            'theta_degrees': list(response.theta_degrees),
             'centers': list(response.centers),
             'qualities': list(response.qualities)
         }

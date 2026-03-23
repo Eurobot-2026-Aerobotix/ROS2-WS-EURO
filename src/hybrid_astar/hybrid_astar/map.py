@@ -1965,6 +1965,8 @@ class MapManager:
             - batch_types: List of batch types ('fx', 'sx', 'gx')
             - member_counts: List of member counts
             - directions: List of directions ('horizontal', 'vertical', or '')
+            - patterns: List of color patterns ('ybyb', etc.)
+            - theta_degrees: List of batch orientations in degrees
             - centers: List of Point objects (batch centers)
             - qualities: List of quality indicators (all 1 for now)
         """
@@ -1973,8 +1975,17 @@ class MapManager:
             batch_types = []
             member_counts = []
             directions = []
+            patterns = []
+            theta_degrees = []
             centers = []
             qualities = []
+
+            def _theta_from_direction(direction: str) -> float:
+                if direction == 'horizontal':
+                    return 0.0
+                if direction == 'vertical':
+                    return 90.0
+                return 0.0
             
             # Process FX batches
             for known_id, batch in self.batches_fx.items():
@@ -1983,7 +1994,10 @@ class MapManager:
                     known_ids.append(known_id)
                     batch_types.append('fx')
                     member_counts.append(len(batch.members) if batch.members else 0)
-                    directions.append(batch.direction if batch.direction else '')
+                    direction = batch.direction if batch.direction else ''
+                    directions.append(direction)
+                    patterns.append(batch.pattern.lower() if getattr(batch, 'pattern', None) else '')
+                    theta_degrees.append(_theta_from_direction(direction))
                     centers.append(batch.center)
                     qualities.append(1)  # Always 1 for now
             
@@ -1994,7 +2008,10 @@ class MapManager:
                     known_ids.append(known_id)
                     batch_types.append('sx')
                     member_counts.append(len(batch.members) if batch.members else 0)
-                    directions.append(batch.direction if batch.direction else '')
+                    direction = batch.direction if batch.direction else ''
+                    directions.append(direction)
+                    patterns.append(batch.pattern.lower() if getattr(batch, 'pattern', None) else '')
+                    theta_degrees.append(_theta_from_direction(direction))
                     centers.append(batch.center)
                     qualities.append(1)  # Always 1 for now
             
@@ -2003,6 +2020,8 @@ class MapManager:
                 'batch_types': batch_types,
                 'member_counts': member_counts,
                 'directions': directions,
+                'patterns': patterns,
+                'theta_degrees': theta_degrees,
                 'centers': centers,
                 'qualities': qualities
             }
