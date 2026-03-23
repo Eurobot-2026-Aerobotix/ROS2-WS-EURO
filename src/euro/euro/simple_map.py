@@ -8,9 +8,8 @@ steal/scoring/planning/services/visualization.
 
 import math
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 from rclpy.node import Node
-
 
 @dataclass
 class Pose2D:
@@ -49,7 +48,7 @@ class Map:
     - Enemy relative obstacle
     """
 
-    def __init__(self):
+    def __init__(self, round_timer: Optional[Any] = None, game_duration_s: float = 100.0):
         # Predefined batch positions from current hybrid_astar map
         self.predefined_batch_positions: Dict[str, Dict[str, float]] = {
             "s1": {"x": 0.80, "y": 0.175, "phi_degrees": 0.0},
@@ -97,11 +96,70 @@ class Map:
         self.enemy_absolute: Pose2D = Pose2D()
         self.enemy_speed: Speed2D = Speed2D()
         self.time_left = 100.0
+        self.round_timer = round_timer
+        self.game_duration_s = float(game_duration_s)
         self.robot_color = "unknown"
         self.robot_front_empty = True
         self.robot_back_empty = True
         self.nest_position = Pose2D(x=0.2, y=2.7)  # Assuming nest is at origin for simplicity
         self._subscriptions = []
+        self._update_map_timer = None
+        self._round_update_start_s = 5.0
+        self._round_update_end_s = 100.0
+        self._pathfinder_client = None
+
+    def set_round_timer(self, round_timer: Any, game_duration_s: Optional[float] = None) -> None:
+        """Attach a round timer object that exposes `time()` in seconds."""
+        self.round_timer = round_timer
+        if game_duration_s is not None:
+            self.game_duration_s = float(game_duration_s)
+
+    def sync_time_left_from_round(self) -> None:
+        """Update `time_left` from attached round timer, if available."""
+        if self.round_timer is None or not hasattr(self.round_timer, 'time'):
+            return
+        elapsed = float(self.round_timer.time())
+        self.time_left = max(0.0, self.game_duration_s - elapsed)
+
+    def _update_map_during_round(self) -> None:
+        """Timer callback: update map timing only during configured round window."""
+        if self.round_timer is None:
+            return
+        if hasattr(self.round_timer, 'has_started') and not self.round_timer.has_started():
+            return
+        if not hasattr(self.round_timer, 'time'):
+            return
+
+        elapsed = float(self.round_timer.time())
+        if self._round_update_start_s <= elapsed <= self._round_update_end_s:
+            if self._pathfinder_client is not None and hasattr(self._pathfinder_client, 'update_map'):
+                try:
+                    self._pathfinder_client.update_map()
+                except Exception:
+                    # Keep timer robust even if service call fails.
+                    pass
+
+    def attach_round_update_timer(
+        self,
+        node,
+        period_s: float = 1.0,
+        start_s: float = 5.0,
+        end_s: float = 100.0,
+        pathfinder_client: Optional[Any] = None,
+    ) -> None:
+        """
+        Attach periodic timer on ROS node to refresh map timing during round.
+
+        Default active window: [5s, 100s].
+        """
+        self._round_update_start_s = float(start_s)
+        self._round_update_end_s = float(end_s)
+        self._pathfinder_client = pathfinder_client
+
+        if self._update_map_timer is not None:
+            return
+
+        self._update_map_timer = node.create_timer(float(period_s), self._update_map_during_round)
 
     # -----------------------------
     # Base setters / state updates
@@ -110,8 +168,8 @@ class Map:
     def set_robot_position(self, x: float, y: float, theta: float = 0.0) -> None:
         self.robot_position = Pose2D(x=x, y=y, theta=theta)
 
-    def update_robot_back_status(self, empty: bool) -> None:
-        self.robot_back_empty = empty
+    def update_robot_front_status(self, empty: bool) -> None:
+        self.robot_front_empty = empty
 
     def update_robot_back_status(self, empty: bool) -> None:
         self.robot_back_empty = empty
@@ -251,7 +309,13 @@ class MapNode(Map, Node):
     subscribes to map-update topics during initialization.
     """
 
-    def __init__(self, node_name: str = 'simple_map_node', qos: int = 10):
+    def __init__(
+        self,
+        node_name: str = 'simple_map_node',
+        qos: int = 10,
+        round_timer: Optional[Any] = None,
+        game_duration_s: float = 100.0,
+    ):
         Node.__init__(self, node_name)
-        Map.__init__(self)
+        Map.__init__(self, round_timer=round_timer, game_duration_s=game_duration_s)
         self.attach_ros_subscribers(self, qos=qos)

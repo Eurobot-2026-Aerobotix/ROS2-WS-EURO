@@ -39,19 +39,31 @@ class TaskScheduler:
         - Plain `Map` + external node: subscribers are attached here.
         - `MapNode`: subscribers are already attached in map-node init, so this is a no-op.
         """
-        if not hasattr(self.map, 'attach_ros_subscribers'):
-            return
+        if hasattr(self.map, 'attach_ros_subscribers'):
+            should_attach_subs = True
 
-        # If map itself is the provided node (MapNode pattern), avoid duplicate subscriptions.
-        if ros_node is self.map:
-            return
+            # If map itself is the provided node (MapNode pattern), avoid duplicate subscriptions.
+            if ros_node is self.map:
+                should_attach_subs = False
 
-        # If subscriptions already exist, assume map has already been wired.
-        existing_subs = getattr(self.map, '_subscriptions', None)
-        if isinstance(existing_subs, list) and len(existing_subs) > 0:
-            return
+            # If subscriptions already exist, assume map has already been wired.
+            existing_subs = getattr(self.map, '_subscriptions', None)
+            if isinstance(existing_subs, list) and len(existing_subs) > 0:
+                should_attach_subs = False
 
-        self.map.attach_ros_subscribers(ros_node, qos=qos)
+            if should_attach_subs:
+                self.map.attach_ros_subscribers(ros_node, qos=qos)
+
+        # Attach map timer update during active round window [5s, 100s].
+        if hasattr(self.map, 'attach_round_update_timer'):
+            self.map.attach_round_update_timer(
+                ros_node,
+                period_s=1.0,
+                start_s=5.0,
+                end_s=100.0,
+                pathfinder_client=self.pathfinder,
+            )
+
         self.predicted_enemy_goal : str = "unknown"
 
     def pop_task(self) -> Optional[Task]:
@@ -448,5 +460,7 @@ class TaskScheduler:
     
     def loop(self) -> None:
         """Main loop to update tasks based on the current map state."""
+        if hasattr(self.map, 'sync_time_left_from_round'):
+            self.map.sync_time_left_from_round()
         self.generate_tasks()
         self.check_tracked_task_validity()
