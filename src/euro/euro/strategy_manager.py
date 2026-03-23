@@ -15,6 +15,8 @@ from aruco_mapper_msgs.msg import ArucoMapperState
 from euro.yaml_loader import load_tasks_from_yaml
 import math
 from euro.pathfinder_controller import PathfinderClient
+from euro.simple_map import Map
+from euro.task_scheduler import TaskScheduler
 from euro.decision_maker import DecisionMaker
 from euro.strategy_executor import robot_status, lidar_status, stm32_task, front_task, back_task,rasp_pi_task, path_planning_task, IDLE, EMERGENCY_STOP
 import euro.strategy_executor as executor_module  # Import module to access SHUTDOWN_REQUESTED and other globals
@@ -99,6 +101,16 @@ class StrategyManager(Node):
 
         self.pathfinder = PathfinderClient()
         self.path_called = False
+
+        # New scheduler stack (map + task scheduler) exposed through strategy manager.
+        # This allows executor and other modules to use `strategy.task_scheduler.*`.
+        self.map = Map(round_timer=self.round)
+        self.task_scheduler = TaskScheduler(
+            map=self.map,
+            pathfinder_client=self.pathfinder,
+            ros_node=self,
+        )
+        self.get_logger().info('🗺️ TaskScheduler initialized and attached to strategy_manager node')
         
         # Initialize decision maker for dynamic batch stealing
         self.decision_maker = DecisionMaker(self, self.pathfinder)

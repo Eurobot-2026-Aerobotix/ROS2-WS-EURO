@@ -1,5 +1,5 @@
 import math
-from simple_map import Map, Pose2D, Speed2D, EnemyRelativeObstacle, BatchInfo
+from simple_map import Map
 from typing import Any, List, Dict, Optional
 from dataclasses import dataclass
 
@@ -23,12 +23,54 @@ class TaskScheduler:
         "number_of_obstacles_between": -0.5,
         "distance_to_enemy": 0.0005,
     }
-    def __init__(self, map: Map, pathfinder_client=None):
+    def __init__(self, map: Map, pathfinder_client=None, ros_node=None):
         self.map = map
         self.pathfinder = pathfinder_client
         self.task_queue: List[Task] = []
         self.tracked_task: Task = None
         self.tracked_task_invalid = False
+        self._map_qos = 10
+
+        # Explicit ROS wiring only:
+        # - If a node is provided and map is a plain data-map, attach subscribers on it.
+        # - If map is already a ROS node (e.g. MapNode), do not attach again.
+        # - No internal node/executor is created by TaskScheduler.
+        if ros_node is not None:
+            self.attach_map_subscribers(ros_node, self._map_qos)
+
+    def attach_map_subscribers(self, ros_node, qos: int = 10) -> None:
+        """
+        Attach simple_map topic subscribers using the provided ROS node.
+
+        Compatibility behavior:
+        - Plain `Map` + external node: subscribers are attached here.
+        - `MapNode`: subscribers are already attached in map-node init, so this is a no-op.
+        """
+        if hasattr(self.map, 'attach_ros_subscribers'):
+            should_attach_subs = True
+
+            # If map itself is the provided node (MapNode pattern), avoid duplicate subscriptions.
+            if ros_node is self.map:
+                should_attach_subs = False
+
+            # If subscriptions already exist, assume map has already been wired.
+            existing_subs = getattr(self.map, '_subscriptions', None)
+            if isinstance(existing_subs, list) and len(existing_subs) > 0:
+                should_attach_subs = False
+
+            if should_attach_subs:
+                self.map.attach_ros_subscribers(ros_node, qos=qos)
+
+        # Attach map timer update during active round window [5s, 100s].
+        if hasattr(self.map, 'attach_round_update_timer'):
+            self.map.attach_round_update_timer(
+                ros_node,
+                period_s=1.0,
+                start_s=5.0,
+                end_s=100.0,
+                pathfinder_client=self.pathfinder,
+            )
+
         self.predicted_enemy_goal : str = "unknown"
 
     def pop_task(self) -> Optional[Task]:
@@ -261,22 +303,23 @@ class TaskScheduler:
         approach_y = pickup_y - (offset * math.sin(theta_rad))
 
         # Plan path to pre-approach target
-        self.pathfinder.set_goal(
-            approach_x / 1000.0,
-            approach_y / 1000.0,
-            theta_rad
-        )
-
         if start_pose is not None:
             if not all(k in start_pose for k in ('x', 'y', 'theta')):
                 return None
-            stm32_commands, path_success = self.pathfinder.path(
+            stm32_commands, path_success = self.pathfinder.path_full(
+                target_x=approach_x / 1000.0,
+                target_y=approach_y / 1000.0,
+                target_theta=theta_rad,
                 start_x=float(start_pose['x']) / 1000.0,
                 start_y=float(start_pose['y']) / 1000.0,
                 start_theta=math.radians(float(start_pose['theta']))
             )
         else:
-            stm32_commands, path_success = self.pathfinder.path()
+            stm32_commands, path_success = self.pathfinder.path_full(
+                target_x=approach_x / 1000.0,
+                target_y=approach_y / 1000.0,
+                target_theta=theta_rad,
+            )
 
         if not path_success:
             return None
@@ -337,7 +380,7 @@ class TaskScheduler:
 
         Flow:
         1) Pathfind to (x, y)
-        2) Orientate toward target batch center from map.putdown_batches_center
+        2) Orientate toward target batch center from map.drop_offs
           3) Execute ESP put_down
           4) If type B, create a separate follow-up task with 20cm insertion move
               (front=go_to, back=go_to_backwards), preserving orientation
@@ -360,7 +403,7 @@ class TaskScheduler:
             return None
 
         normalized_id = str(batch_known_id).lower()
-        zone = self.map.putdown_batches_center.get(normalized_id)
+        zone = self.map.drop_offs.get(normalized_id)
         if zone is None:
             return None
 
@@ -378,7 +421,7 @@ class TaskScheduler:
         target_y = float(y)
         center_x = float(zone['x'])
         center_y = float(zone['y'])
-        zone_type = str(zone.get('type', '')).upper()
+        zone_type = str(zone.get('batch_type', 'A')).upper()
 
         # Angle at target point to face center of putdown zone
         theta_to_center_deg = math.degrees(math.atan2(center_y - target_y, center_x - target_x))
@@ -386,22 +429,24 @@ class TaskScheduler:
 
         # Path to target point only; explicit orientate is added in task sequence
         current_theta_rad = math.radians(float(self.map.robot_position.theta))
-        self.pathfinder.set_goal(
-            target_x / 1000.0,
-            target_y / 1000.0,
-            current_theta_rad,
-        )
 
         if start_pose is not None:
             if not all(k in start_pose for k in ('x', 'y', 'theta')):
                 return None
-            stm32_commands, path_success = self.pathfinder.path(
+            stm32_commands, path_success = self.pathfinder.path_full(
+                target_x=target_x / 1000.0,
+                target_y=target_y / 1000.0,
+                target_theta=current_theta_rad,
                 start_x=float(start_pose['x']) / 1000.0,
                 start_y=float(start_pose['y']) / 1000.0,
                 start_theta=math.radians(float(start_pose['theta']))
             )
         else:
-            stm32_commands, path_success = self.pathfinder.path()
+            stm32_commands, path_success = self.pathfinder.path_full(
+                target_x=target_x / 1000.0,
+                target_y=target_y / 1000.0,
+                target_theta=current_theta_rad,
+            )
 
         if not path_success:
             return None
@@ -484,5 +529,7 @@ class TaskScheduler:
     
     def loop(self) -> None:
         """Main loop to update tasks based on the current map state."""
+        if hasattr(self.map, 'sync_time_left_from_round'):
+            self.map.sync_time_left_from_round()
         self.generate_tasks()
         self.check_tracked_task_validity()

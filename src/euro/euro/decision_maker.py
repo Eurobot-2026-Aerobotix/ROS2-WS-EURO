@@ -262,13 +262,21 @@ class BatchRegistry:
 
 
 class MapUpdater:
-    """Background updater that refreshes map + active batches at fixed frequency."""
+    """Background updater with independent rates for map refresh and active-batch refresh."""
 
-    def __init__(self, strategy_manager, pathfinder_client, batch_registry: BatchRegistry, update_hz: float = 4.0):
+    def __init__(
+        self,
+        strategy_manager,
+        pathfinder_client,
+        batch_registry: BatchRegistry,
+        map_update_hz: float = 1.0,
+        active_batches_hz: float = 2.0,
+    ):
         self.strategy = strategy_manager
         self.pathfinder = pathfinder_client
         self.registry = batch_registry
-        self.update_hz = max(2.0, min(5.0, float(update_hz)))
+        self.map_update_hz = max(0.2, min(5.0, float(map_update_hz)))
+        self.active_batches_hz = max(0.2, min(10.0, float(active_batches_hz)))
 
         self._stop_event = threading.Event()
         self._update_lock = threading.Lock()
@@ -277,6 +285,8 @@ class MapUpdater:
         self._enabled = True
         self._last_state_log_s = 0.0
         self._warned_missing_update_map = False
+        self._last_update_map_call_s = 0.0
+        self._last_get_active_batches_call_s = 0.0
 
     def start(self):
         if self._thread is not None and self._thread.is_alive():
@@ -285,7 +295,8 @@ class MapUpdater:
         self._thread = threading.Thread(target=self._run, name='decision-maker-map-updater', daemon=True)
         self._thread.start()
         self.strategy.get_logger().info(
-            f'🛰️ MapUpdater started in background ({self.update_hz:.1f}Hz)'
+            f'🛰️ MapUpdater started: update_map={self.map_update_hz:.1f}Hz, '
+            f'get_active_batches={self.active_batches_hz:.1f}Hz'
         )
 
     def stop(self):
@@ -297,7 +308,8 @@ class MapUpdater:
         self._enabled = enabled
 
     def _run(self):
-        period_s = 1.0 / self.update_hz
+        # Drive loop at the highest requested rate.
+        period_s = 1.0 / max(self.map_update_hz, self.active_batches_hz)
         while not self._stop_event.is_set():
             loop_start = time.perf_counter()
             if self._enabled:
@@ -312,22 +324,30 @@ class MapUpdater:
             return
 
         try:
+            now_mono = time.perf_counter()
+            do_update_map = (now_mono - self._last_update_map_call_s) >= (1.0 / self.map_update_hz)
+            do_get_active = (now_mono - self._last_get_active_batches_call_s) >= (1.0 / self.active_batches_hz)
+
             # Some adapters (e.g. web PathfinderAdapter) do not expose update_map().
             # In that case, rely on get_active_batches() only.
             update_map_fn = getattr(self.pathfinder, 'update_map', None)
-            if callable(update_map_fn):
+            if do_update_map and callable(update_map_fn):
                 map_success, map_message = update_map_fn()
+                self._last_update_map_call_s = now_mono
                 if not map_success:
                     self.registry.mark_stale(f'update_map failed: {map_message}')
                     self.strategy.get_logger().warning(f'⚠️ Background update_map failed: {map_message}')
-                    return
-            elif not self._warned_missing_update_map:
+            elif do_update_map and not self._warned_missing_update_map:
                 self.strategy.get_logger().warning(
                     '⚠️ Pathfinder has no update_map(); background updater will refresh via get_active_batches only'
                 )
                 self._warned_missing_update_map = True
 
+            if not do_get_active:
+                return
+
             batch_info = self.pathfinder.get_active_batches()
+            self._last_get_active_batches_call_s = now_mono
             if batch_info is None:
                 self.registry.mark_stale('get_active_batches returned None')
                 self.strategy.get_logger().warning('⚠️ Background get_active_batches failed')
@@ -380,7 +400,8 @@ class DecisionMaker:
             strategy_manager=self.strategy,
             pathfinder_client=self.pathfinder,
             batch_registry=self.batch_registry,
-            update_hz=4.0,
+            map_update_hz=1.0,
+            active_batches_hz=2.0,
         )
         self.map_updater.set_enabled(True)
         self.map_updater.start()
