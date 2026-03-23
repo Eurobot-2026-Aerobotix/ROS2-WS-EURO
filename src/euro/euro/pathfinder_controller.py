@@ -180,6 +180,32 @@ class PathfinderClient(Node):
     # =========================================================
     # PATH PLANNING
     # =========================================================
+    def path_full(
+        self,
+        target_x: float,
+        target_y: float,
+        target_theta: float,
+        start_x: float = None,
+        start_y: float = None,
+        start_theta: float = None,
+    ):
+        """
+        Plan a path with explicit target and optional explicit start.
+
+        Args:
+            target_x: Target X in meters
+            target_y: Target Y in meters
+            target_theta: Target yaw in radians
+            start_x: Optional start X in meters
+            start_y: Optional start Y in meters
+            start_theta: Optional start yaw in radians
+
+        Returns:
+            stm32_commands (list[str]), success (bool)
+        """
+        self.set_goal(float(target_x), float(target_y), float(target_theta))
+        return self.path(start_x=start_x, start_y=start_y, start_theta=start_theta)
+
     def path(self, start_x=None, start_y=None, start_theta=None):
         """
         Plan a path from current robot position to stored goal position

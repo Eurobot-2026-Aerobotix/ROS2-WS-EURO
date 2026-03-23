@@ -161,22 +161,23 @@ class TaskScheduler:
         approach_y = pickup_y - (offset * math.sin(theta_rad))
 
         # Plan path to pre-approach target
-        self.pathfinder.set_goal(
-            approach_x / 1000.0,
-            approach_y / 1000.0,
-            theta_rad
-        )
-
         if start_pose is not None:
             if not all(k in start_pose for k in ('x', 'y', 'theta')):
                 return None
-            stm32_commands, path_success = self.pathfinder.path(
+            stm32_commands, path_success = self.pathfinder.path_full(
+                target_x=approach_x / 1000.0,
+                target_y=approach_y / 1000.0,
+                target_theta=theta_rad,
                 start_x=float(start_pose['x']) / 1000.0,
                 start_y=float(start_pose['y']) / 1000.0,
                 start_theta=math.radians(float(start_pose['theta']))
             )
         else:
-            stm32_commands, path_success = self.pathfinder.path()
+            stm32_commands, path_success = self.pathfinder.path_full(
+                target_x=approach_x / 1000.0,
+                target_y=approach_y / 1000.0,
+                target_theta=theta_rad,
+            )
 
         if not path_success:
             return None
@@ -286,22 +287,24 @@ class TaskScheduler:
 
         # Path to target point only; explicit orientate is added in task sequence
         current_theta_rad = math.radians(float(self.map.robot_position.theta))
-        self.pathfinder.set_goal(
-            target_x / 1000.0,
-            target_y / 1000.0,
-            current_theta_rad,
-        )
 
         if start_pose is not None:
             if not all(k in start_pose for k in ('x', 'y', 'theta')):
                 return None
-            stm32_commands, path_success = self.pathfinder.path(
+            stm32_commands, path_success = self.pathfinder.path_full(
+                target_x=target_x / 1000.0,
+                target_y=target_y / 1000.0,
+                target_theta=current_theta_rad,
                 start_x=float(start_pose['x']) / 1000.0,
                 start_y=float(start_pose['y']) / 1000.0,
                 start_theta=math.radians(float(start_pose['theta']))
             )
         else:
-            stm32_commands, path_success = self.pathfinder.path()
+            stm32_commands, path_success = self.pathfinder.path_full(
+                target_x=target_x / 1000.0,
+                target_y=target_y / 1000.0,
+                target_theta=current_theta_rad,
+            )
 
         if not path_success:
             return None
