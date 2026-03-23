@@ -16,7 +16,7 @@ from euro.yaml_loader import load_tasks_from_yaml
 import math
 from euro.pathfinder_controller import PathfinderClient
 from euro.simple_map import Map
-from euro.task_scheduler import TaskScheduler
+from euro.task_scheduler import TaskScheduler, Task
 from euro.decision_maker import DecisionMaker
 from euro.strategy_executor import robot_status, lidar_status, stm32_task, front_task, back_task,rasp_pi_task, path_planning_task, IDLE, EMERGENCY_STOP
 import euro.strategy_executor as executor_module  # Import module to access SHUTDOWN_REQUESTED and other globals
@@ -267,6 +267,39 @@ class StrategyManager(Node):
         self.get_logger().info("requesting from pathfinder for checking if there is a batch or no(global pose ) ")
         color_pattern, success, direction, batch_center, batch_known_id = self.pathfinder.get_batch_color(known_id, pos)
         self.get_logger().info(f"found batch: {success}")
+
+        # Track the execution intent in task_scheduler from global-goal context.
+        # - pick_up  -> target_id = batch known_id returned by get_batch_color
+        # - put_down -> target_id = executor_module.known_id_front/back based on last ESP device
+        if hasattr(self, 'task_scheduler') and self.task_scheduler is not None:
+            tracked_type = None
+            tracked_target_id = ""
+
+            if self.last_task_command == 'pick_up':
+                tracked_type = 'pick_up'
+                tracked_target_id = str(batch_known_id or '').lower()
+            elif self.last_task_command == 'put_down':
+                tracked_type = 'put_down'
+                if self.last_task_device == 'ESP_front':
+                    tracked_target_id = str(getattr(executor_module, 'known_id_front', '') or '').lower()
+                elif self.last_task_device == 'ESP_back':
+                    tracked_target_id = str(getattr(executor_module, 'known_id_back', '') or '').lower()
+            else:
+                #remove tracked task if no longer relevant
+                if hasattr(self, 'task_scheduler') and self.task_scheduler is not None:
+                    self.task_scheduler.untrack_task()
+            if tracked_type is not None:
+                tracked_task = Task(
+                    target_id=tracked_target_id,
+                    type=tracked_type,
+                    options={},
+                    score=0.0,
+                )
+                self.task_scheduler.track_task(tracked_task)
+                self.get_logger().info(
+                    f"🧭 task_scheduler.track_task -> type={tracked_type}, target_id={tracked_target_id or 'unknown'}"
+                )
+        
         if success and self.last_task_command =='pick_up' :
             found_goal_batch=True
             if (direction == "horizontal" and y < batch_center.y) :
