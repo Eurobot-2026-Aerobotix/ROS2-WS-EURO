@@ -9,18 +9,17 @@ class Task:
     """Represents a task for the robot to perform."""
     target_id: str
     type: str
-    options: Dict[str, str] = None
+    options: Dict[str, str] = {}
     score: float = 0.0
 
 class TaskScheduler:
     """Simple task scheduler that generates tasks based on the current map state."""
-    
+    must_dropoff_time = 12.0
+    must_go_home_time = 7.0 # time at 1m distance from nest
     def __init__(self, map: Map, pathfinder_client=None, ros_node=None):
         self.map = map
         self.pathfinder = pathfinder_client
-        self.pickup_queue: List[Task] = []
-        self.dropoff_queue: List[Task] = []
-        self.return_home_flag = False
+        self.task_queue: List[Task] = []
         self.tracked_task: Task = None
         self.tracked_task_invalid = False
         self._map_qos = 10
@@ -53,19 +52,12 @@ class TaskScheduler:
             return
 
         self.map.attach_ros_subscribers(ros_node, qos=qos)
+        self.predicted_enemy_goal : str = "unknown"
 
-    def pop_pickup_task(self) -> Optional[Task]:
-        """Pop the next pickup task from the queue."""
-        if self.pickup_queue:
-            task = self.pickup_queue.pop(0)
-            self.track_task(task)
-            return task
-        return None
-    
-    def pop_dropoff_task(self) -> Optional[Task]:
-        """Pop the next dropoff task from the queue."""
-        if self.dropoff_queue:
-            task = self.dropoff_queue.pop(0)
+    def pop_task(self) -> Optional[Task]:
+        """Pop the next task from the queue."""
+        if self.task_queue:
+            task = self.task_queue.pop(0)
             self.track_task(task)
             return task
         return None
@@ -99,10 +91,49 @@ class TaskScheduler:
                 return 1 / (distance + 1e-5)  # Higher score for closer dropoffs
         return 0.0
     
+    def check_side(self, task: Task) -> None:
+        task.options["side"] = "back"
+        pass
+    
+    def predict_enemy_goal(self) -> None:
+        """Predict the goal position of the enemy based on their current speed and position."""
+        pass
+
     def generate_tasks(self) -> None:
         """Generate tasks based on the current map state."""
         #TODO: Implement task generation logic based on the current map state, such as creating pickup tasks for detected batches and dropoff tasks for known dropoff locations.
-        pass
+        queue = []
+        if self.map.robot_front_empty or self.map.robot_back_empty:
+            for batch_id, batch in self.map.batches.items():
+                if batch.color != "unknown":
+                    task = Task(target_id=batch_id, type="pickup")
+                    task.score = self.calculate_score(task)
+                    if batch_id in ["s3", "s5", "f3", "f5", "f8"]:
+                        self.check_side(task)
+                    queue.append(task)
+        if not self.map.robot_front_empty or not self.map.robot_back_empty:
+            for dropoff_id, dropoff in self.map.drop_offs.items():
+                if dropoff["status"] == "empty":
+                    task = Task(target_id=dropoff_id, type="dropoff")
+                    task.score = self.calculate_score(task)
+                    if dropoff_id in ["f3", "f5", "f8"]:
+                        self.check_side(task)
+                    queue.append(task)
+        # sorting tasks
+        queue.sort(key=lambda t: t.score, reverse=True)
+        if self.map.time_left < self.must_dropoff_time:
+            # If time is running out, prioritize dropoff tasks
+            queue = [t for t in queue if t.type == "dropoff"] + [t for t in queue if t.type != "dropoff"]
+        if (self.map.time_left < max(self.must_go_home_time * self.map.distance_from(self.map.robot_position, self.map.nest_position), 5)) and len([t for t in queue if t.type == "dropoff"]) == 0:
+            task = Task(target_id="nest", type="return_home")
+            task.options["drop"] = "none"
+            if not self.map.robot_front_empty:
+                task.options["drop"] = "front"
+            elif not self.map.robot_back_empty:
+                task.options["drop"] = "back"
+            queue.insert(0, task)  # Prioritize return home task
+            
+        self.task_queue = queue
     
     def check_tracked_task_validity(self) -> Optional[str]:
         """Check the validity of the currently tracked task."""
