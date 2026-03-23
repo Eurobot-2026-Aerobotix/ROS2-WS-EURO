@@ -81,6 +81,9 @@ class Map:
         self.enemy_speed: Speed2D = Speed2D()
         self.time_left = 100.0
         self.robot_color = "unknown"
+        self.robot_front_empty = True
+        self.robot_back_empty = True
+        self.nest_position = Pose2D(x=0.2, y=2.7)  # Assuming nest is at origin for simplicity
 
     # -----------------------------
     # Base setters / state updates
@@ -88,6 +91,12 @@ class Map:
 
     def set_robot_position(self, x: float, y: float, theta: float = 0.0) -> None:
         self.robot_position = Pose2D(x=x, y=y, theta=theta)
+
+    def update_robot_back_status(self, empty: bool) -> None:
+        self.robot_back_empty = empty
+
+    def update_robot_back_status(self, empty: bool) -> None:
+        self.robot_back_empty = empty
 
     def set_enemy_relative(self, x: float, y: float, theta: float = 0.0, detected: bool = True) -> None:
         self.enemy_relative = EnemyRelativeObstacle(x=x, y=y, theta=theta, detected=detected)
@@ -166,3 +175,8 @@ class Map:
     
     def set_robot_color(self, color: str) -> None:
         self.robot_color = color
+        if color == "blue":
+            self.nest_position = Pose2D(x=0.2, y=2.7)  # Blue nest at origin
+
+    def distance_from(self, point_1: Pose2D, point_2: Pose2D) -> float:
+        return ((point_1.x - point_2.x) ** 2 + (point_1.y - point_2.y) ** 2) ** 0.5
