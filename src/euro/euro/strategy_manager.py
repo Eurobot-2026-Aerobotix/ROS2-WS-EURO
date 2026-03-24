@@ -560,21 +560,31 @@ class StrategyManager(Node):
                         self.tasks.remove(generated_task)
             return True
 
-        # Execute steals sequentially so each next steal uses updated state
-        for i in range(sx_count):
-            self.get_logger().info(f"🎯 SX steal {i+1}/{sx_count}")
-            generated_tasks = self.decision_maker.steal_batch(
-                batch_type='sx',
-                device=None,
-                min_members=1
-            )
+        # Execute steals sequentially so each next steal uses updated state.
+        # Retry generation when scheduler temporarily returns no task.
+        i = 0
+        retry_count = 0
+        max_retry_per_steal = 5
+
+        while i < sx_count:
+            self.get_logger().info(f"🎯 SX steal {i+1}/{sx_count} (retry={retry_count})")
+            generated_tasks = self.task_scheduler.get_optimal_task()
 
             if not generated_tasks:
-                self.get_logger().warning(
-                    f"⚠️ Could not generate SX steal task at iteration {i+1}/{sx_count}; stopping"
-                )
-                return i > 0
+                retry_count += 1
+                if retry_count > max_retry_per_steal:
+                    self.get_logger().warning(
+                        f"⚠️ Could not generate SX steal task for iteration {i+1}/{sx_count} after {max_retry_per_steal} retries; stopping"
+                    )
+                    return i > 0
 
+                self.get_logger().warning(
+                    f"⚠️ No task generated for SX steal {i+1}/{sx_count}; retry {retry_count}/{max_retry_per_steal}"
+                )
+                time.sleep(0.1)
+                continue
+
+            retry_count = 0
             self.get_logger().info(
                 f"✅ Generated {len(generated_tasks)} task(s) for SX steal {i+1}/{sx_count}"
             )
@@ -584,6 +594,7 @@ class StrategyManager(Node):
 
             # Run each steal cycle fully before generating the next one
             self.wait_for_all_queues_empty(ignore_rasp_pi=True)
+            i += 1
 
         # keep compatibility with caller's wait flag (already executed sequential waits)
         if wait:
