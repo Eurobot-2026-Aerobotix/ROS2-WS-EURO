@@ -442,6 +442,12 @@ class WebHandlerNode(Node):
             10
         )
 
+        self.start_task_scheduler_result_pub = self.create_publisher(
+            String,
+            '/web/start_task_scheduler_result',
+            10
+        )
+
         self.test_controller_result_pub = self.create_publisher(
             String,
             '/web/test_controller_result',
@@ -501,6 +507,14 @@ class WebHandlerNode(Node):
             String,
             '/web/steal_batch',
             self.handle_steal_batch_request,
+            10,
+            callback_group=self.reentrant_group
+        )
+
+        self.create_subscription(
+            String,
+            '/web/start_task_scheduler',
+            self.handle_start_task_scheduler_request,
             10,
             callback_group=self.reentrant_group
         )
@@ -580,12 +594,14 @@ class WebHandlerNode(Node):
         pathfinder_adapter = PathfinderAdapter(self, callback_group=self.reentrant_group)
         self.round_timer = RoundTimer(autostart=False)
         self.scheduler_map = Map(round_timer=self.round_timer)
+        self.scheduler_started = False
         self.task_scheduler = TaskScheduler(
             map=self.scheduler_map,
             pathfinder_client=pathfinder_adapter,
-            ros_node=self,
+            ros_node=None,
             loop_period_s=0.05,
         )
+        self.get_logger().info('⏸️ TaskScheduler initialized in idle mode (waiting for /web/start_task_scheduler)')
         
         self.get_logger().info("=" * 60)
         self.get_logger().info("🌐 Web Handler Node Ready!")
@@ -878,6 +894,17 @@ class WebHandlerNode(Node):
                 f"🎯 Steal batch requested: type={batch_type or 'any'}, "
                 f"device={device or 'auto'}, min_members={min_members}"
             )
+
+            if not self.scheduler_started:
+                result = {
+                    "success": False,
+                    "message": "TaskScheduler is not started. Press 'Start Task Scheduler' first.",
+                    "tasks": None,
+                    "task_count": 0
+                }
+                self.get_logger().warning("⚠️ Steal batch rejected: scheduler not started")
+                self.publish_steal_batch_result(result)
+                return
             
             # Refresh scheduler once immediately, then generate best executable task set.
             if hasattr(self, 'task_scheduler') and self.task_scheduler is not None:
@@ -929,6 +956,82 @@ class WebHandlerNode(Node):
                 "message": f"Error: {str(e)}",
                 "tasks": None,
                 "task_count": 0
+            })
+
+    def handle_start_task_scheduler_request(self, msg: String):
+        """
+        Handle task scheduler start/activation request from web.
+
+        Expected JSON:
+        {
+            "request_id": "optional-string",
+            "start_round_timer": true,
+            "run_loop_once": true,
+            "generate_task": false
+        }
+        """
+        try:
+            data = json.loads(msg.data) if msg.data else {}
+            request_id = data.get('request_id')
+            start_round_timer = bool(data.get('start_round_timer', True))
+            run_loop_once = bool(data.get('run_loop_once', True))
+            generate_task = bool(data.get('generate_task', False))
+
+            if not self.scheduler_started:
+                # Explicitly wire subscribers/timers only when requested from dashboard.
+                self.task_scheduler.attach_map_subscribers(self, qos=10)
+                self.task_scheduler.attach_loop_timer(self, period_s=0.05)
+                self.scheduler_started = True
+                self.get_logger().info('▶️ TaskScheduler + SimpleMap updater started from dashboard request')
+
+            if start_round_timer and hasattr(self, 'round_timer') and self.round_timer is not None:
+                self.round_timer.start_game()
+
+            if hasattr(self, 'scheduler_map') and self.scheduler_map is not None and self.scheduler_map.map_updater is not None:
+                self.scheduler_map.map_updater.set_enabled(True)
+
+            if run_loop_once and hasattr(self, 'task_scheduler') and self.task_scheduler is not None:
+                self.task_scheduler.loop()
+
+            generated_tasks = None
+            if generate_task and hasattr(self, 'task_scheduler') and self.task_scheduler is not None:
+                explicit_start_pose = None
+                if self.start_pose:
+                    explicit_start_pose = {
+                        'x': float(self.start_pose['x_mm']),
+                        'y': float(self.start_pose['y_mm']),
+                        'theta': float(self.start_pose['theta_deg']),
+                    }
+                generated_tasks = self.task_scheduler.get_optimal_task(start_pose=explicit_start_pose)
+
+            tracked_target = None
+            if hasattr(self, 'task_scheduler') and self.task_scheduler is not None and self.task_scheduler.tracked_task is not None:
+                tracked_target = str(self.task_scheduler.tracked_task.target_id)
+
+            result = {
+                'success': True,
+                'request_id': request_id,
+                'message': 'TaskScheduler and SimpleMap are active',
+                'scheduler_started': self.scheduler_started,
+                'round_timer_started': bool(
+                    hasattr(self, 'round_timer') and self.round_timer is not None and self.round_timer.has_started()
+                ),
+                'batch_count': int(len(self.scheduler_map.batches)) if hasattr(self, 'scheduler_map') and self.scheduler_map is not None else 0,
+                'task_queue_size': int(len(self.task_scheduler.task_queue)) if hasattr(self, 'task_scheduler') and self.task_scheduler is not None else 0,
+                'tracked_task_target': tracked_target,
+                'generated_task_count': int(len(generated_tasks)) if generated_tasks else 0,
+            }
+
+            self.get_logger().info(
+                f"▶️ TaskScheduler start request handled | batches={result['batch_count']} | queue={result['task_queue_size']}"
+            )
+            self.publish_start_task_scheduler_result(result)
+
+        except Exception as e:
+            self.get_logger().error(f"❌ Error handling start task scheduler: {e}")
+            self.publish_start_task_scheduler_result({
+                'success': False,
+                'message': f'Error: {str(e)}',
             })
 
     def handle_test_controller_request(self, msg: String):
@@ -1441,6 +1544,13 @@ class WebHandlerNode(Node):
         msg.data = json.dumps(result)
         self.steal_batch_result_pub.publish(msg)
         self.get_logger().info("📤 Steal batch result sent to web")
+
+    def publish_start_task_scheduler_result(self, result: Dict):
+        """Publish start task scheduler result to web dashboard"""
+        msg = String()
+        msg.data = json.dumps(result)
+        self.start_task_scheduler_result_pub.publish(msg)
+        self.get_logger().info("📤 Start task scheduler result sent to web")
 
     def publish_test_controller_result(self, result: Dict):
         """Publish TEST controller command result to web dashboard"""
