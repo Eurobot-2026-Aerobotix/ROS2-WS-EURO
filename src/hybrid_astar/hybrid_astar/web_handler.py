@@ -986,6 +986,14 @@ class WebHandlerNode(Node):
 
             if start_round_timer and hasattr(self, 'round_timer') and self.round_timer is not None:
                 self.round_timer.start_game()
+                
+                # Start pathfinder game timer for periodic map updates
+                if hasattr(self, 'pathfinder_client') and self.pathfinder_client is not None:
+                    success, message = self.pathfinder_client.start_game()
+                    if success:
+                        self.get_logger().info(f"🎮 Pathfinder game timer started via web: {message}")
+                    else:
+                        self.get_logger().warning(f"⚠️ Failed to start pathfinder game timer: {message}")
 
             if hasattr(self, 'scheduler_map') and self.scheduler_map is not None and self.scheduler_map.map_updater is not None:
                 self.scheduler_map.map_updater.set_enabled(True)
