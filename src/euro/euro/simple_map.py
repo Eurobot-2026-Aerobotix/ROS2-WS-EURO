@@ -168,16 +168,16 @@ class Map:
     enemy_radius = 170.0
 
     def __init__(self, round_timer: Optional[Any] = None, game_duration_s: float = 100.0):
-        # Predefined batch positions from current hybrid_astar map
+        # Predefined batch positions in millimeters.
         self.predefined_batch_positions: Dict[str, Dict[str, float]] = {
-            "s1": {"x": 0.80, "y": 0.175, "phi_degrees": 0.0},
-            "s2": {"x": 1.60, "y": 0.175, "phi_degrees": 0.0},
-            "s3": {"x": 1.20, "y": 1.15, "phi_degrees": 90.0},
-            "s4": {"x": 1.825, "y": 1.1, "phi_degrees": 90.0},
-            "s5": {"x": 1.20, "y": 1.85, "phi_degrees": 90.0},
-            "s6": {"x": 1.825, "y": 1.9, "phi_degrees": 90.0},
-            "s7": {"x": 0.80, "y": 2.8, "phi_degrees": 90.0},
-            "s8": {"x": 1.60, "y": 2.8, "phi_degrees": 90.0},
+            "s1": {"x": 800.0, "y": 175.0, "phi_degrees": 0.0},
+            "s2": {"x": 1600.0, "y": 175.0, "phi_degrees": 0.0},
+            "s3": {"x": 1200.0, "y": 1150.0, "phi_degrees": 90.0},
+            "s4": {"x": 1825.0, "y": 1100.0, "phi_degrees": 90.0},
+            "s5": {"x": 1200.0, "y": 1850.0, "phi_degrees": 90.0},
+            "s6": {"x": 1825.0, "y": 1900.0, "phi_degrees": 90.0},
+            "s7": {"x": 800.0, "y": 2800.0, "phi_degrees": 90.0},
+            "s8": {"x": 1600.0, "y": 2800.0, "phi_degrees": 90.0},
         }
         self.pickup_poses = {
             'S1': [{'x': 800, 'y': 400, 'theta': [90, -90]}],
@@ -220,7 +220,7 @@ class Map:
         self.robot_color = "unknown"
         self.robot_front_empty = True
         self.robot_back_empty = True
-        self.nest_position = Pose2D(x=0.2, y=2.7)  # Assuming nest is at origin for simplicity
+        self.nest_position = Pose2D(x=200.0, y=2700.0)
         self.ninja_on_map = True
         self._subscriptions = []
         self._update_map_timer = None
@@ -265,8 +265,8 @@ class Map:
 
             next_batches[known_id] = BatchInfo(
                 known_id=known_id,
-                x=float(center.x),
-                y=float(center.y),
+                x=float(center.x) * 1000.0,
+                y=float(center.y) * 1000.0,
                 phi_degrees=phi_degrees,
                 color=batch_color,
             )
@@ -440,7 +440,7 @@ class Map:
     def set_robot_color(self, color: str) -> None:
         self.robot_color = color
         if color == "blue":
-            self.nest_position = Pose2D(x=0.2, y=2.7)  # Blue nest at origin
+            self.nest_position = Pose2D(x=200.0, y=2700.0)
     
     def set_ninja_status(self, on_map: bool) -> None:
         self.ninja_on_map = on_map
@@ -509,14 +509,14 @@ class Map:
 
     def _robot_pose_callback(self, msg) -> None:
         """/robot_pose_raw callback (geometry_msgs/msg/Vector3)."""
-        self.set_robot_position(float(msg.x), float(msg.y), float(msg.z))
+        self.set_robot_position(float(msg.x) * 1000.0, float(msg.y) * 1000.0, float(msg.z))
 
     def _enemy_relative_callback(self, msg) -> None:
         """/obstacle_relative callback (geometry_msgs/msg/PoseStamped)."""
         
         self.set_enemy_relative(
-            float(msg.pose.position.x),
-            float(msg.pose.position.y),
+            float(msg.pose.position.x) * 1000.0,
+            float(msg.pose.position.y) * 1000.0,
             theta=0.0,
             detected=True,
         )

@@ -317,7 +317,6 @@ class PathfinderAdapter:
         """Get color pattern for a batch synchronously.
         Returns (color_pattern, success, direction, batch_center, known_id)
         """
-        from hybrid_astar.srv import GetBatchColorPattern
         from geometry_msgs.msg import Point
 
         client = self.web_handler.batch_color_client
@@ -330,17 +329,16 @@ class PathfinderAdapter:
         request.pos = pos if pos is not None else Point()
 
         try:
-            import rclpy
             future = client.call_async(request)
-            rclpy.spin_until_future_complete(self.web_handler, future, timeout_sec=5.0)
-            if not future.done():
+
+            if not self._wait_future(future, timeout_sec=5.0):
                 self.web_handler.get_logger().error('❌ get_batch_color timeout')
                 return '', False, '', Point(), ''
+
             response = future.result()
-            if response.success:
+            if response and response.success:
                 return response.color_pattern, True, response.direction, response.batch_center, response.message
-            else:
-                return '', False, '', Point(), ''
+            return '', False, '', Point(), ''
         except Exception as e:
             self.web_handler.get_logger().error(f'❌ get_batch_color error: {e}')
             return '', False, '', Point(), ''
@@ -364,6 +362,26 @@ class PathfinderAdapter:
         if self.untracked_batches:
             self.web_handler.get_logger().info(f"🧹 Clearing untracked planning batches: {self.untracked_batches}")
         self.untracked_batches.clear()
+
+
+class RoundTimer:
+    """Minimal round timer compatible with `Map` timing hooks."""
+
+    def __init__(self, autostart: bool = True):
+        self._start_time: Optional[float] = None
+        if autostart:
+            self.start_game()
+
+    def start_game(self) -> None:
+        self._start_time = time.time()
+
+    def has_started(self) -> bool:
+        return self._start_time is not None
+
+    def time(self) -> float:
+        if self._start_time is None:
+            return 0.0
+        return time.time() - self._start_time
 
 
 class WebHandlerNode(Node):
@@ -560,7 +578,8 @@ class WebHandlerNode(Node):
         
         # Initialize TaskScheduler stack for dynamic task generation from web.
         pathfinder_adapter = PathfinderAdapter(self, callback_group=self.reentrant_group)
-        self.scheduler_map = Map(round_timer=None)
+        self.round_timer = RoundTimer(autostart=False)
+        self.scheduler_map = Map(round_timer=self.round_timer)
         self.task_scheduler = TaskScheduler(
             map=self.scheduler_map,
             pathfinder_client=pathfinder_adapter,
@@ -718,11 +737,11 @@ class WebHandlerNode(Node):
                 f"θ={self.start_pose['theta_deg']:.1f}°"
             )
 
-            # Keep scheduler map robot pose in sync (meters, degrees).
+            # Keep scheduler map robot pose in sync (millimeters, degrees).
             if hasattr(self, 'scheduler_map') and self.scheduler_map is not None:
                 self.scheduler_map.set_robot_position(
-                    self.mm_to_m(self.start_pose['x_mm']),
-                    self.mm_to_m(self.start_pose['y_mm']),
+                    float(self.start_pose['x_mm']),
+                    float(self.start_pose['y_mm']),
                     float(self.start_pose['theta_deg']),
                 )
         except Exception as e:
@@ -787,11 +806,11 @@ class WebHandlerNode(Node):
                 f"📤 Published enemy obstacle to /obstacle_relative"
             )
 
-            # Keep scheduler map enemy state in sync (meters).
+            # Keep scheduler map enemy state in sync (millimeters).
             if hasattr(self, 'scheduler_map') and self.scheduler_map is not None:
                 self.scheduler_map.set_enemy_relative(
-                    self.mm_to_m(self.enemy_pose['x_mm']),
-                    self.mm_to_m(self.enemy_pose['y_mm']),
+                    float(self.enemy_pose['x_mm']),
+                    float(self.enemy_pose['y_mm']),
                     theta=float(self.enemy_pose['theta_deg']),
                     detected=True,
                 )
@@ -881,6 +900,7 @@ class WebHandlerNode(Node):
                 # steal_batch now returns a list of tasks [pickup_task, putdown_task]
                 task_names = [task['name'] for task in tasks]
                 self._log_steal_tasks_details(tasks)
+                self._sync_scheduler_holder_status_from_tasks(tasks)
                 result = {
                     "success": True,
                     "message": f"Batch steal tasks generated: {', '.join(task_names)}",
@@ -979,6 +999,25 @@ class WebHandlerNode(Node):
                 self.get_logger().info(f"🧪 {response['message']}")
 
             elif controller_name in ['hybrid_astar', 'pathfinder', 'map']:
+                if action in ['start_round_timer', 'reset_round_timer', 'start_timer', 'reset_timer']:
+                    if not hasattr(self, 'round_timer') or self.round_timer is None:
+                        raise ValueError('Round timer is not initialized')
+
+                    # start_game() also resets when already started.
+                    self.round_timer.start_game()
+
+                    response = {
+                        'success': True,
+                        'controller': 'hybrid_astar',
+                        'action': action,
+                        'request_id': request_id,
+                        'message': 'Round timer started/reset successfully'
+                    }
+
+                    self.get_logger().info(f"🧪 {response['message']}")
+                    self.publish_test_controller_result(response)
+                    return
+
                 action_to_service = {
                     'update_map': ('/update_map', self.update_map_client),
                     'clear_map': ('/clear_map', self.clear_map_client),
@@ -1068,6 +1107,56 @@ class WebHandlerNode(Node):
                 device = step.get('device', '?')
                 command = step.get('command', '?')
                 self.get_logger().info(f"      - step {step_i}: {device}.{command}")
+
+    def _sync_scheduler_holder_status_from_tasks(self, tasks: List[Dict]) -> None:
+        """
+        Update SimpleMap holder-empty flags from generated task commands.
+
+        Rules requested:
+        - pick_up  -> holder becomes NOT empty (False)
+        - put_down -> holder becomes empty (True)
+        """
+        if not hasattr(self, 'scheduler_map') or self.scheduler_map is None:
+            return
+
+        front_empty = self.scheduler_map.robot_front_empty
+        back_empty = self.scheduler_map.robot_back_empty
+        changed = False
+
+        for task in tasks:
+            sequence = task.get('sequence', []) if isinstance(task, dict) else []
+            for step in sequence:
+                if not isinstance(step, dict):
+                    continue
+                device = str(step.get('device', '')).strip().lower()
+                command = str(step.get('command', '')).strip().lower()
+
+                if device == 'esp_front':
+                    if command == 'pick_up':
+                        if front_empty:
+                            front_empty = False
+                            changed = True
+                    elif command == 'put_down':
+                        if not front_empty:
+                            front_empty = True
+                            changed = True
+
+                elif device == 'esp_back':
+                    if command == 'pick_up':
+                        if back_empty:
+                            back_empty = False
+                            changed = True
+                    elif command == 'put_down':
+                        if not back_empty:
+                            back_empty = True
+                            changed = True
+
+        if changed:
+            self.scheduler_map.update_robot_front_status(front_empty)
+            self.scheduler_map.update_robot_back_status(back_empty)
+            self.get_logger().info(
+                f"🧺 Updated holder status from tasks: front_empty={front_empty}, back_empty={back_empty}"
+            )
     
     # ========================================================================
     # Service Calls

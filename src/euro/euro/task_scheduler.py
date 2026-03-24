@@ -23,8 +23,10 @@ class Task:
 
 class TaskScheduler:
     """Simple task scheduler that generates tasks based on the current map state."""
-    must_dropoff_time = 1200.0
-    must_go_home_time = 7000.0 # time at 1m distance from nest
+    # NOTE: `Map.get_time_left()` is expressed in seconds.
+    # Keep these thresholds in seconds as well.
+    must_dropoff_time = 12.0
+    must_go_home_time = 7.0  # travel budget at 1m distance from nest (seconds)
     max_distance_for_predict_enemy_goal = 1500.0 # in meters
     drop_off_distance = 300.0
     distance_from_wall = 200.0
@@ -46,6 +48,8 @@ class TaskScheduler:
         self._map_qos = 10
         self._loop_period_s = float(loop_period_s)
         self._loop_timer = None
+        self._last_available_batches_signature = None
+        self._last_pickup_queue_signature = None
 
         # Explicit ROS wiring only:
         # - If a node is provided and map is a plain data-map, attach subscribers on it.
@@ -228,7 +232,7 @@ class TaskScheduler:
                 pickup_pos.append(Pose2D(x=self.map.batches[task.target_id].x, y=self.map.batches[task.target_id].y - 175.0))
             elif task.target_id in ["f4", "f7"]:
                 pickup_pos.append(Pose2D(x=self.map.batches[task.target_id].x + 175.0, y=self.map.batches[task.target_id].y))
-            elif task.target_id in ["s3", "f5"]:
+            elif task.target_id in ["s3", "s5"]:
                 pickup_pos.append(Pose2D(x=self.map.batches[task.target_id].x - 175.0, y=self.map.batches[task.target_id].y))
                 pickup_pos.append(Pose2D(x=self.map.batches[task.target_id].x + 175.0, y=self.map.batches[task.target_id].y))
             for pos in pickup_pos:
@@ -334,24 +338,77 @@ class TaskScheduler:
     def generate_tasks(self) -> None:
         """Generate tasks based on the current map state."""
         self.predict_enemy_goal()
+
+        # Log available batches only when snapshot changes.
+        if self.map.batches:
+            batch_dump = [
+                f"{bid}(color={b.color},phi={b.phi_degrees:.1f},x={b.x:.3f},y={b.y:.3f})"
+                for bid, b in sorted(self.map.batches.items(), key=lambda item: item[0])
+            ]
+            message = f"📦 Available batches: {', '.join(batch_dump)}"
+            available_signature = tuple(batch_dump)
+        else:
+            message = "📦 Available batches: none"
+            available_signature = ()
+
+        if available_signature != self._last_available_batches_signature:
+            if self.ros_node is not None:
+                self.ros_node.get_logger().info(message)
+            else:
+                print(f"[TaskScheduler] {message}")
+            self._last_available_batches_signature = available_signature
+
         queue = []
+        queued_pickup_debug_rows = []
         # generate pickup tasks if we have space in the robot
         if self.map.robot_front_empty or self.map.robot_back_empty:
             for batch_id, batch in self.map.batches.items():
                 if batch_id in ["f3", "f5", "f8"]:
+                    if self.ros_node is not None:
+                        self.ros_node.get_logger().debug(f"⏭️ Skip pickup {batch_id}: reserved center drop-off zone")
                     continue
                 if (len(batch.color) != 4) or (batch.color.count(self.map.robot_color[0]) == 4):
+                    if self.ros_node is not None:
+                        self.ros_node.get_logger().debug(
+                            f"⏭️ Skip pickup {batch_id}: invalid/own color pattern='{batch.color}' robot_color='{self.map.robot_color}'"
+                        )
                     continue
                 if batch_id[0] == "f":
                     possible_pickup_phi = 0.0
                     if batch_id in ["f1", "f10"]:
                         possible_pickup_phi = 90.0
                     if batch.phi_degrees is None or abs(batch.phi_degrees - possible_pickup_phi) > 1.0:
+                        if self.ros_node is not None:
+                            self.ros_node.get_logger().debug(
+                                f"⏭️ Skip pickup {batch_id}: phi mismatch current={batch.phi_degrees} expected={possible_pickup_phi}"
+                            )
                         continue
                 task = Task(target_id=batch_id, type="pickup")
                 task.score = self.calculate_score(task)
                 if (self.choose_side(task)):
                     queue.append(task)
+                    queued_pickup_debug_rows.append(
+                        f"{task.target_id}(score={task.score:.3f},options={task.options})"
+                    )
+                else:
+                    if self.ros_node is not None:
+                        self.ros_node.get_logger().debug(
+                            f"⏭️ Skip pickup {batch_id}: choose_side returned False"
+                        )
+
+        # Log queued pickup snapshot only when it changes.
+        pickup_signature = tuple(queued_pickup_debug_rows)
+        if pickup_signature != self._last_pickup_queue_signature:
+            if queued_pickup_debug_rows:
+                pickup_message = f"🧺 Queued pickup tasks: {', '.join(queued_pickup_debug_rows)}"
+            else:
+                pickup_message = "🧺 Queued pickup tasks: none"
+
+            if self.ros_node is not None:
+                self.ros_node.get_logger().info(pickup_message)
+            else:
+                print(f"[TaskScheduler] {pickup_message}")
+            self._last_pickup_queue_signature = pickup_signature
         
         # generate dropoff tasks if we have crates in the robot
         if not self.map.robot_front_empty or not self.map.robot_back_empty:
@@ -486,12 +543,35 @@ class TaskScheduler:
         esp_device = 'ESP_front' if pickup_face == 'front' else 'ESP_back'
         stm_command = 'go_to' if pickup_face == 'front' else 'go_to_backwards'
 
-        # Pre-approach point: plan to a point before final pickup pose, then do final precise move.
-        # Uses pickup orientation to compute a point behind the pickup pose.
+        # Pre-approach point (same logic as DecisionMaker):
+        # apply ±10cm offset depending on batch orientation and whether pickup pose is
+        # above/below (horizontal) or left/right (vertical) of batch center.
         offset = max(0.0, float(approach_offset_mm))
         theta_rad = math.radians(float(pickup_theta))
-        approach_x = pickup_x - (offset * math.cos(theta_rad))
-        approach_y = pickup_y - (offset * math.sin(theta_rad))
+        approach_x = float(pickup_x)
+        approach_y = float(pickup_y)
+
+        batch = self.map.batches.get(str(batch_known_id).lower())
+        if batch is not None:
+            center_x = float(batch.x)
+            center_y = float(batch.y)
+
+            # Infer orientation from batch angle (0/180 => horizontal, 90/-90 => vertical)
+            phi = float(batch.phi_degrees if batch.phi_degrees is not None else 0.0)
+            phi_mod = abs(phi) % 180.0
+            if phi_mod <= 45.0 or phi_mod >= 135.0:
+                batch_direction = 'horizontal'
+            else:
+                batch_direction = 'vertical'
+
+            if batch_direction == 'horizontal' and float(pickup_y) < center_y:
+                approach_y = float(pickup_y) - offset
+            elif batch_direction == 'horizontal' and float(pickup_y) > center_y:
+                approach_y = float(pickup_y) + offset
+            elif batch_direction == 'vertical' and float(pickup_x) < center_x:
+                approach_x = float(pickup_x) - offset
+            elif batch_direction == 'vertical' and float(pickup_x) > center_x:
+                approach_x = float(pickup_x) + offset
 
         # Plan path to pre-approach target
         if start_pose is not None:

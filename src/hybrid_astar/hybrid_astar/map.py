@@ -99,6 +99,8 @@ class MapManager:
         self.first_update_map = True
         self.first_update_empty_retry_count = 0
         self.first_update_empty_retry_max = 6
+        self.first_update_empty_reported = False
+        self.first_update_start_logged = False
         
         # Flag to track if we've locked the baseline patterns
         self.baselines_locked = False
@@ -774,7 +776,9 @@ class MapManager:
         # Always get all batches with 'sfg' filter (for both first and subsequent calls)
         # The difference is that first call clears everything, subsequent calls do incremental updates
         if self.first_update_map:
-            self.node.get_logger().info("🔄 First update_map call - requesting all batches (unlocked)")
+            if not self.first_update_start_logged:
+                self.node.get_logger().info("🔄 First update_map call - requesting all batches (unlocked)")
+                self.first_update_start_logged = True
             self.baseline_lock_pending = True
         
         stable_request = GetStableBatches.Request()
@@ -885,10 +889,14 @@ class MapManager:
                     self.first_update_empty_retry_count += 1
                     attempt = self.first_update_empty_retry_count
                     self.baseline_lock_pending = True
-                    self.node.get_logger().warn(
+                    retry_msg = (
                         f"⚠️ First update_map returned 0 batches, retrying as first update "
                         f"({attempt}/{self.first_update_empty_retry_max})"
                     )
+                    if attempt == 1:
+                        self.node.get_logger().warn(retry_msg)
+                    else:
+                        self.node.get_logger().debug(retry_msg)
 
                     retry_client = client if client is not None else self.retry_client
                     if retry_client and retry_client.service_is_ready():
@@ -909,11 +917,20 @@ class MapManager:
                         )
                     return
 
-                self.node.get_logger().error(
+                exhausted_msg = (
                     f"❌ First update_map still returned 0 batches after "
                     f"{self.first_update_empty_retry_max} retries"
                 )
+                if not self.first_update_empty_reported:
+                    self.node.get_logger().error(exhausted_msg)
+                    self.first_update_empty_reported = True
+                else:
+                    self.node.get_logger().debug(exhausted_msg)
                 return
+
+            if is_first_update and num_batches > 0:
+                self.first_update_empty_reported = False
+                self.first_update_start_logged = False
             
             # Filter batches based on update type
             if is_first_update:
@@ -1192,7 +1209,7 @@ class MapManager:
                                    if b.known_id not in self.active_batch_ids or b.known_id.startswith('f')]
                     if len(new_batches) < len(filtered_batches):
                         kept_count = len(filtered_batches) - len(new_batches)
-                        self.node.get_logger().info(
+                        self.node.get_logger().debug(
                             f"♻️  Keeping {kept_count} existing SX/GX batches, adding {len(new_batches)} new/FX ones"
                         )
                     filtered_batches = new_batches
