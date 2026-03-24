@@ -93,7 +93,7 @@ class TaskScheduler:
         if hasattr(self.map, 'attach_round_update_timer'):
             self.map.attach_round_update_timer(
                 ros_node,
-                period_s=5.0,
+                period_s=10.0,
                 start_s=5.0,
                 end_s=100.0,
                 pathfinder_client=self.pathfinder,

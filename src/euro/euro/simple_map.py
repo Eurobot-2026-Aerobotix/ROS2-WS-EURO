@@ -341,7 +341,7 @@ class Map:
                 map_ref=self,
                 ros_node=node,
                 pathfinder_client=pathfinder_client,
-                map_update_hz=0.5,
+                map_update_hz=0.05,
                 active_batches_hz=0.2,
             )
             self.map_updater.set_enabled(True)
