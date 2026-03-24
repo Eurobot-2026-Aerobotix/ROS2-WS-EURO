@@ -15,7 +15,7 @@ from rclpy.node import Node
 
 
 class MapUpdater:
-    """Background updater with independent rates for map refresh and active-batch refresh."""
+    """Background updater for map refresh (batch content is topic-driven)."""
 
     def __init__(
         self,
@@ -37,10 +37,8 @@ class MapUpdater:
 
         self._enabled = True
         self._warned_missing_update_map = False
-        self._warned_missing_get_active_batches = False
         self._last_state_log_s = 0.0
         self._last_update_map_call_s = 0.0
-        self._last_get_active_batches_call_s = 0.0
         self._last_synced_batch_count: Optional[int] = None
 
     def start(self) -> None:
@@ -51,7 +49,7 @@ class MapUpdater:
         self._thread.start()
         self.node.get_logger().info(
             f'🛰️ SimpleMap updater started: update_map={self.map_update_hz:.1f}Hz, '
-            f'get_active_batches={self.active_batches_hz:.1f}Hz'
+            f'batches source=/active_obstacles topic'
         )
 
     def stop(self) -> None:
@@ -63,8 +61,8 @@ class MapUpdater:
         self._enabled = bool(enabled)
 
     def _run(self) -> None:
-        # Drive loop at the highest requested rate.
-        period_s = 1.0 / max(self.map_update_hz, self.active_batches_hz)
+        # Drive loop from update_map cadence; batches are updated via topic callback.
+        period_s = 1.0 / max(self.map_update_hz, 0.2)
         while not self._stop_event.is_set():
             loop_start = time.perf_counter()
             if self._enabled:
@@ -79,8 +77,6 @@ class MapUpdater:
         try:
             now_mono = time.perf_counter()
             do_update_map = (now_mono - self._last_update_map_call_s) >= (1.0 / self.map_update_hz)
-            do_get_active = (now_mono - self._last_get_active_batches_call_s) >= (1.0 / self.active_batches_hz)
-
             update_map_fn = getattr(self.pathfinder, 'update_map', None)
             if do_update_map and callable(update_map_fn):
                 map_success, map_message = update_map_fn()
@@ -89,42 +85,9 @@ class MapUpdater:
                     self.node.get_logger().warning(f'⚠️ SimpleMap background update_map failed: {map_message}')
             elif do_update_map and not self._warned_missing_update_map:
                 self.node.get_logger().warning(
-                    '⚠️ Pathfinder has no update_map(); SimpleMap updater will refresh via get_active_batches only'
+                    '⚠️ Pathfinder has no update_map(); SimpleMap updater relies on /active_obstacles topic only'
                 )
                 self._warned_missing_update_map = True
-
-            get_active_batches_fn = getattr(self.pathfinder, 'get_active_batches', None)
-            if do_get_active and not callable(get_active_batches_fn):
-                if not self._warned_missing_get_active_batches:
-                    self.node.get_logger().warning(
-                        '⚠️ Pathfinder has no get_active_batches(); SimpleMap updater cannot refresh batches'
-                    )
-                    self._warned_missing_get_active_batches = True
-                return
-
-            if not do_get_active:
-                return
-
-            # If topic-driven batch updates are fresh, skip service polling.
-            has_recent_topic_fn = getattr(self.map, 'has_recent_topic_batches_update', None)
-            if callable(has_recent_topic_fn) and has_recent_topic_fn(max_age_s=3.0):
-                return
-
-            batch_info = get_active_batches_fn()
-            self._last_get_active_batches_call_s = now_mono
-            if batch_info is None:
-                self.node.get_logger().warning('⚠️ SimpleMap background get_active_batches failed')
-                return
-
-            updated_count = self.map.update_batches_from_active_batch_info(batch_info)
-            now = time.time()
-            if self._last_synced_batch_count != updated_count:
-                self.node.get_logger().info(f'🧠 SimpleMap batch sync: {updated_count} batches')
-                self._last_synced_batch_count = updated_count
-                self._last_state_log_s = now
-            elif now - self._last_state_log_s >= 10.0:
-                self.node.get_logger().debug(f'🧠 SimpleMap batch sync unchanged: {updated_count} batches')
-                self._last_state_log_s = now
 
         except Exception as exc:
             self.node.get_logger().error(f'❌ SimpleMap background updater exception: {exc}')
@@ -268,7 +231,18 @@ class Map:
         return updated
 
     def _active_obstacles_callback(self, msg) -> None:
-        self.update_batches_from_active_batches_msg(msg)
+        updated_count = self.update_batches_from_active_batches_msg(msg)
+        now = time.time()
+        if self.map_updater is not None:
+            if self.map_updater._last_synced_batch_count != updated_count:
+                if hasattr(self, 'get_logger'):
+                    self.get_logger().info(f'🧠 SimpleMap batch sync: {updated_count} batches')
+                self.map_updater._last_synced_batch_count = updated_count
+                self.map_updater._last_state_log_s = now
+            elif now - self.map_updater._last_state_log_s >= 10.0:
+                if hasattr(self, 'get_logger'):
+                    self.get_logger().debug(f'🧠 SimpleMap batch sync unchanged: {updated_count} batches')
+                self.map_updater._last_state_log_s = now
 
     def update_batches_from_active_batch_info(self, batch_info: Dict[str, List[Any]]) -> int:
         """Update internal `batches` map from pathfinder `get_active_batches()` response."""
