@@ -17,7 +17,6 @@ import math
 from euro.pathfinder_controller import PathfinderClient
 from euro.simple_map import Map
 from euro.task_scheduler import TaskScheduler, Task
-from euro.decision_maker import DecisionMaker
 from euro.strategy_executor import robot_status, lidar_status, stm32_task, front_task, back_task,rasp_pi_task, path_planning_task, IDLE, EMERGENCY_STOP
 import euro.strategy_executor as executor_module  # Import module to access SHUTDOWN_REQUESTED and other globals
 
@@ -111,10 +110,6 @@ class StrategyManager(Node):
             ros_node=self,
         )
         self.get_logger().info('🗺️ TaskScheduler initialized and attached to strategy_manager node')
-        
-        # Initialize decision maker for dynamic batch stealing
-        self.decision_maker = DecisionMaker(self, self.pathfinder)
-        self.get_logger().info('🧠 Decision Maker initialized with pathfinder access')
 
     def publish_beacon_status(self, value: int) -> None:
         self.beacon_status_value = int(value)
