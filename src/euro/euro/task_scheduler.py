@@ -694,8 +694,18 @@ class TaskScheduler:
         center_y = float(zone['y'])
         zone_type = str(zone.get('batch_type', 'A')).upper()
 
-        # Angle at target point to face center of putdown zone
+        # Angle at target point to face center of putdown zone.
+        # For back putdown, robot heading should be opposite so the BACK side
+        # points toward the center while dropping.
         theta_to_center_deg = math.degrees(math.atan2(center_y - target_y, center_x - target_x))
+        if esp_device == 'ESP_back':
+            theta_to_center_deg += 180.0
+
+        # Normalize to [-180, 180]
+        while theta_to_center_deg > 180.0:
+            theta_to_center_deg -= 360.0
+        while theta_to_center_deg <= -180.0:
+            theta_to_center_deg += 360.0
         theta_to_center_rad = math.radians(theta_to_center_deg)
 
         # Path to target point only; explicit orientate is added in task sequence
