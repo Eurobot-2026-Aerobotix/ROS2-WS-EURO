@@ -681,7 +681,7 @@ def handle_color_pattner(strategy,front):
     color_pattern, success, direction, batch_center, batch_known_id = strategy.pathfinder.get_batch_color(known_id, pos)
     
     # Default to "yyyy" if no pattern received or failed
-    if not color_pattern or not success:
+    if not color_pattern or not success or len(color_pattern) != 4:
         color_pattern = "yyyy"
         strategy.get_logger().info(f"⚠️  No batch found or failed - defaulting to pattern: {color_pattern}")
     else:
