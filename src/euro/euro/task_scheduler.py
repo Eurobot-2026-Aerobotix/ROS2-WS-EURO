@@ -635,6 +635,7 @@ class TaskScheduler:
         device: str,
         start_pose: Optional[Dict[str, float]] = None,
         insert_distance_mm: float = 200.0,
+        retreat_distance_mm: float = 100.0,
     ) -> Optional[List[Dict[str, Any]]]:
         """
         Build a put_down task.
@@ -645,6 +646,9 @@ class TaskScheduler:
           3) Execute ESP put_down
           4) If type B, create a separate follow-up task with 20cm insertion move
               (front=go_to, back=go_to_backwards), preserving orientation
+          5) Always append a final retreat task (10cm by default):
+              - front put_down -> move back (`go_to_backwards`)
+              - back put_down  -> move forward (`go_to`)
 
         Args:
             batch_known_id: Putdown zone batch id (e.g., 'f1', 'f5')
@@ -653,11 +657,12 @@ class TaskScheduler:
             device: 'front'/'back' or 'ESP_front'/'ESP_back'
             start_pose: Optional {'x','y','theta'} in mm/degrees for explicit path start
             insert_distance_mm: Insertion move distance for type B zones (default 200mm)
+            retreat_distance_mm: Final retreat distance after put_down flow (default 100mm)
 
         Returns:
             Ordered list of task dicts compatible with strategy_manager queue format:
-            - Type A: [putdown_task]
-            - Type B: [putdown_task, putdown_insert_task]
+            - Type A: [putdown_task, putdown_retreat_task]
+            - Type B: [putdown_task, putdown_insert_task, putdown_retreat_task]
             None on invalid inputs
         """
         if self.pathfinder is None:
@@ -764,9 +769,55 @@ class TaskScheduler:
             }
         }
 
+        # Final retreat task (always appended as the last task).
+        # Retreat direction is away from zone center.
+        away_dx = target_x - center_x
+        away_dy = target_y - center_y
+        away_norm = math.hypot(away_dx, away_dy)
+        if away_norm <= 1e-6:
+            # Fallback when target ~= center: retreat opposite to facing direction.
+            away_dx = -math.cos(theta_to_center_rad)
+            away_dy = -math.sin(theta_to_center_rad)
+            away_norm = 1.0
+        away_ux = away_dx / away_norm
+        away_uy = away_dy / away_norm
+
+        # If type B inserts toward center first, retreat starts from insert end-point.
+        retreat_start_x = target_x
+        retreat_start_y = target_y
+        if zone_type == 'B':
+            retreat_start_x = target_x + max(0.0, float(insert_distance_mm)) * math.cos(theta_to_center_rad)
+            retreat_start_y = target_y + max(0.0, float(insert_distance_mm)) * math.sin(theta_to_center_rad)
+
+        retreat_dist = max(0.0, float(retreat_distance_mm))
+        retreat_x = retreat_start_x + retreat_dist * away_ux
+        retreat_y = retreat_start_y + retreat_dist * away_uy
+
+        # Requested behavior:
+        # - front put_down => move back
+        # - back put_down  => move forward
+        retreat_stm_command = 'go_to_backwards' if esp_device == 'ESP_front' else 'go_to'
+
+        putdown_retreat_task = {
+            'name': f'putdown_retreat_{normalized_id}_{esp_device.split("_")[1]}',
+            'sequence': [
+                {
+                    'device': 'STM',
+                    'command': retreat_stm_command,
+                    'params': [retreat_x, retreat_y, 900.0, 1.0, {'from_putdown_task': True, 'putdown_retreat': True}],
+                    'wait': True
+                }
+            ],
+            'global_goal': {
+                'x': retreat_x,
+                'y': retreat_y,
+                'theta': theta_to_center_deg
+            }
+        }
+
         # For type B, build insertion as a separate task executed after put_down
         if zone_type != 'B':
-            return [putdown_task]
+            return [putdown_task, putdown_retreat_task]
 
         dist = max(0.0, float(insert_distance_mm))
         # Always insert toward the center, regardless of front/back device.
@@ -790,7 +841,7 @@ class TaskScheduler:
             }
         }
 
-        return [putdown_task, putdown_insert_task]
+        return [putdown_task, putdown_insert_task, putdown_retreat_task]
 
     def _select_pickup_face(self) -> Optional[str]:
         """Choose pickup face based on current holder availability."""
