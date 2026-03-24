@@ -322,7 +322,7 @@ class Map:
     def attach_round_update_timer(
         self,
         node,
-        period_s: float = 1.0,
+        period_s: float = 5.0,
         start_s: float = 5.0,
         end_s: float = 100.0,
         pathfinder_client: Optional[Any] = None,
@@ -341,8 +341,8 @@ class Map:
                 map_ref=self,
                 ros_node=node,
                 pathfinder_client=pathfinder_client,
-                map_update_hz=1.0,
-                active_batches_hz=2.0,
+                map_update_hz=0.5,
+                active_batches_hz=0.2,
             )
             self.map_updater.set_enabled(True)
             self.map_updater.start()

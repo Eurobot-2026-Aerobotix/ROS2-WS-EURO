@@ -93,7 +93,7 @@ class TaskScheduler:
         if hasattr(self.map, 'attach_round_update_timer'):
             self.map.attach_round_update_timer(
                 ros_node,
-                period_s=1.0,
+                period_s=5.0,
                 start_s=5.0,
                 end_s=100.0,
                 pathfinder_client=self.pathfinder,
@@ -396,19 +396,19 @@ class TaskScheduler:
                             f"⏭️ Skip pickup {batch_id}: choose_side returned False"
                         )
 
-        # Log queued pickup snapshot only when it changes.
-        pickup_signature = tuple(queued_pickup_debug_rows)
-        if pickup_signature != self._last_pickup_queue_signature:
-            if queued_pickup_debug_rows:
-                pickup_message = f"🧺 Queued pickup tasks: {', '.join(queued_pickup_debug_rows)}"
-            else:
-                pickup_message = "🧺 Queued pickup tasks: none"
+        # # Log queued pickup snapshot only when it changes.
+        # pickup_signature = tuple(queued_pickup_debug_rows)
+        # if pickup_signature != self._last_pickup_queue_signature:
+        #     if queued_pickup_debug_rows:
+        #         pickup_message = f"🧺 Queued pickup tasks: {', '.join(queued_pickup_debug_rows)}"
+        #     else:
+        #         pickup_message = "🧺 Queued pickup tasks: none"
 
-            if self.ros_node is not None:
-                self.ros_node.get_logger().info(pickup_message)
-            else:
-                print(f"[TaskScheduler] {pickup_message}")
-            self._last_pickup_queue_signature = pickup_signature
+        #     if self.ros_node is not None:
+        #         self.ros_node.get_logger().info(pickup_message)
+        #     else:
+        #         print(f"[TaskScheduler] {pickup_message}")
+        #     self._last_pickup_queue_signature = pickup_signature
         
         # generate dropoff tasks if we have crates in the robot
         if not self.map.robot_front_empty or not self.map.robot_back_empty:
