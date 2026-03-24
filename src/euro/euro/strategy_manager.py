@@ -563,7 +563,18 @@ class StrategyManager(Node):
 
         while i < sx_count:
             self.get_logger().info(f"🎯 SX steal {i+1}/{sx_count} (retry={retry_count})")
-            generated_tasks = self.task_scheduler.get_optimal_task()
+            start_pose = None
+            if self.latest_robot_pose is not None:
+                # TaskScheduler expects start_pose in mm/degrees, while /robot_pose_raw is m/rad.
+                start_pose = {
+                    'x': float(self.latest_robot_pose.x) * 1000.0,
+                    'y': float(self.latest_robot_pose.y) * 1000.0,
+                    'theta': math.degrees(float(self.latest_robot_pose.z)),
+                }
+                self.get_logger().debug(
+                    f"🧭 Steal start_pose (mm/deg): x={start_pose['x']:.1f}, y={start_pose['y']:.1f}, theta={start_pose['theta']:.1f}"
+                )
+            generated_tasks = self.task_scheduler.get_optimal_task(start_pose=start_pose)
 
             if not generated_tasks:
                 retry_count += 1
