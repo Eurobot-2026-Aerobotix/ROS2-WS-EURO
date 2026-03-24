@@ -1217,7 +1217,31 @@ class WebHandlerNode(Node):
             for step_i, step in enumerate(sequence, 1):
                 device = step.get('device', '?')
                 command = step.get('command', '?')
-                self.get_logger().info(f"      - step {step_i}: {device}.{command}")
+                params = step.get('params', [])
+
+                # Print compact motion details for STM commands.
+                if str(device).upper() == 'STM' and str(command) in ('go_to', 'go_to_backwards'):
+                    x = y = '?'
+                    if isinstance(params, list) and len(params) >= 2:
+                        try:
+                            x = float(params[0])
+                            y = float(params[1])
+                        except (TypeError, ValueError):
+                            x = params[0]
+                            y = params[1]
+                    self.get_logger().info(f"      - step {step_i}: {device}.{command} -> x={x}, y={y}")
+
+                elif str(device).upper() == 'STM' and str(command) == 'orientate':
+                    theta = '?'
+                    if isinstance(params, list) and len(params) >= 1:
+                        try:
+                            theta = float(params[0])
+                        except (TypeError, ValueError):
+                            theta = params[0]
+                    self.get_logger().info(f"      - step {step_i}: {device}.{command} -> theta={theta}")
+
+                else:
+                    self.get_logger().info(f"      - step {step_i}: {device}.{command}")
 
     def _sync_scheduler_holder_status_from_tasks(self, tasks: List[Dict]) -> None:
         """

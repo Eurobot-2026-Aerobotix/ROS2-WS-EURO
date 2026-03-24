@@ -739,13 +739,7 @@ class TaskScheduler:
                 })
             last_cmd = cmd
 
-        # Final precise target + orientate to center
-        task_sequence.append({
-            'device': 'STM',
-            'command': stm_command,
-            'params': [target_x, target_y, 1100.0, 1.0, {'from_pathfinding': True, 'from_putdown_task': True}],
-            'wait': False
-        })
+        # Orientate to center before put_down (no extra final go_to)
         task_sequence.append({
             'device': 'STM',
             'command': 'orientate',
