@@ -89,16 +89,6 @@ class TaskScheduler:
             if should_attach_subs:
                 self.map.attach_ros_subscribers(ros_node, qos=qos)
 
-        # Attach map timer update during active round window [5s, 100s].
-        if hasattr(self.map, 'attach_round_update_timer'):
-            self.map.attach_round_update_timer(
-                ros_node,
-                period_s=10.0,
-                start_s=5.0,
-                end_s=100.0,
-                pathfinder_client=self.pathfinder,
-            )
-
         self.predicted_enemy_goal : str = "unknown"
 
     def pop_task(self) -> Optional[Task]:

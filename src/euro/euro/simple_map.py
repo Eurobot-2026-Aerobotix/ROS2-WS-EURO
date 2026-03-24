@@ -15,7 +15,7 @@ from rclpy.node import Node
 
 
 class MapUpdater:
-    """Background updater for map refresh (batch content is topic-driven)."""
+    """Background updater placeholder (batch content is topic-driven)."""
 
     def __init__(
         self,
@@ -36,9 +36,7 @@ class MapUpdater:
         self._thread: Optional[threading.Thread] = None
 
         self._enabled = True
-        self._warned_missing_update_map = False
         self._last_state_log_s = 0.0
-        self._last_update_map_call_s = 0.0
         self._last_synced_batch_count: Optional[int] = None
 
     def start(self) -> None:
@@ -48,8 +46,8 @@ class MapUpdater:
         self._thread = threading.Thread(target=self._run, name='simple-map-updater', daemon=True)
         self._thread.start()
         self.node.get_logger().info(
-            f'🛰️ SimpleMap updater started: update_map={self.map_update_hz:.1f}Hz, '
-            f'batches source=/active_obstacles topic'
+            f'🛰️ SimpleMap updater started: batches source=/active_obstacles topic '
+            f'({self.active_batches_hz:.1f}Hz monitor)'
         )
 
     def stop(self) -> None:
@@ -61,8 +59,8 @@ class MapUpdater:
         self._enabled = bool(enabled)
 
     def _run(self) -> None:
-        # Drive loop from update_map cadence; batches are updated via topic callback.
-        period_s = 1.0 / max(self.map_update_hz, 0.2)
+        # Batches are updated via topic callback; this loop is only a lightweight monitor.
+        period_s = 1.0 / max(self.active_batches_hz, 0.2)
         while not self._stop_event.is_set():
             loop_start = time.perf_counter()
             if self._enabled:
@@ -75,19 +73,8 @@ class MapUpdater:
             return
 
         try:
-            now_mono = time.perf_counter()
-            do_update_map = (now_mono - self._last_update_map_call_s) >= (1.0 / self.map_update_hz)
-            update_map_fn = getattr(self.pathfinder, 'update_map', None)
-            if do_update_map and callable(update_map_fn):
-                map_success, map_message = update_map_fn()
-                self._last_update_map_call_s = now_mono
-                if not map_success:
-                    self.node.get_logger().warning(f'⚠️ SimpleMap background update_map failed: {map_message}')
-            elif do_update_map and not self._warned_missing_update_map:
-                self.node.get_logger().warning(
-                    '⚠️ Pathfinder has no update_map(); SimpleMap updater relies on /active_obstacles topic only'
-                )
-                self._warned_missing_update_map = True
+            # Intentionally empty: no update_map service polling from SimpleMap.
+            pass
 
         except Exception as exc:
             self.node.get_logger().error(f'❌ SimpleMap background updater exception: {exc}')
@@ -195,10 +182,6 @@ class Map:
         self.nest_position = Pose2D(x=200.0, y=2700.0)
         self.ninja_on_map = True
         self._subscriptions = []
-        self._update_map_timer = None
-        self._round_update_start_s = 5.0
-        self._round_update_end_s = 100.0
-        self._pathfinder_client = None
         self.map_updater: Optional[MapUpdater] = None
         self._active_obstacles_sub = None
         self._last_topic_batches_update_s = 0.0
@@ -303,65 +286,6 @@ class Map:
             return
         elapsed = float(self.round_timer.time())
         self.time_left = max(0.0, self.game_duration_s - elapsed)
-
-    def _update_map_during_round(self) -> None:
-        """Timer callback: sync time-left and gate background updater during configured round window."""
-        self.sync_time_left_from_round()
-
-        if self.map_updater is None:
-            return
-
-        if self.round_timer is None:
-            self.map_updater.set_enabled(True)
-            return
-
-        if hasattr(self.round_timer, 'has_started') and not self.round_timer.has_started():
-            self.map_updater.set_enabled(True)
-            return
-
-        if not hasattr(self.round_timer, 'time'):
-            self.map_updater.set_enabled(True)
-            return
-
-        elapsed = float(self.round_timer.time())
-        self.map_updater.set_enabled(self._round_update_start_s <= elapsed <= self._round_update_end_s)
-
-    def attach_round_update_timer(
-        self,
-        node,
-        period_s: float = 5.0,
-        start_s: float = 5.0,
-        end_s: float = 100.0,
-        pathfinder_client: Optional[Any] = None,
-    ) -> None:
-        """
-        Attach periodic timer on ROS node to refresh map timing during round.
-
-        Default active window: [5s, 100s].
-        """
-        self._round_update_start_s = float(start_s)
-        self._round_update_end_s = float(end_s)
-        self._pathfinder_client = pathfinder_client
-
-        if self.map_updater is None and pathfinder_client is not None:
-            self.map_updater = MapUpdater(
-                map_ref=self,
-                ros_node=node,
-                pathfinder_client=pathfinder_client,
-                map_update_hz=0.05,
-                active_batches_hz=0.2,
-            )
-            self.map_updater.set_enabled(True)
-            self.map_updater.start()
-
-        if self._update_map_timer is not None:
-            return
-
-        self._update_map_timer = node.create_timer(float(period_s), self._update_map_during_round)
-
-    def stop_map_updater(self) -> None:
-        if self.map_updater is not None:
-            self.map_updater.stop()
 
     # -----------------------------
     # Base setters / state updates
