@@ -1080,6 +1080,13 @@ def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=No
                     WAITING_TIRETTE=False
                     strategy.get_logger().info(f"✅ Tirette tjebdet  STRATEGY GOOOOOOOOO !!!!")
                     
+                    # Start game timer on pathfinder to begin periodic map updates
+                    success, message = strategy.pathfinder.start_game()
+                    if success:
+                        strategy.get_logger().info(f"🎮 Pathfinder game timer started: {message}")
+                    else:
+                        strategy.get_logger().warning(f"⚠️ Failed to start pathfinder game timer: {message}")
+                    
                     # Start timer and map update FIRST (critical for robot operation)
                     round_timer.start_game()
                     strategy.get_logger().info(f"⏱️  Game timer started!")

@@ -143,6 +143,11 @@ class HybridAStarNode(Node):
         self.update_map_service = self.create_service(
             Trigger, '/update_map', self.map_manager.handle_update_map,
             callback_group=self.reentrant_group)
+
+        # Start game flow: begin periodic update_map only after baseline lock completes
+        self.start_game_service = self.create_service(
+            Trigger, '/start_game', self.map_manager.handle_start_game,
+            callback_group=self.reentrant_group)
         
         # Delegate clear_map service to MapManager
         self.clear_map_service = self.create_service(

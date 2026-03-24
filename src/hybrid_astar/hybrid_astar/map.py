@@ -137,6 +137,12 @@ class MapManager:
         self.short_pattern_retry_active = False
         self.short_pattern_retry_interval_sec = params.get('rates', {}).get('short_pattern_retry_sec', 2.0)
 
+        # Game-start driven periodic update_map flow
+        self.start_game_requested = False
+        self.game_update_timer_active = False
+        self.game_update_pending = 0
+        self.game_update_interval_sec = params.get('rates', {}).get('start_game_update_map_sec', 1.0)
+
         # Enemy obstacle freshness management (/obstacle_relative)
         self.enemy_obstacle_timeout_sec = params.get('rates', {}).get('enemy_obstacle_timeout_sec', 1.0)
         self.last_enemy_update_ns: Optional[int] = None
@@ -179,6 +185,11 @@ class MapManager:
         short_retry_interval = max(self.short_pattern_retry_interval_sec, 0.5)
         self.short_pattern_retry_timer = self.node.create_timer(
             short_retry_interval, self._short_pattern_retry_callback
+        )
+
+        game_update_interval = max(self.game_update_interval_sec, 0.1)
+        self.game_update_timer = self.node.create_timer(
+            game_update_interval, self._game_update_timer_callback
         )
         
         self.node.get_logger().info('🗺️  Map Manager initialized')
@@ -242,6 +253,8 @@ class MapManager:
         self.locked_baseline_batch_ids.clear()
         self.pending_baseline_lock_ids.clear()
         self.baseline_lock_pending = False
+        self.start_game_requested = False
+        self._stop_game_update_timer()
         self.known_ids_to_retry.clear()
         self.deleted_batch_ids.clear()
         self.active_batch_ids.clear()
@@ -755,10 +768,89 @@ class MapManager:
         
         Priority: Try web service first (for simulation), then fall back to aruco_mapper (for real robot)
         """
-        # Try web service first if available
+        success, message, _service_name = self._trigger_update_map_async(can_lock_baseline=True)
+        response.success = success
+        response.message = message
+        return response
+
+    def handle_start_game(self, request: Trigger.Request, response: Trigger.Response) -> Trigger.Response:
+        """
+        Service handler: arm game flow and start periodic update_map only after
+        baseline lock is complete.
+        """
+        self.start_game_requested = True
+
+        if self.game_update_timer_active:
+            # Reset and restart the timer
+            self._stop_game_update_timer()
+            self._start_game_update_timer()
+            response.success = True
+            response.message = (
+                f"Game timer restarted: update_map every {max(self.game_update_interval_sec, 0.1):.1f}s"
+            )
+            return response
+
+        # If already locked, start immediately.
+        if self.baselines_locked:
+            self._start_game_update_timer()
+            response.success = True
+            response.message = (
+                f"Game started: periodic update_map enabled every {max(self.game_update_interval_sec, 0.1):.1f}s"
+            )
+            return response
+
+        # Otherwise trigger initial update flow; timer starts automatically once locked.
+        success, message, _service_name = self._trigger_update_map_async(can_lock_baseline=True)
+        if not success:
+            response.success = False
+            response.message = f"start_game failed to trigger initial update_map: {message}"
+            return response
+
+        response.success = True
+        response.message = (
+            "start_game accepted: initial update_map triggered; timer will start after baseline lock completes"
+        )
+        return response
+
+    def _start_game_update_timer(self):
+        if self.game_update_timer_active:
+            return
+        self.game_update_timer_active = True
+        self.node.get_logger().info(
+            f"🎮 Game update timer started: update_map every {max(self.game_update_interval_sec, 0.1):.1f}s"
+        )
+
+    def _stop_game_update_timer(self):
+        if not self.game_update_timer_active:
+            return
+        self.game_update_timer_active = False
+        self.game_update_pending = 0
+        self.node.get_logger().info("🛑 Game update timer stopped")
+
+    def _game_update_timer_callback(self):
+        """Periodic callback that performs the same async flow as /update_map."""
+        if not self.game_update_timer_active:
+            return
+        if not self.baselines_locked:
+            return
+        if self.game_update_pending > 0:
+            return
+
+        success, message, service_name = self._trigger_update_map_async(can_lock_baseline=False)
+        if not success:
+            self.node.get_logger().warn(f"⚠️ Game timer update_map skipped: {message}")
+            return
+
+        self.game_update_pending += 1
+        self.node.get_logger().debug(
+            f"🔄 Game timer update_map triggered from {service_name}: {message}"
+        )
+
+    def _trigger_update_map_async(self, can_lock_baseline: bool = True) -> tuple[bool, str, str]:
+        """Trigger the same asynchronous GetStableBatches flow as /update_map."""
         client_to_use = None
         service_name = ""
-        
+
         if self.get_stable_batches_client.service_is_ready():
             client_to_use = self.get_stable_batches_client
             service_name = "/aruco_mapper/get_stable_batches"
@@ -767,35 +859,30 @@ class MapManager:
             service_name = "/aruco_mapper/get_stable_batches_web"
         else:
             self.node.get_logger().error("❌ No GetStableBatches service available")
-            response.success = False
-            response.message = "No batch service available"
-            return response
+            return False, "No batch service available", service_name
 
         # Remember service for auto-retry timer
         self.retry_client = client_to_use
         self.retry_service_name = service_name
-        
-        # Always get all batches with 'sfg' filter (for both first and subsequent calls)
-        # The difference is that first call clears everything, subsequent calls do incremental updates
+
         if self.first_update_map:
             if not self.first_update_start_logged:
                 self.node.get_logger().info("🔄 First update_map call - requesting all batches (unlocked)")
                 self.first_update_start_logged = True
-            self.baseline_lock_pending = True
-        
+            if can_lock_baseline:
+                self.baseline_lock_pending = True
+
         stable_request = GetStableBatches.Request()
-        stable_request.batch_types_filter = "sfg"  # Get all stable batches
-        stable_request.specific_known_id = ""  # Get all batches matching the filter
-        stable_request.only_locked_baselines = False  # Always False for update_map - lock call happens after all TRACKING
-        
-        # Call service asynchronously
+        stable_request.batch_types_filter = "sfg"
+        stable_request.specific_known_id = ""
+        stable_request.only_locked_baselines = False
+
         future = client_to_use.call_async(stable_request)
         future.add_done_callback(lambda f: self._handle_get_stable_batches_response(
-            f, response, client_to_use, service_name, None, False, True))
-        
-        response.success = True
+            f, None, client_to_use, service_name, None, False, can_lock_baseline))
+
         message_type = "First" if self.first_update_map else "Incremental"
-        response.message = f"{message_type} map update triggered from {service_name} (processing asynchronously)"
+        return True, f"{message_type} map update triggered from {service_name} (processing asynchronously)", service_name
         return response
 
     def handle_reset_map(self, request: Trigger.Request, response: Trigger.Response) -> Trigger.Response:
@@ -830,6 +917,8 @@ class MapManager:
         self.beacon_ready_published = False
         self.locked_baseline_batch_ids.clear()
         self.pending_baseline_lock_ids.clear()
+        self.start_game_requested = False
+        self._stop_game_update_timer()
         self.known_ids_to_retry.clear()
         self.short_pattern_ids.clear()
         self._stop_retry_timer()
@@ -1338,6 +1427,8 @@ class MapManager:
                 self.retry_pending = max(0, self.retry_pending - 1)
                 if self.retry_pending == 0 and not self.known_ids_to_retry:
                     self._stop_retry_timer()
+            elif self.game_update_pending > 0:
+                self.game_update_pending = max(0, self.game_update_pending - 1)
 
     def _start_retry_timer(self):
         """Start periodic retries until all EMERGING batches become non-EMERGING (stable)."""
@@ -1497,6 +1588,9 @@ class MapManager:
                 self.baselines_locked = True
                 self.baseline_lock_pending = False
                 self.node.get_logger().info(f"✅ Baseline patterns locked! Received {num_batches} locked batches")
+
+                if self.start_game_requested and not self.game_update_timer_active:
+                    self._start_game_update_timer()
 
                 if not self.beacon_ready_published:
                     self._publish_beacon_status(1)
