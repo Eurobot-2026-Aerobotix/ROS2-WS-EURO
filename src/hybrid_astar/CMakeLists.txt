@@ -26,6 +26,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/ObstacleArray.msg"
   "msg/ObstacleIDArray.msg"
   "msg/ColorCommand.msg"
+  "msg/ActiveBatches.msg"
   "srv/ComputePath.srv"
   "srv/PutDown.srv"
   "srv/GetBatchColorPattern.srv"

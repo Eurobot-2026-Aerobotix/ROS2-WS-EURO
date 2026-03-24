@@ -105,6 +105,11 @@ class MapUpdater:
             if not do_get_active:
                 return
 
+            # If topic-driven batch updates are fresh, skip service polling.
+            has_recent_topic_fn = getattr(self.map, 'has_recent_topic_batches_update', None)
+            if callable(has_recent_topic_fn) and has_recent_topic_fn(max_age_s=3.0):
+                return
+
             batch_info = get_active_batches_fn()
             self._last_get_active_batches_call_s = now_mono
             if batch_info is None:
@@ -232,10 +237,38 @@ class Map:
         self._round_update_end_s = 100.0
         self._pathfinder_client = None
         self.map_updater: Optional[MapUpdater] = None
+        self._active_obstacles_sub = None
+        self._last_topic_batches_update_s = 0.0
+        self._warned_missing_active_obstacles_msg = False
 
     @staticmethod
     def _normalize_batch_id(known_id: Optional[str]) -> str:
         return str(known_id or '').strip().lower()
+
+    def has_recent_topic_batches_update(self, max_age_s: float = 3.0) -> bool:
+        if self._last_topic_batches_update_s <= 0.0:
+            return False
+        return (time.time() - self._last_topic_batches_update_s) <= float(max_age_s)
+
+    def update_batches_from_active_batches_msg(self, msg: Any) -> int:
+        """Update internal `batches` from /active_obstacles (hybrid_astar/msg/ActiveBatches)."""
+        batch_info = {
+            'centers': list(getattr(msg, 'centers', []) or []),
+            'known_ids': list(getattr(msg, 'known_ids', []) or []),
+            'batch_types': list(getattr(msg, 'batch_types', []) or []),
+            'member_counts': list(getattr(msg, 'member_counts', []) or []),
+            'directions': list(getattr(msg, 'directions', []) or []),
+            'patterns': list(getattr(msg, 'patterns', []) or []),
+            'theta_degrees': list(getattr(msg, 'theta_degrees', []) or []),
+            'qualities': list(getattr(msg, 'qualities', []) or []),
+        }
+
+        updated = self.update_batches_from_active_batch_info(batch_info)
+        self._last_topic_batches_update_s = time.time()
+        return updated
+
+    def _active_obstacles_callback(self, msg) -> None:
+        self.update_batches_from_active_batches_msg(msg)
 
     def update_batches_from_active_batch_info(self, batch_info: Dict[str, List[Any]]) -> int:
         """Update internal `batches` map from pathfinder `get_active_batches()` response."""
@@ -575,6 +608,24 @@ class Map:
         self._subscriptions.append(
             node.create_subscription(Twist, '/obstacle_relative_speed', self._enemy_speed_callback, qos)
         )
+
+        # Topic-driven active batch map updates from hybrid_astar
+        # (replaces frequent get_active_batches polling when available).
+        try:
+            from hybrid_astar.msg import ActiveBatches  # type: ignore
+            self._active_obstacles_sub = node.create_subscription(
+                ActiveBatches,
+                '/active_obstacles',
+                self._active_obstacles_callback,
+                qos,
+            )
+            self._subscriptions.append(self._active_obstacles_sub)
+        except Exception as exc:
+            if not self._warned_missing_active_obstacles_msg:
+                node.get_logger().warning(
+                    f'⚠️ Could not subscribe to /active_obstacles topic (hybrid_astar.msg unavailable): {exc}'
+                )
+                self._warned_missing_active_obstacles_msg = True
 
 
 class MapNode(Map, Node):

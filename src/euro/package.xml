@@ -9,8 +9,10 @@
   <buildtool_depend>ament_cmake</buildtool_depend>
   <build_depend>euro_interfaces</build_depend>
   <build_depend>lidar_obstacle_warning_msgs</build_depend>
+  <build_depend>hybrid_astar</build_depend>
   <exec_depend>euro_interfaces</exec_depend>
   <exec_depend>lidar_obstacle_warning_msgs</exec_depend>
+  <exec_depend>hybrid_astar</exec_depend>
   <exec_depend>rclpy</exec_depend>
 
   <test_depend>ament_copyright</test_depend>

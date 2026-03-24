@@ -37,7 +37,7 @@ from visualization_msgs.msg import Marker, MarkerArray
 from tf2_ros import Buffer, TransformListener, LookupException, ConnectivityException, ExtrapolationException
 
 # Custom messages (will be generated)
-from hybrid_astar.msg import Obstacle, ObstacleArray, ColorCommand
+from hybrid_astar.msg import Obstacle, ObstacleArray, ColorCommand, ActiveBatches
 from aruco_mapper_msgs.msg import ArucoMapperState, Batch, BatchMember
 from aruco_mapper_msgs.srv import GetStableBatches
 from hybrid_astar.srv import ComputePath, GetBatchColorPattern, DeleteBatch, GetActiveBatches, PutDown
@@ -134,6 +134,10 @@ class HybridAStarNode(Node):
         self.get_active_batches_service_alias = self.create_service(
             GetActiveBatches, '/get_active_batches', self.handle_get_active_batches,
             callback_group=self.reentrant_group)
+
+        # Topic publisher for active batches (same payload fields as GetActiveBatches response)
+        self.active_batches_pub = self.create_publisher(ActiveBatches, '/active_obstacles', 10)
+        self.active_batches_timer = self.create_timer(1.0, self.publish_active_batches_topic)
         
         # Delegate update_map service to MapManager
         self.update_map_service = self.create_service(
@@ -1418,6 +1422,9 @@ class HybridAStarNode(Node):
                     f"📊 Active batches query unchanged: {signature[0]} batches "
                     f"(FX: {signature[1]}, SX: {signature[2]})"
                 )
+
+            # Mirror to topic so consumers can subscribe instead of polling service.
+            self.publish_active_batches_topic(batch_info=batch_info)
             
         except Exception as e:
             self.get_logger().error(f"❌ Error getting active batches: {e}")
@@ -1432,6 +1439,25 @@ class HybridAStarNode(Node):
             response.qualities = []
         
         return response
+
+    def publish_active_batches_topic(self, batch_info: Optional[Dict[str, list]] = None) -> None:
+        """Publish active batches on /active_obstacles using ActiveBatches message."""
+        try:
+            if batch_info is None:
+                batch_info = self.map_manager.get_active_batches_info()
+
+            msg = ActiveBatches()
+            msg.centers = batch_info.get('centers', [])
+            msg.known_ids = batch_info.get('known_ids', [])
+            msg.batch_types = batch_info.get('batch_types', [])
+            msg.member_counts = batch_info.get('member_counts', [])
+            msg.directions = batch_info.get('directions', [])
+            msg.patterns = batch_info.get('patterns', [])
+            msg.theta_degrees = batch_info.get('theta_degrees', [])
+            msg.qualities = batch_info.get('qualities', [])
+            self.active_batches_pub.publish(msg)
+        except Exception as e:
+            self.get_logger().debug(f"Active batches topic publish skipped: {e}")
     
     def handle_delete_batch(self, request, response):
         """

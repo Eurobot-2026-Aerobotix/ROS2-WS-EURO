@@ -145,7 +145,8 @@ class MapManager:
         # Create publishers
         self.current_obs_pub = node.create_publisher(
             ObstacleArray, '/obstacles/current', 10)
-        
+
+        # Dedicated stream for active batch obstacles (sx_/fx_ only)
         self.path_viz_pub = node.create_publisher(
             MarkerArray, '/path_visualization', 10)
         
@@ -633,6 +634,7 @@ class MapManager:
             msg.header.frame_id = "map"
             msg.obstacles = list(self.obstacles)
             self.current_obs_pub.publish(msg)
+
         # Also publish obstacle visualization for RViz
         self.publish_obstacles(self.get_active_obstacles())
 
