@@ -471,41 +471,13 @@ class StrategyManager(Node):
         """
         Handle YAML command `RASP_PI -> steal`.
 
-        Params format:
-          - params[0]: number of SX batches to steal
-          - params[1]: number of FX batches to steal (currently ignored)
-
-        Current behavior:
-          - Only SX stealing is enabled.
-          - Will execute SX steal sequence N times (N = params[0]).
+        Behavior:
+          - On each received steal command, generate ONE optimal runtime task set
+            from TaskScheduler and execute it immediately.
+          - Return True only if task generation and queue loading succeeded.
         """
         params = params or []
-
-        sx_count = 0
-        fx_count = 0
-
-        if len(params) >= 1:
-            try:
-                sx_count = max(0, int(float(params[0])))
-            except Exception:
-                self.get_logger().warning(f"⚠️ Invalid SX steal count '{params[0]}', using 0")
-
-        if len(params) >= 2:
-            try:
-                fx_count = max(0, int(float(params[1])))
-            except Exception:
-                self.get_logger().warning(f"⚠️ Invalid FX steal count '{params[1]}', using 0")
-
-        if sx_count <= 0:
-            self.get_logger().info("ℹ️ Steal command requested 0 SX steals; nothing to do")
-            return True
-
-        if fx_count > 0:
-            self.get_logger().info(
-                f"ℹ️ FX steal count requested ({fx_count}) but FX stealing is currently disabled; ignoring it"
-            )
-
-        self.get_logger().info(f"🏴‍☠️ Executing SX steal command {sx_count} time(s)")
+        self.get_logger().info(f"🏴‍☠️ Handling steal command (params={params})")
 
         def _enqueue_generated_tasks(generated_tasks: List[Dict], sequence_index: int) -> bool:
             ts = int(time.time() * 1000)
@@ -555,14 +527,16 @@ class StrategyManager(Node):
                         self.tasks.remove(generated_task)
             return True
 
-        # Execute steals sequentially so each next steal uses updated state.
-        # Retry generation when scheduler temporarily returns no task.
-        i = 0
-        retry_count = 0
-        max_retry_per_steal = 5
+        generated_tasks = None
+        generation_attempt = 0
 
-        while i < sx_count:
-            self.get_logger().info(f"🎯 SX steal {i+1}/{sx_count} (retry={retry_count})")
+        while generated_tasks is None:
+            if executor_module.SHUTDOWN_REQUESTED or self.end_game:
+                self.get_logger().warning("⚠️ Steal generation aborted (shutdown/end-game)")
+                return False
+
+            generation_attempt += 1
+
             start_pose = None
             if self.latest_robot_pose is not None:
                 # TaskScheduler expects start_pose in mm/degrees, while /robot_pose_raw is m/rad.
@@ -571,38 +545,26 @@ class StrategyManager(Node):
                     'y': float(self.latest_robot_pose.y) * 1000.0,
                     'theta': math.degrees(float(self.latest_robot_pose.z)),
                 }
-                self.get_logger().debug(
-                    f"🧭 Steal start_pose (mm/deg): x={start_pose['x']:.1f}, y={start_pose['y']:.1f}, theta={start_pose['theta']:.1f}"
-                )
+
             generated_tasks = self.task_scheduler.get_optimal_task(start_pose=start_pose)
 
-            if not generated_tasks:
-                retry_count += 1
-                if retry_count > max_retry_per_steal:
+            if generated_tasks is None:
+                if generation_attempt == 1 or generation_attempt % 10 == 0:
                     self.get_logger().warning(
-                        f"⚠️ Could not generate SX steal task for iteration {i+1}/{sx_count} after {max_retry_per_steal} retries; stopping"
+                        f"⚠️ No executable steal task yet (attempt {generation_attempt}) - retrying..."
                     )
-                    return i > 0
-
-                self.get_logger().warning(
-                    f"⚠️ No task generated for SX steal {i+1}/{sx_count}; retry {retry_count}/{max_retry_per_steal}"
-                )
                 time.sleep(0.1)
                 continue
 
-            retry_count = 0
-            self.get_logger().info(
-                f"✅ Generated {len(generated_tasks)} task(s) for SX steal {i+1}/{sx_count}"
-            )
+        self.get_logger().info(f"✅ Generated {len(generated_tasks)} task(s) for steal command")
 
-            if not _enqueue_generated_tasks(generated_tasks, i + 1):
-                return False
+        if not _enqueue_generated_tasks(generated_tasks, 1):
+            return False
 
-            # Run each steal cycle fully before generating the next one
-            self.wait_for_all_queues_empty(ignore_rasp_pi=True)
-            i += 1
+        # Execute generated steal tasks before returning.
+        self.wait_for_all_queues_empty(ignore_rasp_pi=True)
 
-        # keep compatibility with caller's wait flag (already executed sequential waits)
+        # keep compatibility with caller's wait flag
         if wait:
             self.wait_for_all_queues_empty(ignore_rasp_pi=True)
 

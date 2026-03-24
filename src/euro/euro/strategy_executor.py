@@ -1159,7 +1159,8 @@ def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=No
                 # Generate and queue dynamic steal tasks from YAML command
                 # Params example: [3, 0] => min_members=3, device=auto
                 try:
-                    success = strategy.handle_steal_command(params=params, wait=wait)
+                    # Always execute generated steal tasks synchronously for this command.
+                    success = strategy.handle_steal_command(params=params, wait=True)
                     if success:
                         strategy.get_logger().info("✅ RASP_PI steal command handled")
                     else:
