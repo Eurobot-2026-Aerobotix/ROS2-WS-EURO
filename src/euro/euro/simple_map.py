@@ -10,7 +10,7 @@ import math
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Set
 from rclpy.node import Node
 
 
@@ -210,6 +210,10 @@ class Map:
         }
 
         self.batches: Dict[str, BatchInfo] = {}
+        # Persistently ignored batch ids (normalized to lowercase).
+        # Any id in this set will be filtered out from get_active_batches sync
+        # to avoid re-adding batches that were already picked/deleted locally.
+        self.deleted_batch_ids: Set[str] = set()
         self.robot_position: Pose2D = Pose2D()
         self.enemy_relative: EnemyRelativeObstacle = EnemyRelativeObstacle()
         self.enemy_absolute: Pose2D = Pose2D()
@@ -228,6 +232,10 @@ class Map:
         self._round_update_end_s = 100.0
         self._pathfinder_client = None
         self.map_updater: Optional[MapUpdater] = None
+
+    @staticmethod
+    def _normalize_batch_id(known_id: Optional[str]) -> str:
+        return str(known_id or '').strip().lower()
 
     def update_batches_from_active_batch_info(self, batch_info: Dict[str, List[Any]]) -> int:
         """Update internal `batches` map from pathfinder `get_active_batches()` response."""
@@ -252,7 +260,9 @@ class Map:
             if member_count <= 0:
                 continue
 
-            known_id = str(known_ids[i])
+            known_id = self._normalize_batch_id(known_ids[i])
+            if not known_id or known_id in self.deleted_batch_ids:
+                continue
             direction = str(directions[i]).lower()
             center = centers[i]
             if i < len(theta_degrees_list):
@@ -392,25 +402,34 @@ class Map:
         )
 
     def set_batch(self, known_id: str, x: float, y: float, phi_degrees: float = 0.0, color: str = "unknown") -> None:
-        self.batches[known_id] = BatchInfo(
-            known_id=known_id,
+        normalized_id = self._normalize_batch_id(known_id)
+        if not normalized_id:
+            return
+        if normalized_id in self.deleted_batch_ids:
+            return
+
+        self.batches[normalized_id] = BatchInfo(
+            known_id=normalized_id,
             x=x,
             y=y,
             phi_degrees=phi_degrees,
             color=color,
         )
-        if known_id[0] == "f" and known_id in self.drop_offs:
+        if normalized_id[0] == "f" and normalized_id in self.drop_offs:
             if color != "unknown":
-                self.drop_offs[known_id]["status"] = "full"
+                self.drop_offs[normalized_id]["status"] = "full"
 
     def set_batch_from_predefined(self, known_id: str, color: str = "unknown") -> bool:
         """Create/update batch from predefined positions. Returns False if id is unknown."""
-        if known_id not in self.predefined_batch_positions:
+        normalized_id = self._normalize_batch_id(known_id)
+        if not normalized_id or normalized_id in self.deleted_batch_ids:
+            return False
+        if normalized_id not in self.predefined_batch_positions:
             return False
 
-        p = self.predefined_batch_positions[known_id]
+        p = self.predefined_batch_positions[normalized_id]
         self.set_batch(
-            known_id=known_id,
+            known_id=normalized_id,
             x=p["x"],
             y=p["y"],
             phi_degrees=p["phi_degrees"],
@@ -418,10 +437,20 @@ class Map:
         )
         return True
 
-    def remove_batch(self, known_id: str) -> None:
-        self.batches.pop(known_id, None)
-        if known_id[0] == "f" and known_id in self.drop_offs:
-            self.drop_offs[known_id]["status"] = "empty"
+    def remove_batch(self, known_id: str, persistently: bool = True) -> None:
+        normalized_id = self._normalize_batch_id(known_id)
+        if not normalized_id:
+            return
+
+        self.batches.pop(normalized_id, None)
+        if persistently:
+            self.deleted_batch_ids.add(normalized_id)
+
+        if normalized_id[0] == "f" and normalized_id in self.drop_offs:
+            self.drop_offs[normalized_id]["status"] = "empty"
+
+    def clear_deleted_batch_ids(self) -> None:
+        self.deleted_batch_ids.clear()
 
     def clear_batches(self) -> None:
         self.batches.clear()
@@ -429,7 +458,8 @@ class Map:
             dropoff["status"] = "empty"
 
     def get_batch(self, known_id: str) -> Optional[BatchInfo]:
-        return self.batches.get(known_id)
+        normalized_id = self._normalize_batch_id(known_id)
+        return self.batches.get(normalized_id)
     
     def update_time_left(self, time_left: float) -> None:
         self.time_left = time_left

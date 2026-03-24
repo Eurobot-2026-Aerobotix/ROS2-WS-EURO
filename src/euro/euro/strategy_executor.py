@@ -697,6 +697,21 @@ def handle_color_pattner(strategy,front):
         deleted = strategy.pathfinder.delete_batch(batch_known_id)
         if deleted:
             strategy.get_logger().info(f"🗑️  Batch '{batch_known_id}' deleted from map after pickup")
+
+            # Keep SimpleMap in sync and prevent the deleted batch from being
+            # re-introduced by background get_active_batches refresh.
+            scheduler = getattr(strategy, 'task_scheduler', None)
+            simple_map = getattr(scheduler, 'map', None) if scheduler is not None else None
+            if simple_map is not None and hasattr(simple_map, 'remove_batch'):
+                try:
+                    simple_map.remove_batch(batch_known_id, persistently=True)
+                    strategy.get_logger().info(
+                        f"🧠 SimpleMap synced: removed batch '{batch_known_id}' (persistent delete)"
+                    )
+                except Exception as e:
+                    strategy.get_logger().warning(
+                        f"⚠️  Failed to sync deleted batch '{batch_known_id}' into SimpleMap: {e}"
+                    )
         else:
             strategy.get_logger().warning(f"⚠️  Failed to delete batch '{batch_known_id}' from map")
     if success and batch_known_id:
