@@ -729,7 +729,7 @@ def handle_color_pattner(strategy,front):
         
         if direction == "vertical":
             # For horizontal batches: reverse if (front AND theta == -180) OR (back AND theta == 0)
-            if (front and abs(theta - (-180)) < 5) or (not front and abs(theta - 0) < 5):
+            if (front and abs(abs(theta) - (180)) < 5) or (not front and abs(theta - 0) < 5):
                 strategy.get_logger().info(f"front: {front} theta : {theta} vertical")
                 should_reverse = False
             else:
