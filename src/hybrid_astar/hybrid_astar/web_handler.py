@@ -25,6 +25,8 @@ import json
 import requests
 import socket
 import uuid
+import threading
+import time
 from typing import List, Dict, Optional
 import sys
 import os
@@ -37,9 +39,10 @@ from aruco_mapper_msgs.msg import ArucoMapperState, Batch, BatchMember
 from aruco_mapper_msgs.srv import GetStableBatches
 from hybrid_astar.srv import ComputePath, GetBatchColorPattern, GetActiveBatches
 
-# Import DecisionMaker from euro package
+# Import scheduler stack from euro package
 try:
-    from euro.decision_maker import DecisionMaker
+    from euro.simple_map import Map  # type: ignore[import]
+    from euro.task_scheduler import TaskScheduler  # type: ignore[import]
     from euro.front_systems_controller import FrontSystemsController
     from euro.back_systems_controller import BackSystemsController
     from euro.pneumatic_controller import PneumaticController
@@ -50,26 +53,20 @@ except ImportError:
     )
     if os.path.exists(euro_pkg_root) and euro_pkg_root not in sys.path:
         sys.path.insert(0, euro_pkg_root)
-    from euro.decision_maker import DecisionMaker
+    from euro.simple_map import Map  # type: ignore[import]
+    from euro.task_scheduler import TaskScheduler  # type: ignore[import]
     from euro.front_systems_controller import FrontSystemsController
     from euro.back_systems_controller import BackSystemsController
     from euro.pneumatic_controller import PneumaticController
 
 
-class RobotPose:
-    """Simple robot pose container for DecisionMaker"""
-    def __init__(self, x=0.0, y=0.0, z=0.0):
-        self.x = x  # meters
-        self.y = y  # meters
-        self.z = z  # radians or degrees
-
-
 class PathfinderAdapter:
-    """Adapter to make WebHandler compatible with DecisionMaker's pathfinder interface"""
+    """Adapter to make WebHandler compatible with TaskScheduler pathfinder interface."""
     def __init__(self, web_handler, callback_group=None):
         self.web_handler = web_handler
         self.goal_angle = None
         self.untracked_batches = []
+        self._last_active_batches_count = None
         
         # Create service clients with callback group for concurrent execution
         self.get_active_batches_client = web_handler.create_client(
@@ -106,6 +103,26 @@ class PathfinderAdapter:
             'theta_deg': math.degrees(theta)
         }
         self.goal_angle = theta
+
+    def _wait_future(self, future, timeout_sec: float) -> bool:
+        """
+        Wait for a service future safely.
+
+        - Main thread: use spin_until_future_complete.
+        - Background thread: poll `future.done()` to avoid nested wait-set issues.
+        """
+        import rclpy
+
+        if threading.current_thread() is threading.main_thread():
+            rclpy.spin_until_future_complete(self.web_handler, future, timeout_sec=timeout_sec)
+            return future.done()
+
+        deadline = time.monotonic() + timeout_sec
+        while time.monotonic() < deadline:
+            if future.done():
+                return True
+            time.sleep(0.005)
+        return future.done()
         
     def path(self, start_x=None, start_y=None, start_theta=None):
         """Generate path - returns (stm32_commands, success)
@@ -169,12 +186,8 @@ class PathfinderAdapter:
             
             # Call service
             future = self.compute_path_client.call_async(request)
-            
-            # Use proper spinning
-            import rclpy
-            rclpy.spin_until_future_complete(self.web_handler, future, timeout_sec=10.0)
-            
-            if not future.done():
+
+            if not self._wait_future(future, timeout_sec=10.0):
                 self.web_handler.get_logger().error('❌ Path computation timeout')
                 return [], False
             
@@ -198,6 +211,55 @@ class PathfinderAdapter:
             import traceback
             self.web_handler.get_logger().error(traceback.format_exc())
             return [], False
+
+    def path_full(
+        self,
+        target_x: float,
+        target_y: float,
+        target_theta: float,
+        start_x: float = None,
+        start_y: float = None,
+        start_theta: float = None,
+    ):
+        """Plan path with explicit target and optional explicit start (same contract as euro PathfinderClient)."""
+        self.set_goal(float(target_x), float(target_y), float(target_theta))
+        return self.path(start_x=start_x, start_y=start_y, start_theta=start_theta)
+
+    def update_map(self):
+        """
+        Trigger map update in hybrid_astar via /update_map service.
+
+        Returns:
+            (success: bool, message: str)
+        """
+        client = self.web_handler.update_map_client
+        if not client.service_is_ready():
+            self.web_handler.get_logger().warning('⚠️ /update_map service is not ready')
+            return False, 'Service not available'
+
+        try:
+            request = Trigger.Request()
+            future = client.call_async(request)
+
+            if not self._wait_future(future, timeout_sec=10.0):
+                self.web_handler.get_logger().error('❌ /update_map timeout')
+                return False, 'Timeout'
+
+            response = future.result()
+            if response is None:
+                self.web_handler.get_logger().error('❌ /update_map failed - no response')
+                return False, 'No response'
+
+            if response.success:
+                self.web_handler.get_logger().debug(f'✅ Map updated: {response.message}')
+                return True, response.message
+
+            self.web_handler.get_logger().warning(f'⚠️ Map update failed: {response.message}')
+            return False, response.message
+
+        except Exception as e:
+            self.web_handler.get_logger().error(f'❌ Error calling /update_map: {e}')
+            return False, str(e)
     
     def get_active_batches(self):
         """
@@ -215,11 +277,8 @@ class PathfinderAdapter:
         try:
             # Call service and spin until complete (allows executor to process)
             future = self.get_active_batches_client.call_async(request)
-            
-            import rclpy
-            rclpy.spin_until_future_complete(self.web_handler, future, timeout_sec=5.0)
-            
-            if not future.done():
+
+            if not self._wait_future(future, timeout_sec=5.0):
                 self.web_handler.get_logger().error('❌ Get active batches timeout')
                 return None
             
@@ -231,13 +290,22 @@ class PathfinderAdapter:
                 'batch_types': list(response.batch_types),
                 'member_counts': list(response.member_counts),
                 'directions': list(response.directions),
+                'patterns': list(response.patterns),
+                'theta_degrees': list(response.theta_degrees),
                 'centers': list(response.centers),
                 'qualities': list(response.qualities)
             }
             
-            self.web_handler.get_logger().info(
-                f'📊 Retrieved {len(batch_info["known_ids"])} active batches'
-            )
+            current_count = len(batch_info["known_ids"])
+            if current_count != self._last_active_batches_count:
+                self.web_handler.get_logger().info(
+                    f'📊 Retrieved {current_count} active batches'
+                )
+                self._last_active_batches_count = current_count
+            else:
+                self.web_handler.get_logger().debug(
+                    f'📊 Retrieved {current_count} active batches (unchanged)'
+                )
             
             return batch_info
             
@@ -249,7 +317,6 @@ class PathfinderAdapter:
         """Get color pattern for a batch synchronously.
         Returns (color_pattern, success, direction, batch_center, known_id)
         """
-        from hybrid_astar.srv import GetBatchColorPattern
         from geometry_msgs.msg import Point
 
         client = self.web_handler.batch_color_client
@@ -262,17 +329,16 @@ class PathfinderAdapter:
         request.pos = pos if pos is not None else Point()
 
         try:
-            import rclpy
             future = client.call_async(request)
-            rclpy.spin_until_future_complete(self.web_handler, future, timeout_sec=5.0)
-            if not future.done():
+
+            if not self._wait_future(future, timeout_sec=5.0):
                 self.web_handler.get_logger().error('❌ get_batch_color timeout')
                 return '', False, '', Point(), ''
+
             response = future.result()
-            if response.success:
+            if response and response.success:
                 return response.color_pattern, True, response.direction, response.batch_center, response.message
-            else:
-                return '', False, '', Point(), ''
+            return '', False, '', Point(), ''
         except Exception as e:
             self.web_handler.get_logger().error(f'❌ get_batch_color error: {e}')
             return '', False, '', Point(), ''
@@ -296,6 +362,38 @@ class PathfinderAdapter:
         if self.untracked_batches:
             self.web_handler.get_logger().info(f"🧹 Clearing untracked planning batches: {self.untracked_batches}")
         self.untracked_batches.clear()
+
+
+class RoundTimer:
+    """Minimal round timer compatible with `Map` timing hooks."""
+
+    def __init__(self, autostart: bool = True):
+        self._start_time: Optional[float] = None
+        self._fixed_elapsed_s: Optional[float] = None
+        if autostart:
+            self.start_game()
+
+    def start_game(self) -> None:
+        # Switch back to running mode.
+        self._fixed_elapsed_s = None
+        self._start_time = time.time()
+
+    def set_elapsed_seconds(self, seconds: float) -> None:
+        """Set timer to a fixed elapsed value in seconds (does not progress over time)."""
+        safe_seconds = max(0.0, float(seconds))
+        self._fixed_elapsed_s = safe_seconds
+        # Keep start_time populated for compatibility with `has_started()` checks.
+        self._start_time = time.time()
+
+    def has_started(self) -> bool:
+        return self._start_time is not None or self._fixed_elapsed_s is not None
+
+    def time(self) -> float:
+        if self._fixed_elapsed_s is not None:
+            return float(self._fixed_elapsed_s)
+        if self._start_time is None:
+            return 0.0
+        return time.time() - self._start_time
 
 
 class WebHandlerNode(Node):
@@ -353,6 +451,18 @@ class WebHandlerNode(Node):
         self.steal_batch_result_pub = self.create_publisher(
             String,
             '/web/steal_batch_result',
+            10
+        )
+
+        self.start_task_scheduler_result_pub = self.create_publisher(
+            String,
+            '/web/start_task_scheduler_result',
+            10
+        )
+
+        self.task_scheduler_status_pub = self.create_publisher(
+            String,
+            '/web/task_scheduler_status',
             10
         )
 
@@ -421,6 +531,14 @@ class WebHandlerNode(Node):
 
         self.create_subscription(
             String,
+            '/web/start_task_scheduler',
+            self.handle_start_task_scheduler_request,
+            10,
+            callback_group=self.reentrant_group
+        )
+
+        self.create_subscription(
+            String,
             '/web/test_controller',
             self.handle_test_controller_request,
             10,
@@ -483,18 +601,27 @@ class WebHandlerNode(Node):
         self.start_pose: Optional[Dict] = None
         self.goal_pose: Optional[Dict] = None
         self.enemy_pose: Optional[Dict] = None
+        self._last_web_batches_count: Optional[int] = None
 
         # TEST page controller instances from euro package
         self.front_controller = FrontSystemsController('web_front_systems_controller')
         self.back_controller = BackSystemsController('web_back_systems_controller')
         self.pneumatic_controller = PneumaticController('web_pneumatic_controller')
         
-        # Robot pose tracking for DecisionMaker
-        self.latest_robot_pose = RobotPose()
-        
-        # Initialize DecisionMaker with reentrant callback group
+        # Initialize TaskScheduler stack for dynamic task generation from web.
         pathfinder_adapter = PathfinderAdapter(self, callback_group=self.reentrant_group)
-        self.decision_maker = DecisionMaker(self, pathfinder_adapter)
+        self.round_timer = RoundTimer(autostart=False)
+        self.scheduler_map = Map(round_timer=self.round_timer)
+        self._manual_holder_override = False
+        self.scheduler_started = False
+        self.task_scheduler = TaskScheduler(
+            map=self.scheduler_map,
+            pathfinder_client=pathfinder_adapter,
+            ros_node=None,
+            loop_period_s=0.05,
+        )
+        self.task_scheduler_status_timer = self.create_timer(0.25, self.publish_task_scheduler_status)
+        self.get_logger().info('⏸️ TaskScheduler initialized in idle mode (waiting for /web/start_task_scheduler)')
         
         self.get_logger().info("=" * 60)
         self.get_logger().info("🌐 Web Handler Node Ready!")
@@ -509,7 +636,7 @@ class WebHandlerNode(Node):
         self.get_logger().info("   - /web/goal_pose")
         self.get_logger().info("   - /web/enemy_pose → /obstacle_relative")
         self.get_logger().info("   - /web/compute_path")
-        self.get_logger().info("   - /web/steal_batch (DecisionMaker)")
+        self.get_logger().info("   - /web/steal_batch (TaskScheduler)")
         self.get_logger().info("   - /web/test_controller (manual euro controllers)")
         self.get_logger().info("   Services:")
         self.get_logger().info("   - /aruco_mapper/get_stable_batches_web (provides batches to map)")
@@ -519,10 +646,43 @@ class WebHandlerNode(Node):
     # ========================================================================
     # Unit Conversion Utilities
     # ========================================================================
+
+    def publish_task_scheduler_status(self) -> None:
+        """Publish periodic scheduler status for realtime dashboard."""
+        if not hasattr(self, 'task_scheduler') or self.task_scheduler is None:
+            return
+
+        try:
+            snapshot = self.task_scheduler.get_status_snapshot(source='web_handler', max_queue_items=30)
+            snapshot['scheduler_started'] = bool(self.scheduler_started)
+            snapshot['timestamp_ms'] = int(time.time() * 1000)
+
+            msg = String()
+            msg.data = json.dumps(snapshot)
+            self.task_scheduler_status_pub.publish(msg)
+        except Exception as e:
+            self.get_logger().debug(f"task_scheduler status publish skipped: {e}")
     
     def mm_to_m(self, value_mm: float) -> float:
         """Convert millimeters to meters"""
         return value_mm / 1000.0
+
+    @staticmethod
+    def _coerce_bool(value, default: bool = False) -> bool:
+        """Coerce web JSON values to bool safely (handles bool/int/str)."""
+        if value is None:
+            return bool(default)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            text = value.strip().lower()
+            if text in ('true', '1', 'yes', 'y', 'on'):
+                return True
+            if text in ('false', '0', 'no', 'n', 'off', '', 'none', 'null'):
+                return False
+        return bool(default)
     
     def m_to_mm(self, value_m: float) -> float:
         """Convert meters to millimeters"""
@@ -645,6 +805,14 @@ class WebHandlerNode(Node):
                 f"{self.start_pose['y_mm']:.0f}) mm, "
                 f"θ={self.start_pose['theta_deg']:.1f}°"
             )
+
+            # Keep scheduler map robot pose in sync (millimeters, degrees).
+            if hasattr(self, 'scheduler_map') and self.scheduler_map is not None:
+                self.scheduler_map.set_robot_position(
+                    float(self.start_pose['x_mm']),
+                    float(self.start_pose['y_mm']),
+                    float(self.start_pose['theta_deg']),
+                )
         except Exception as e:
             self.get_logger().error(f"❌ Error parsing start pose: {e}")
     
@@ -706,6 +874,15 @@ class WebHandlerNode(Node):
             self.get_logger().info(
                 f"📤 Published enemy obstacle to /obstacle_relative"
             )
+
+            # Keep scheduler map enemy state in sync (millimeters).
+            if hasattr(self, 'scheduler_map') and self.scheduler_map is not None:
+                self.scheduler_map.set_enemy_relative(
+                    float(self.enemy_pose['x_mm']),
+                    float(self.enemy_pose['y_mm']),
+                    theta=float(self.enemy_pose['theta_deg']),
+                    detected=True,
+                )
             
         except Exception as e:
             self.get_logger().error(f"❌ Error parsing enemy pose: {e}")
@@ -770,24 +947,40 @@ class WebHandlerNode(Node):
                 f"🎯 Steal batch requested: type={batch_type or 'any'}, "
                 f"device={device or 'auto'}, min_members={min_members}"
             )
+
+            if not self.scheduler_started:
+                result = {
+                    "success": False,
+                    "message": "TaskScheduler is not started. Press 'Start Task Scheduler' first.",
+                    "tasks": None,
+                    "task_count": 0
+                }
+                self.get_logger().warning("⚠️ Steal batch rejected: scheduler not started")
+                self.publish_steal_batch_result(result)
+                return
             
-            # Update robot pose from start pose if available
+            # Refresh scheduler once immediately, then generate best executable task set.
+            if hasattr(self, 'task_scheduler') and self.task_scheduler is not None:
+                self.task_scheduler.loop()
+
+            # Optional explicit start pose for path building (mm + degrees expected by TaskScheduler).
+            explicit_start_pose = None
             if self.start_pose:
-                self.latest_robot_pose.x = self.mm_to_m(self.start_pose['x_mm'])
-                self.latest_robot_pose.y = self.mm_to_m(self.start_pose['y_mm'])
-                self.latest_robot_pose.z = self.deg_to_rad(self.start_pose['theta_deg'])
-            
-            # Call DecisionMaker to steal batch
-            tasks = self.decision_maker.steal_batch(
-                batch_type=batch_type,
-                device=device,
-                min_members=min_members
-            )
+                explicit_start_pose = {
+                    'x': float(self.start_pose['x_mm']),
+                    'y': float(self.start_pose['y_mm']),
+                    'theta': float(self.start_pose['theta_deg']),
+                }
+
+            # Note: batch_type/device/min_members are currently informational for scheduler flow.
+            # TaskScheduler ranks by map state and returns one optimal task set.
+            tasks = self.task_scheduler.get_optimal_task(start_pose=explicit_start_pose) if hasattr(self, 'task_scheduler') else None
             
             if tasks:
                 # steal_batch now returns a list of tasks [pickup_task, putdown_task]
                 task_names = [task['name'] for task in tasks]
                 self._log_steal_tasks_details(tasks)
+                self._sync_scheduler_holder_status_from_tasks(tasks)
                 result = {
                     "success": True,
                     "message": f"Batch steal tasks generated: {', '.join(task_names)}",
@@ -798,7 +991,7 @@ class WebHandlerNode(Node):
             else:
                 result = {
                     "success": False,
-                    "message": "No available batches to steal or path generation failed",
+                    "message": "No available scheduler task or task generation failed",
                     "tasks": None,
                     "task_count": 0
                 }
@@ -816,6 +1009,109 @@ class WebHandlerNode(Node):
                 "message": f"Error: {str(e)}",
                 "tasks": None,
                 "task_count": 0
+            })
+
+    def handle_start_task_scheduler_request(self, msg: String):
+        """
+        Handle task scheduler start/activation request from web.
+
+        Expected JSON:
+        {
+            "request_id": "optional-string",
+            "start_round_timer": true,
+            "run_loop_once": true,
+            "generate_task": false
+        }
+        """
+        try:
+            data = json.loads(msg.data) if msg.data else {}
+            request_id = data.get('request_id')
+            start_round_timer = self._coerce_bool(data.get('start_round_timer', True), True)
+            run_loop_once = self._coerce_bool(data.get('run_loop_once', True), True)
+            generate_task = self._coerce_bool(data.get('generate_task', False), False)
+            manual_holder_override = self._coerce_bool(data.get('manual_holder_override', False), False)
+
+            front_empty_override = data.get('front_empty', None)
+            back_empty_override = data.get('back_empty', None)
+
+            if not self.scheduler_started:
+                # Explicitly wire subscribers/timers only when requested from dashboard.
+                self.task_scheduler.attach_map_subscribers(self, qos=10)
+                self.task_scheduler.attach_loop_timer(self, period_s=0.05)
+                self.scheduler_started = True
+                self.get_logger().info('▶️ TaskScheduler + SimpleMap updater started from dashboard request')
+
+            if start_round_timer and hasattr(self, 'round_timer') and self.round_timer is not None:
+                self.round_timer.start_game()
+                
+                # Start pathfinder game timer for periodic map updates
+                if hasattr(self, 'pathfinder_client') and self.pathfinder_client is not None:
+                    success, message = self.pathfinder_client.start_game()
+                    if success:
+                        self.get_logger().info(f"🎮 Pathfinder game timer started via web: {message}")
+                    else:
+                        self.get_logger().warning(f"⚠️ Failed to start pathfinder game timer: {message}")
+
+            if hasattr(self, 'scheduler_map') and self.scheduler_map is not None and self.scheduler_map.map_updater is not None:
+                self.scheduler_map.map_updater.set_enabled(True)
+
+            # Optional manual holder-state override from dashboard.
+            if hasattr(self, 'scheduler_map') and self.scheduler_map is not None:
+                if front_empty_override is not None:
+                    self.scheduler_map.update_robot_front_status(
+                        self._coerce_bool(front_empty_override, self.scheduler_map.robot_front_empty)
+                    )
+                if back_empty_override is not None:
+                    self.scheduler_map.update_robot_back_status(
+                        self._coerce_bool(back_empty_override, self.scheduler_map.robot_back_empty)
+                    )
+                self._manual_holder_override = manual_holder_override
+
+            if run_loop_once and hasattr(self, 'task_scheduler') and self.task_scheduler is not None:
+                self.task_scheduler.loop()
+
+            generated_tasks = None
+            if generate_task and hasattr(self, 'task_scheduler') and self.task_scheduler is not None:
+                explicit_start_pose = None
+                if self.start_pose:
+                    explicit_start_pose = {
+                        'x': float(self.start_pose['x_mm']),
+                        'y': float(self.start_pose['y_mm']),
+                        'theta': float(self.start_pose['theta_deg']),
+                    }
+                generated_tasks = self.task_scheduler.get_optimal_task(start_pose=explicit_start_pose)
+
+            tracked_target = None
+            if hasattr(self, 'task_scheduler') and self.task_scheduler is not None and self.task_scheduler.tracked_task is not None:
+                tracked_target = str(self.task_scheduler.tracked_task.target_id)
+
+            result = {
+                'success': True,
+                'request_id': request_id,
+                'message': 'TaskScheduler and SimpleMap are active',
+                'scheduler_started': self.scheduler_started,
+                'round_timer_started': bool(
+                    hasattr(self, 'round_timer') and self.round_timer is not None and self.round_timer.has_started()
+                ),
+                'batch_count': int(len(self.scheduler_map.batches)) if hasattr(self, 'scheduler_map') and self.scheduler_map is not None else 0,
+                'task_queue_size': int(len(self.task_scheduler.task_queue)) if hasattr(self, 'task_scheduler') and self.task_scheduler is not None else 0,
+                'tracked_task_target': tracked_target,
+                'generated_task_count': int(len(generated_tasks)) if generated_tasks else 0,
+                'manual_holder_override': bool(getattr(self, '_manual_holder_override', False)),
+                'front_empty': bool(self.scheduler_map.robot_front_empty) if hasattr(self, 'scheduler_map') and self.scheduler_map is not None else None,
+                'back_empty': bool(self.scheduler_map.robot_back_empty) if hasattr(self, 'scheduler_map') and self.scheduler_map is not None else None,
+            }
+
+            self.get_logger().info(
+                f"▶️ TaskScheduler start request handled | batches={result['batch_count']} | queue={result['task_queue_size']}"
+            )
+            self.publish_start_task_scheduler_result(result)
+
+        except Exception as e:
+            self.get_logger().error(f"❌ Error handling start task scheduler: {e}")
+            self.publish_start_task_scheduler_result({
+                'success': False,
+                'message': f'Error: {str(e)}',
             })
 
     def handle_test_controller_request(self, msg: String):
@@ -886,6 +1182,50 @@ class WebHandlerNode(Node):
                 self.get_logger().info(f"🧪 {response['message']}")
 
             elif controller_name in ['hybrid_astar', 'pathfinder', 'map']:
+                if action in ['start_round_timer', 'reset_round_timer', 'start_timer', 'reset_timer']:
+                    if not hasattr(self, 'round_timer') or self.round_timer is None:
+                        raise ValueError('Round timer is not initialized')
+
+                    # start_game() also resets when already started.
+                    self.round_timer.start_game()
+
+                    response = {
+                        'success': True,
+                        'controller': 'hybrid_astar',
+                        'action': action,
+                        'request_id': request_id,
+                        'message': 'Round timer started/reset successfully'
+                    }
+
+                    self.get_logger().info(f"🧪 {response['message']}")
+                    self.publish_test_controller_result(response)
+                    return
+
+                if action in ['set_round_timer', 'set_timer_seconds']:
+                    if not hasattr(self, 'round_timer') or self.round_timer is None:
+                        raise ValueError('Round timer is not initialized')
+
+                    seconds_raw = data.get('seconds', 0)
+                    try:
+                        seconds_value = max(0.0, float(seconds_raw))
+                    except Exception:
+                        raise ValueError(f"Invalid seconds value '{seconds_raw}'")
+
+                    self.round_timer.set_elapsed_seconds(seconds_value)
+
+                    response = {
+                        'success': True,
+                        'controller': 'hybrid_astar',
+                        'action': action,
+                        'request_id': request_id,
+                        'seconds': seconds_value,
+                        'message': f'Round timer set to {seconds_value:.1f}s elapsed'
+                    }
+
+                    self.get_logger().info(f"🧪 {response['message']}")
+                    self.publish_test_controller_result(response)
+                    return
+
                 action_to_service = {
                     'update_map': ('/update_map', self.update_map_client),
                     'clear_map': ('/clear_map', self.clear_map_client),
@@ -974,7 +1314,103 @@ class WebHandlerNode(Node):
             for step_i, step in enumerate(sequence, 1):
                 device = step.get('device', '?')
                 command = step.get('command', '?')
-                self.get_logger().info(f"      - step {step_i}: {device}.{command}")
+                params = step.get('params', [])
+
+                # Print compact motion details for STM commands.
+                if str(device).upper() == 'STM' and str(command) in ('go_to', 'go_to_backwards'):
+                    x = y = '?'
+                    if isinstance(params, list) and len(params) >= 2:
+                        try:
+                            x = float(params[0])
+                            y = float(params[1])
+                        except (TypeError, ValueError):
+                            x = params[0]
+                            y = params[1]
+                    self.get_logger().info(f"      - step {step_i}: {device}.{command} -> x={x}, y={y}")
+
+                elif str(device).upper() == 'STM' and str(command) == 'orientate':
+                    theta = '?'
+                    if isinstance(params, list) and len(params) >= 1:
+                        try:
+                            theta = float(params[0])
+                        except (TypeError, ValueError):
+                            theta = params[0]
+                    self.get_logger().info(f"      - step {step_i}: {device}.{command} -> theta={theta}")
+
+                else:
+                    self.get_logger().info(f"      - step {step_i}: {device}.{command}")
+
+    def _sync_scheduler_holder_status_from_tasks(self, tasks: List[Dict]) -> None:
+        """
+                Update SimpleMap holder-empty flags from the NEXT generated steal task.
+
+        Rules requested:
+        - pick_up  -> holder becomes NOT empty (False)
+        - put_down -> holder becomes empty (True)
+
+                Notes:
+                - We only apply the first ESP action from the first task because this
+                    reflects the immediate command the robot will execute next.
+                - This avoids applying future put_down steps too early when steal
+                    generation returns [pickup_task, putdown_task].
+        """
+        if not hasattr(self, 'scheduler_map') or self.scheduler_map is None:
+            return
+
+        # For STEAL generation we always sync holder state from generated task,
+        # even if manual override was enabled previously.
+        if bool(getattr(self, '_manual_holder_override', False)):
+            self.get_logger().info('🧺 Disabling manual holder override due to steal task generation sync')
+            self._manual_holder_override = False
+
+        front_empty = self.scheduler_map.robot_front_empty
+        back_empty = self.scheduler_map.robot_back_empty
+        changed = False
+
+        next_task = tasks[0] if isinstance(tasks, list) and tasks else None
+        sequence = next_task.get('sequence', []) if isinstance(next_task, dict) else []
+
+        for step in sequence:
+            if not isinstance(step, dict):
+                continue
+
+            device = str(step.get('device', '')).strip().lower()
+            command = str(step.get('command', '')).strip().lower().replace('-', '_')
+
+            if device == 'esp_front':
+                if command in ('pick_up', 'pickup'):
+                    if front_empty:
+                        front_empty = False
+                        changed = True
+                    break
+                if command in ('put_down', 'putdown'):
+                    if not front_empty:
+                        front_empty = True
+                        changed = True
+                    break
+
+            elif device == 'esp_back':
+                if command in ('pick_up', 'pickup'):
+                    if back_empty:
+                        back_empty = False
+                        changed = True
+                    break
+                if command in ('put_down', 'putdown'):
+                    if not back_empty:
+                        back_empty = True
+                        changed = True
+                    break
+
+        if changed:
+            self.scheduler_map.update_robot_front_status(front_empty)
+            self.scheduler_map.update_robot_back_status(back_empty)
+            self.get_logger().info(
+                f"🧺 Updated holder status from tasks: front_empty={front_empty}, back_empty={back_empty}"
+            )
+        else:
+            self.get_logger().warning(
+                "⚠️ Holder status not changed from generated tasks (no ESP pick_up/put_down found in first task sequence)"
+            )
     
     # ========================================================================
     # Service Calls
@@ -985,7 +1421,7 @@ class WebHandlerNode(Node):
         Service handler for /aruco_mapper/get_stable_batches_web
         Fetches batches from the web server (server.py) and returns them as ArucoMapperState
         """
-        self.get_logger().info(f"🔍 GetStableBatches WEB service called (filter: '{request.batch_types_filter}')")
+        self.get_logger().debug(f"🔍 GetStableBatches WEB service called (filter: '{request.batch_types_filter}')")
         
         try:
             # Fetch batches from web server
@@ -1002,7 +1438,12 @@ class WebHandlerNode(Node):
             web_data = web_response.json()
             web_batches = web_data.get('batches', [])
             
-            self.get_logger().info(f"📦 Retrieved {len(web_batches)} batches from web server")
+            web_batch_count = len(web_batches)
+            if web_batch_count != self._last_web_batches_count:
+                self.get_logger().info(f"📦 Retrieved {web_batch_count} batches from web server")
+                self._last_web_batches_count = web_batch_count
+            else:
+                self.get_logger().debug(f"📦 Retrieved {web_batch_count} batches from web server (unchanged)")
             
             # Convert web batches to ArucoMapperState
             aruco_state = ArucoMapperState()
@@ -1060,7 +1501,7 @@ class WebHandlerNode(Node):
                 aruco_state.batches.append(batch)
             
             response.stable_state = aruco_state
-            self.get_logger().info(f"✅ Returning {len(aruco_state.batches)} batches to caller")
+            self.get_logger().debug(f"✅ Returning {len(aruco_state.batches)} batches to caller")
             return response
             
         except requests.RequestException as e:
@@ -1254,6 +1695,13 @@ class WebHandlerNode(Node):
         msg.data = json.dumps(result)
         self.steal_batch_result_pub.publish(msg)
         self.get_logger().info("📤 Steal batch result sent to web")
+
+    def publish_start_task_scheduler_result(self, result: Dict):
+        """Publish start task scheduler result to web dashboard"""
+        msg = String()
+        msg.data = json.dumps(result)
+        self.start_task_scheduler_result_pub.publish(msg)
+        self.get_logger().info("📤 Start task scheduler result sent to web")
 
     def publish_test_controller_result(self, result: Dict):
         """Publish TEST controller command result to web dashboard"""

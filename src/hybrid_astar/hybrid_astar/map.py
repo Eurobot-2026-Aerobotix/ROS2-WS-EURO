@@ -99,6 +99,8 @@ class MapManager:
         self.first_update_map = True
         self.first_update_empty_retry_count = 0
         self.first_update_empty_retry_max = 6
+        self.first_update_empty_reported = False
+        self.first_update_start_logged = False
         
         # Flag to track if we've locked the baseline patterns
         self.baselines_locked = False
@@ -135,6 +137,12 @@ class MapManager:
         self.short_pattern_retry_active = False
         self.short_pattern_retry_interval_sec = params.get('rates', {}).get('short_pattern_retry_sec', 2.0)
 
+        # Game-start driven periodic update_map flow
+        self.start_game_requested = False
+        self.game_update_timer_active = False
+        self.game_update_pending = 0
+        self.game_update_interval_sec = params.get('rates', {}).get('start_game_update_map_sec', 1.0)
+
         # Enemy obstacle freshness management (/obstacle_relative)
         self.enemy_obstacle_timeout_sec = params.get('rates', {}).get('enemy_obstacle_timeout_sec', 1.0)
         self.last_enemy_update_ns: Optional[int] = None
@@ -143,7 +151,8 @@ class MapManager:
         # Create publishers
         self.current_obs_pub = node.create_publisher(
             ObstacleArray, '/obstacles/current', 10)
-        
+
+        # Dedicated stream for active batch obstacles (sx_/fx_ only)
         self.path_viz_pub = node.create_publisher(
             MarkerArray, '/path_visualization', 10)
         
@@ -176,6 +185,11 @@ class MapManager:
         short_retry_interval = max(self.short_pattern_retry_interval_sec, 0.5)
         self.short_pattern_retry_timer = self.node.create_timer(
             short_retry_interval, self._short_pattern_retry_callback
+        )
+
+        game_update_interval = max(self.game_update_interval_sec, 0.1)
+        self.game_update_timer = self.node.create_timer(
+            game_update_interval, self._game_update_timer_callback
         )
         
         self.node.get_logger().info('🗺️  Map Manager initialized')
@@ -239,6 +253,8 @@ class MapManager:
         self.locked_baseline_batch_ids.clear()
         self.pending_baseline_lock_ids.clear()
         self.baseline_lock_pending = False
+        self.start_game_requested = False
+        self._stop_game_update_timer()
         self.known_ids_to_retry.clear()
         self.deleted_batch_ids.clear()
         self.active_batch_ids.clear()
@@ -631,6 +647,7 @@ class MapManager:
             msg.header.frame_id = "map"
             msg.obstacles = list(self.obstacles)
             self.current_obs_pub.publish(msg)
+
         # Also publish obstacle visualization for RViz
         self.publish_obstacles(self.get_active_obstacles())
 
@@ -751,10 +768,89 @@ class MapManager:
         
         Priority: Try web service first (for simulation), then fall back to aruco_mapper (for real robot)
         """
-        # Try web service first if available
+        success, message, _service_name = self._trigger_update_map_async(can_lock_baseline=True)
+        response.success = success
+        response.message = message
+        return response
+
+    def handle_start_game(self, request: Trigger.Request, response: Trigger.Response) -> Trigger.Response:
+        """
+        Service handler: arm game flow and start periodic update_map only after
+        baseline lock is complete.
+        """
+        self.start_game_requested = True
+
+        if self.game_update_timer_active:
+            # Reset and restart the timer
+            self._stop_game_update_timer()
+            self._start_game_update_timer()
+            response.success = True
+            response.message = (
+                f"Game timer restarted: update_map every {max(self.game_update_interval_sec, 0.1):.1f}s"
+            )
+            return response
+
+        # If already locked, start immediately.
+        if self.baselines_locked:
+            self._start_game_update_timer()
+            response.success = True
+            response.message = (
+                f"Game started: periodic update_map enabled every {max(self.game_update_interval_sec, 0.1):.1f}s"
+            )
+            return response
+
+        # Otherwise trigger initial update flow; timer starts automatically once locked.
+        success, message, _service_name = self._trigger_update_map_async(can_lock_baseline=True)
+        if not success:
+            response.success = False
+            response.message = f"start_game failed to trigger initial update_map: {message}"
+            return response
+
+        response.success = True
+        response.message = (
+            "start_game accepted: initial update_map triggered; timer will start after baseline lock completes"
+        )
+        return response
+
+    def _start_game_update_timer(self):
+        if self.game_update_timer_active:
+            return
+        self.game_update_timer_active = True
+        self.node.get_logger().info(
+            f"🎮 Game update timer started: update_map every {max(self.game_update_interval_sec, 0.1):.1f}s"
+        )
+
+    def _stop_game_update_timer(self):
+        if not self.game_update_timer_active:
+            return
+        self.game_update_timer_active = False
+        self.game_update_pending = 0
+        self.node.get_logger().info("🛑 Game update timer stopped")
+
+    def _game_update_timer_callback(self):
+        """Periodic callback that performs the same async flow as /update_map."""
+        if not self.game_update_timer_active:
+            return
+        if not self.baselines_locked:
+            return
+        if self.game_update_pending > 0:
+            return
+
+        success, message, service_name = self._trigger_update_map_async(can_lock_baseline=False)
+        if not success:
+            self.node.get_logger().warn(f"⚠️ Game timer update_map skipped: {message}")
+            return
+
+        self.game_update_pending += 1
+        self.node.get_logger().debug(
+            f"🔄 Game timer update_map triggered from {service_name}: {message}"
+        )
+
+    def _trigger_update_map_async(self, can_lock_baseline: bool = True) -> tuple[bool, str, str]:
+        """Trigger the same asynchronous GetStableBatches flow as /update_map."""
         client_to_use = None
         service_name = ""
-        
+
         if self.get_stable_batches_client.service_is_ready():
             client_to_use = self.get_stable_batches_client
             service_name = "/aruco_mapper/get_stable_batches"
@@ -763,33 +859,30 @@ class MapManager:
             service_name = "/aruco_mapper/get_stable_batches_web"
         else:
             self.node.get_logger().error("❌ No GetStableBatches service available")
-            response.success = False
-            response.message = "No batch service available"
-            return response
+            return False, "No batch service available", service_name
 
         # Remember service for auto-retry timer
         self.retry_client = client_to_use
         self.retry_service_name = service_name
-        
-        # Always get all batches with 'sfg' filter (for both first and subsequent calls)
-        # The difference is that first call clears everything, subsequent calls do incremental updates
+
         if self.first_update_map:
-            self.node.get_logger().info("🔄 First update_map call - requesting all batches (unlocked)")
-            self.baseline_lock_pending = True
-        
+            if not self.first_update_start_logged:
+                self.node.get_logger().info("🔄 First update_map call - requesting all batches (unlocked)")
+                self.first_update_start_logged = True
+            if can_lock_baseline:
+                self.baseline_lock_pending = True
+
         stable_request = GetStableBatches.Request()
-        stable_request.batch_types_filter = "sfg"  # Get all stable batches
-        stable_request.specific_known_id = ""  # Get all batches matching the filter
-        stable_request.only_locked_baselines = False  # Always False for update_map - lock call happens after all TRACKING
-        
-        # Call service asynchronously
+        stable_request.batch_types_filter = "sfg"
+        stable_request.specific_known_id = ""
+        stable_request.only_locked_baselines = False
+
         future = client_to_use.call_async(stable_request)
         future.add_done_callback(lambda f: self._handle_get_stable_batches_response(
-            f, response, client_to_use, service_name, None, False, True))
-        
-        response.success = True
+            f, None, client_to_use, service_name, None, False, can_lock_baseline))
+
         message_type = "First" if self.first_update_map else "Incremental"
-        response.message = f"{message_type} map update triggered from {service_name} (processing asynchronously)"
+        return True, f"{message_type} map update triggered from {service_name} (processing asynchronously)", service_name
         return response
 
     def handle_reset_map(self, request: Trigger.Request, response: Trigger.Response) -> Trigger.Response:
@@ -824,6 +917,8 @@ class MapManager:
         self.beacon_ready_published = False
         self.locked_baseline_batch_ids.clear()
         self.pending_baseline_lock_ids.clear()
+        self.start_game_requested = False
+        self._stop_game_update_timer()
         self.known_ids_to_retry.clear()
         self.short_pattern_ids.clear()
         self._stop_retry_timer()
@@ -885,10 +980,14 @@ class MapManager:
                     self.first_update_empty_retry_count += 1
                     attempt = self.first_update_empty_retry_count
                     self.baseline_lock_pending = True
-                    self.node.get_logger().warn(
+                    retry_msg = (
                         f"⚠️ First update_map returned 0 batches, retrying as first update "
                         f"({attempt}/{self.first_update_empty_retry_max})"
                     )
+                    if attempt == 1:
+                        self.node.get_logger().warn(retry_msg)
+                    else:
+                        self.node.get_logger().debug(retry_msg)
 
                     retry_client = client if client is not None else self.retry_client
                     if retry_client and retry_client.service_is_ready():
@@ -909,11 +1008,20 @@ class MapManager:
                         )
                     return
 
-                self.node.get_logger().error(
+                exhausted_msg = (
                     f"❌ First update_map still returned 0 batches after "
                     f"{self.first_update_empty_retry_max} retries"
                 )
+                if not self.first_update_empty_reported:
+                    self.node.get_logger().error(exhausted_msg)
+                    self.first_update_empty_reported = True
+                else:
+                    self.node.get_logger().debug(exhausted_msg)
                 return
+
+            if is_first_update and num_batches > 0:
+                self.first_update_empty_reported = False
+                self.first_update_start_logged = False
             
             # Filter batches based on update type
             if is_first_update:
@@ -1062,7 +1170,7 @@ class MapManager:
             
             filtered_batches = list(deduplicated_batches.values())
             if duplicates_found:
-                self.node.get_logger().info(f"✅ After deduplication: {len(filtered_batches)} unique batches")
+                self.node.get_logger().debug(f"✅ After deduplication: {len(filtered_batches)} unique batches")
             
             # Get known_ids from current response
             received_batch_ids = {batch.known_id for batch in filtered_batches}
@@ -1157,7 +1265,7 @@ class MapManager:
                                     f"🗑️  Removed {removed} obstacles from {len(disappeared_ids)} disappeared batches: {disappeared_ids}"
                                 )
                             elif fx_batches_ids:
-                                self.node.get_logger().info(
+                                self.node.get_logger().debug(
                                     f"🔄 Refreshing {len(fx_batches_ids)} FX batches (removed {removed} old obstacles)"
                                 )
                     else:
@@ -1192,7 +1300,7 @@ class MapManager:
                                    if b.known_id not in self.active_batch_ids or b.known_id.startswith('f')]
                     if len(new_batches) < len(filtered_batches):
                         kept_count = len(filtered_batches) - len(new_batches)
-                        self.node.get_logger().info(
+                        self.node.get_logger().debug(
                             f"♻️  Keeping {kept_count} existing SX/GX batches, adding {len(new_batches)} new/FX ones"
                         )
                     filtered_batches = new_batches
@@ -1306,7 +1414,7 @@ class MapManager:
                         f"📦 Map updated: FX={fx_count}, SX={sx_count}, Enemy={enemy_count}, Untracked={untracked_count}, Total={len(self.obstacles)}"
                     )
                 else:
-                    self.node.get_logger().info(
+                    self.node.get_logger().debug(
                         f"📦 Map updated: FX={fx_count}, SX={sx_count}, Enemy={enemy_count}, Total={len(self.obstacles)}"
                     )
             
@@ -1319,6 +1427,8 @@ class MapManager:
                 self.retry_pending = max(0, self.retry_pending - 1)
                 if self.retry_pending == 0 and not self.known_ids_to_retry:
                     self._stop_retry_timer()
+            elif self.game_update_pending > 0:
+                self.game_update_pending = max(0, self.game_update_pending - 1)
 
     def _start_retry_timer(self):
         """Start periodic retries until all EMERGING batches become non-EMERGING (stable)."""
@@ -1479,6 +1589,9 @@ class MapManager:
                 self.baseline_lock_pending = False
                 self.node.get_logger().info(f"✅ Baseline patterns locked! Received {num_batches} locked batches")
 
+                if self.start_game_requested and not self.game_update_timer_active:
+                    self._start_game_update_timer()
+
                 if not self.beacon_ready_published:
                     self._publish_beacon_status(1)
                     self.beacon_ready_published = True
@@ -1498,6 +1611,11 @@ class MapManager:
                             if len(batch.pattern or "") >= 4:
                                 sx_batches_ready_for_obstacles.append(batch)
                         elif batch.known_id.startswith('f'):
+                            if batch.known_id in self.manual_putdown_batch_ids:
+                                self.node.get_logger().info(
+                                    f"📌 Keeping manual put_down pose for '{batch.known_id}' (skip baseline FX overwrite)"
+                                )
+                                continue
                             self.batches_fx[batch.known_id] = batch
                             self.node.get_logger().info(f"   🔒 Locked FX pattern: {batch.known_id} = '{batch.pattern}'")
                 
@@ -1732,8 +1850,16 @@ class MapManager:
                     continue
 
                 if source == 'fx':
+                    with self.batches_lock:
+                        if batch.known_id in self.manual_putdown_batch_ids:
+                            self.node.get_logger().debug(
+                                f"📌 Keeping manual put_down pose for '{batch.known_id}' (ignore non-LOST beacon update)"
+                            )
+                            continue
+
+                if source == 'fx':
                     member_count = len(batch.members) if batch.members else 0
-                    self.node.get_logger().info(
+                    self.node.get_logger().debug(
                         f"📦 FX batch '{batch.known_id}' received with {member_count} members"
                     )
                     if not batch.members:
@@ -1965,6 +2091,8 @@ class MapManager:
             - batch_types: List of batch types ('fx', 'sx', 'gx')
             - member_counts: List of member counts
             - directions: List of directions ('horizontal', 'vertical', or '')
+            - patterns: List of color patterns ('ybyb', etc.)
+            - theta_degrees: List of batch orientations in degrees
             - centers: List of Point objects (batch centers)
             - qualities: List of quality indicators (all 1 for now)
         """
@@ -1973,8 +2101,17 @@ class MapManager:
             batch_types = []
             member_counts = []
             directions = []
+            patterns = []
+            theta_degrees = []
             centers = []
             qualities = []
+
+            def _theta_from_direction(direction: str) -> float:
+                if direction == 'horizontal':
+                    return 0.0
+                if direction == 'vertical':
+                    return 90.0
+                return 0.0
             
             # Process FX batches
             for known_id, batch in self.batches_fx.items():
@@ -1983,7 +2120,10 @@ class MapManager:
                     known_ids.append(known_id)
                     batch_types.append('fx')
                     member_counts.append(len(batch.members) if batch.members else 0)
-                    directions.append(batch.direction if batch.direction else '')
+                    direction = batch.direction if batch.direction else ''
+                    directions.append(direction)
+                    patterns.append(batch.pattern.lower() if getattr(batch, 'pattern', None) else '')
+                    theta_degrees.append(_theta_from_direction(direction))
                     centers.append(batch.center)
                     qualities.append(1)  # Always 1 for now
             
@@ -1994,7 +2134,10 @@ class MapManager:
                     known_ids.append(known_id)
                     batch_types.append('sx')
                     member_counts.append(len(batch.members) if batch.members else 0)
-                    directions.append(batch.direction if batch.direction else '')
+                    direction = batch.direction if batch.direction else ''
+                    directions.append(direction)
+                    patterns.append(batch.pattern.lower() if getattr(batch, 'pattern', None) else '')
+                    theta_degrees.append(_theta_from_direction(direction))
                     centers.append(batch.center)
                     qualities.append(1)  # Always 1 for now
             
@@ -2003,6 +2146,8 @@ class MapManager:
                 'batch_types': batch_types,
                 'member_counts': member_counts,
                 'directions': directions,
+                'patterns': patterns,
+                'theta_degrees': theta_degrees,
                 'centers': centers,
                 'qualities': qualities
             }

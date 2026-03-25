@@ -48,6 +48,9 @@ last_stm_command=""
 PATH_PREPARED = False  # Flag indicating path is prepared in background
 PREPARING_PATH = False  # Flag indicating path preparation is in progress
 return_home_triggered = False  # Flag to ensure return home logic only triggers once
+known_id_front=None
+known_id_back=None
+
 def path_planning_task(strategy, lidar, round_timer, pneumatic_controller=None, front_controller=None, back_controller=None,stm32_controller=None):
     """Dedicated thread for handling return home at 90s"""
     global SHUTDOWN_REQUESTED
@@ -307,7 +310,8 @@ def lidar_status(strategy, stm32, lidar, round_timer):
         lidar_loop_count += 1
         
         # Update lidar with current round time
-        lidar.set_round_time(round_timer.time())
+        elapsed_s = round_timer.time()
+        lidar.set_round_time(elapsed_s)
         
         # Check emergency stop from lidar
         old_emergency = EMERGENCY_STOP
@@ -666,6 +670,8 @@ def stm32_task(strategy, stm32,lidar):
         
         time.sleep(0.1)  # 100ms
 def handle_color_pattner(strategy,front):
+    global known_id_back
+    global known_id_front
     """Handle color pattern retrieval"""
     x = strategy.latest_robot_pose.x
     y = strategy.latest_robot_pose.y
@@ -679,7 +685,6 @@ def handle_color_pattner(strategy,front):
     known_id = ''
 
     color_pattern, success, direction, batch_center, batch_known_id = strategy.pathfinder.get_batch_color(known_id, pos)
-    
     # Default to "yyyy" if no pattern received or failed
     if not color_pattern or not success or len(color_pattern) != 4:
         color_pattern = "yyyy"
@@ -692,9 +697,28 @@ def handle_color_pattner(strategy,front):
         deleted = strategy.pathfinder.delete_batch(batch_known_id)
         if deleted:
             strategy.get_logger().info(f"🗑️  Batch '{batch_known_id}' deleted from map after pickup")
+
+            # Keep SimpleMap in sync and prevent the deleted batch from being
+            # re-introduced by background get_active_batches refresh.
+            scheduler = getattr(strategy, 'task_scheduler', None)
+            simple_map = getattr(scheduler, 'map', None) if scheduler is not None else None
+            if simple_map is not None and hasattr(simple_map, 'remove_batch'):
+                try:
+                    simple_map.remove_batch(batch_known_id, persistently=True)
+                    strategy.get_logger().info(
+                        f"🧠 SimpleMap synced: removed batch '{batch_known_id}' (persistent delete)"
+                    )
+                except Exception as e:
+                    strategy.get_logger().warning(
+                        f"⚠️  Failed to sync deleted batch '{batch_known_id}' into SimpleMap: {e}"
+                    )
         else:
             strategy.get_logger().warning(f"⚠️  Failed to delete batch '{batch_known_id}' from map")
-
+    if success and batch_known_id:
+        if front:
+            known_id_front = batch_known_id
+        else:
+            known_id_back = batch_known_id
     if success and batch_center:
         theta = math.degrees(z)  # Convert radians to degrees
         
@@ -807,6 +831,44 @@ def talaa(strategy, front_controller=None,front=True):
         return None
 
 #1 louta wl 2 fel wost wl 3 lfouk
+def _update_robot_holder_status(strategy, front: bool, empty: bool) -> None:
+    """Sync holder state into `strategy.task_scheduler.map` (new architecture)."""
+    scheduler = getattr(strategy, 'task_scheduler', None)
+    if scheduler is None:
+        if hasattr(strategy, 'get_logger'):
+            strategy.get_logger().warning("⚠️ task_scheduler is missing on strategy")
+        return
+
+    map_obj = getattr(scheduler, 'map', None)
+    if map_obj is None:
+        if hasattr(strategy, 'get_logger'):
+            strategy.get_logger().warning("⚠️ strategy.task_scheduler.map is missing")
+        return
+
+    if front:
+        map_obj.update_robot_front_status(bool(empty))
+    else:
+        map_obj.update_robot_back_status(bool(empty))
+
+
+def _update_robot_color_in_map(strategy) -> None:
+    """Sync `strategy.color` into `strategy.task_scheduler.map` at game start."""
+    scheduler = getattr(strategy, 'task_scheduler', None)
+    map_obj = getattr(scheduler, 'map', None) if scheduler is not None else None
+    if map_obj is None:
+        if hasattr(strategy, 'get_logger'):
+            strategy.get_logger().warning("⚠️ strategy.task_scheduler.map is missing (color not synced)")
+        return
+
+    color = getattr(strategy, 'color', None)
+    if not color:
+        if hasattr(strategy, 'get_logger'):
+            strategy.get_logger().warning("⚠️ strategy.color is not set (color not synced)")
+        return
+
+    map_obj.set_robot_color(str(color).strip().lower())
+
+
 def pick_up(controller,pneumatic,strategy,front):
     global color_pt_front
     global color_pt_back
@@ -840,10 +902,12 @@ def pick_up(controller,pneumatic,strategy,front):
     if front:
         color_pt_front = color_pattern
         ESP_FRONT_IDLE=True
+        _update_robot_holder_status(strategy, front=True, empty=False)
         strategy.get_logger().info(f"📦 Front picked up - NEW Color pattern: {color_pt_front}")
     else:
         color_pt_back = color_pattern
         ESP_BACK_IDLE=True
+        _update_robot_holder_status(strategy, front=False, empty=False)
         strategy.get_logger().info(f"📦 Back picked up - NEW Color pattern: {color_pt_back}")
     stana(controller)
     if SHUTDOWN_REQUESTED:
@@ -879,7 +943,10 @@ def put_down(controller,pneumatic,strategy,front):
         # pneumatic.back(15)
     if front:
         ESP_FRONT_IDLE=True
+        _update_robot_holder_status(strategy, front=True, empty=True)
     else: ESP_BACK_IDLE=True
+    if not front:
+        _update_robot_holder_status(strategy, front=False, empty=True)
     
     if SHUTDOWN_REQUESTED:
         return
@@ -1013,9 +1080,18 @@ def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=No
                     WAITING_TIRETTE=False
                     strategy.get_logger().info(f"✅ Tirette tjebdet  STRATEGY GOOOOOOOOO !!!!")
                     
+                    # Start game timer on pathfinder to begin periodic map updates
+                    success, message = strategy.pathfinder.start_game()
+                    if success:
+                        strategy.get_logger().info(f"🎮 Pathfinder game timer started: {message}")
+                    else:
+                        strategy.get_logger().warning(f"⚠️ Failed to start pathfinder game timer: {message}")
+                    
                     # Start timer and map update FIRST (critical for robot operation)
                     round_timer.start_game()
                     strategy.get_logger().info(f"⏱️  Game timer started!")
+                    _update_robot_color_in_map(strategy)
+                    strategy.get_logger().info(f"🎨 Robot color synced to map: {strategy.color}")
                     #strategy.get_logger().info("🗺️  Updating map...")
                     #strategy.pathfinder.update_map()
                     
@@ -1083,7 +1159,8 @@ def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=No
                 # Generate and queue dynamic steal tasks from YAML command
                 # Params example: [3, 0] => min_members=3, device=auto
                 try:
-                    success = strategy.handle_steal_command(params=params, wait=wait)
+                    # Always execute generated steal tasks synchronously for this command.
+                    success = strategy.handle_steal_command(params=params, wait=True)
                     if success:
                         strategy.get_logger().info("✅ RASP_PI steal command handled")
                     else:

@@ -49,6 +49,11 @@ class PathfinderClient(Node):
             '/clear_map'
         )
         
+        self.start_game_client = self.create_client(
+            Trigger,
+            '/start_game'
+        )
+        
         self.get_active_batches_client = self.create_client(
             GetActiveBatches,
             '/pathfinder/get_active_batches'
@@ -95,6 +100,12 @@ class PathfinderClient(Node):
             self.get_logger().warning('⚠️  /clear_map service not available after 5 seconds')
         else:
             self.get_logger().info('✅ /clear_map service is ready')
+
+        self.get_logger().info('Waiting for /start_game service...')
+        if not self.start_game_client.wait_for_service(timeout_sec=5.0):
+            self.get_logger().warning('⚠️  /start_game service not available after 5 seconds')
+        else:
+            self.get_logger().info('✅ /start_game service is ready')
 
         self.get_logger().info('Waiting for /put_down service...')
         if not self.put_down_client.wait_for_service(timeout_sec=5.0):
@@ -180,6 +191,32 @@ class PathfinderClient(Node):
     # =========================================================
     # PATH PLANNING
     # =========================================================
+    def path_full(
+        self,
+        target_x: float,
+        target_y: float,
+        target_theta: float,
+        start_x: float = None,
+        start_y: float = None,
+        start_theta: float = None,
+    ):
+        """
+        Plan a path with explicit target and optional explicit start.
+
+        Args:
+            target_x: Target X in meters
+            target_y: Target Y in meters
+            target_theta: Target yaw in radians
+            start_x: Optional start X in meters
+            start_y: Optional start Y in meters
+            start_theta: Optional start yaw in radians
+
+        Returns:
+            stm32_commands (list[str]), success (bool)
+        """
+        self.set_goal(float(target_x), float(target_y), float(target_theta))
+        return self.path(start_x=start_x, start_y=start_y, start_theta=start_theta)
+
     def path(self, start_x=None, start_y=None, start_theta=None):
         """
         Plan a path from current robot position to stored goal position
@@ -441,8 +478,48 @@ class PathfinderClient(Node):
             self.get_logger().warning(f'⚠️ Map clear failed: {response.message}')
             return False, response.message
 
+    # =========================================================    # START GAME
     # =========================================================
-    # 3️⃣ GET BATCH COLOR
+    def start_game(self):
+        """
+        Start the game timer for periodic map updates.
+        Locks baselines and begins automatic batch updates.
+        
+        Returns:
+            success (bool): Whether the start_game call succeeded
+            message (str): Status message
+        """
+        # Check if service is available
+        if not self.start_game_client.service_is_ready():
+            self.get_logger().error('❌ /start_game service is not available!')
+            return False, 'Service not available'
+
+        self.get_logger().info('🎮 Starting game timer...')
+
+        request = Trigger.Request()
+        future = self.start_game_client.call_async(request)
+        
+        # Wait for future to complete with proper spinning
+        rclpy.spin_until_future_complete(self, future, timeout_sec=10.0)
+        
+        if not future.done():
+            self.get_logger().error('❌ Start game service call timed out after 10s')
+            return False, 'Timeout'
+
+        if not future.result():
+            self.get_logger().error('❌ Start game service call failed - no response received')
+            return False, 'No response'
+
+        response = future.result()
+
+        if response.success:
+            self.get_logger().info(f'✅ Game started: {response.message}')
+            return True, response.message
+        else:
+            self.get_logger().warning(f'⚠️ Game start failed: {response.message}')
+            return False, response.message
+
+    # =========================================================    # 3️⃣ GET BATCH COLOR
     # =========================================================
     def get_batch_color(self, known_id: str, pos: Point):
         """
@@ -531,6 +608,8 @@ class PathfinderClient(Node):
                 'batch_types': List[str],  # 'fx', 'sx', 'gx'
                 'member_counts': List[int],
                 'directions': List[str],  # 'horizontal', 'vertical', or ''
+                'patterns': List[str],    # e.g., 'ybyb'
+                'theta_degrees': List[float],
                 'centers': List[Point],
                 'qualities': List[int]
             }
@@ -573,6 +652,8 @@ class PathfinderClient(Node):
             'batch_types': list(response.batch_types),
             'member_counts': list(response.member_counts),
             'directions': list(response.directions),
+            'patterns': list(response.patterns),
+            'theta_degrees': list(response.theta_degrees),
             'centers': list(response.centers),
             'qualities': list(response.qualities)
         }

@@ -37,7 +37,7 @@ from visualization_msgs.msg import Marker, MarkerArray
 from tf2_ros import Buffer, TransformListener, LookupException, ConnectivityException, ExtrapolationException
 
 # Custom messages (will be generated)
-from hybrid_astar.msg import Obstacle, ObstacleArray, ColorCommand
+from hybrid_astar.msg import Obstacle, ObstacleArray, ColorCommand, ActiveBatches
 from aruco_mapper_msgs.msg import ArucoMapperState, Batch, BatchMember
 from aruco_mapper_msgs.srv import GetStableBatches
 from hybrid_astar.srv import ComputePath, GetBatchColorPattern, DeleteBatch, GetActiveBatches, PutDown
@@ -74,6 +74,7 @@ class HybridAStarNode(Node):
         # Log deduplication - track last N messages to prevent spam
         self._last_log_messages = []
         self._max_log_history = 5
+        self._last_active_batches_signature = None
         
         # Load all parameters
         self.load_parameters()
@@ -133,10 +134,19 @@ class HybridAStarNode(Node):
         self.get_active_batches_service_alias = self.create_service(
             GetActiveBatches, '/get_active_batches', self.handle_get_active_batches,
             callback_group=self.reentrant_group)
+
+        # Topic publisher for active batches (same payload fields as GetActiveBatches response)
+        self.active_batches_pub = self.create_publisher(ActiveBatches, '/active_obstacles', 10)
+        self.active_batches_timer = self.create_timer(1.0, self.publish_active_batches_topic)
         
         # Delegate update_map service to MapManager
         self.update_map_service = self.create_service(
             Trigger, '/update_map', self.map_manager.handle_update_map,
+            callback_group=self.reentrant_group)
+
+        # Start game flow: begin periodic update_map only after baseline lock completes
+        self.start_game_service = self.create_service(
+            Trigger, '/start_game', self.map_manager.handle_start_game,
             callback_group=self.reentrant_group)
         
         # Delegate clear_map service to MapManager
@@ -1385,7 +1395,7 @@ class HybridAStarNode(Node):
     def handle_get_active_batches(self, request: GetActiveBatches.Request, response: GetActiveBatches.Response) -> GetActiveBatches.Response:
         """
         Service handler: Get information about all active batches
-        Returns arrays of batch information (known_id, batch_type, member_count, direction, center, quality)
+        Returns arrays of batch information (known_id, batch_type, member_count, direction, pattern, theta_degrees, center, quality)
         """
         try:
             # Get batch info from map manager
@@ -1396,13 +1406,30 @@ class HybridAStarNode(Node):
             response.batch_types = batch_info['batch_types']
             response.member_counts = batch_info['member_counts']
             response.directions = batch_info['directions']
+            response.patterns = batch_info['patterns']
+            response.theta_degrees = batch_info['theta_degrees']
             response.centers = batch_info['centers']
             response.qualities = batch_info['qualities']
             
-            self.get_logger().info(
-                f"📊 Active batches query: {len(response.known_ids)} batches "
-                f"(FX: {response.batch_types.count('fx')}, SX: {response.batch_types.count('sx')})"
+            signature = (
+                len(response.known_ids),
+                response.batch_types.count('fx'),
+                response.batch_types.count('sx'),
             )
+            if signature != self._last_active_batches_signature:
+                self.get_logger().info(
+                    f"📊 Active batches query: {signature[0]} batches "
+                    f"(FX: {signature[1]}, SX: {signature[2]})"
+                )
+                self._last_active_batches_signature = signature
+            else:
+                self.get_logger().debug(
+                    f"📊 Active batches query unchanged: {signature[0]} batches "
+                    f"(FX: {signature[1]}, SX: {signature[2]})"
+                )
+
+            # Mirror to topic so consumers can subscribe instead of polling service.
+            self.publish_active_batches_topic(batch_info=batch_info)
             
         except Exception as e:
             self.get_logger().error(f"❌ Error getting active batches: {e}")
@@ -1411,10 +1438,31 @@ class HybridAStarNode(Node):
             response.batch_types = []
             response.member_counts = []
             response.directions = []
+            response.patterns = []
+            response.theta_degrees = []
             response.centers = []
             response.qualities = []
         
         return response
+
+    def publish_active_batches_topic(self, batch_info: Optional[Dict[str, list]] = None) -> None:
+        """Publish active batches on /active_obstacles using ActiveBatches message."""
+        try:
+            if batch_info is None:
+                batch_info = self.map_manager.get_active_batches_info()
+
+            msg = ActiveBatches()
+            msg.centers = batch_info.get('centers', [])
+            msg.known_ids = batch_info.get('known_ids', [])
+            msg.batch_types = batch_info.get('batch_types', [])
+            msg.member_counts = batch_info.get('member_counts', [])
+            msg.directions = batch_info.get('directions', [])
+            msg.patterns = batch_info.get('patterns', [])
+            msg.theta_degrees = batch_info.get('theta_degrees', [])
+            msg.qualities = batch_info.get('qualities', [])
+            self.active_batches_pub.publish(msg)
+        except Exception as e:
+            self.get_logger().debug(f"Active batches topic publish skipped: {e}")
     
     def handle_delete_batch(self, request, response):
         """

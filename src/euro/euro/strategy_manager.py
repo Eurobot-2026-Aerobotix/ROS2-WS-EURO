@@ -7,15 +7,17 @@ from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
 import os
 import time
 import threading
+import json
 from typing import List, Dict, Any, Optional
 from collections import deque
 from geometry_msgs.msg import PoseStamped, Pose2D, Quaternion, Vector3, Point
-from std_msgs.msg import Int32
+from std_msgs.msg import Int32, String
 from aruco_mapper_msgs.msg import ArucoMapperState
 from euro.yaml_loader import load_tasks_from_yaml
 import math
 from euro.pathfinder_controller import PathfinderClient
-from euro.decision_maker import DecisionMaker
+from euro.simple_map import Map
+from euro.task_scheduler import TaskScheduler, Task
 from euro.strategy_executor import robot_status, lidar_status, stm32_task, front_task, back_task,rasp_pi_task, path_planning_task, IDLE, EMERGENCY_STOP
 import euro.strategy_executor as executor_module  # Import module to access SHUTDOWN_REQUESTED and other globals
 
@@ -91,18 +93,26 @@ class StrategyManager(Node):
         beacon_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
         beacon_qos.reliability = ReliabilityPolicy.RELIABLE
         self.beacon_status_pub = self.create_publisher(Int32, '/web/beacon_status', beacon_qos)
+        self.task_scheduler_status_pub = self.create_publisher(String, '/web/task_scheduler_status', 10)
 
         self.beacon_status_value = 0
         self.publish_beacon_status(self.beacon_status_value)
         self._beacon_startup_publish_count = 0
         self._beacon_startup_timer = self.create_timer(0.5, self._publish_initial_beacon_status)
+        self._task_scheduler_status_timer = self.create_timer(0.25, self._publish_task_scheduler_status)
 
         self.pathfinder = PathfinderClient()
         self.path_called = False
-        
-        # Initialize decision maker for dynamic batch stealing
-        self.decision_maker = DecisionMaker(self, self.pathfinder)
-        self.get_logger().info('🧠 Decision Maker initialized with pathfinder access')
+
+        # New scheduler stack (map + task scheduler) exposed through strategy manager.
+        # This allows executor and other modules to use `strategy.task_scheduler.*`.
+        self.map = Map(round_timer=self.round)
+        self.task_scheduler = TaskScheduler(
+            map=self.map,
+            pathfinder_client=self.pathfinder,
+            ros_node=self,
+        )
+        self.get_logger().info('🗺️ TaskScheduler initialized and attached to strategy_manager node')
 
     def publish_beacon_status(self, value: int) -> None:
         self.beacon_status_value = int(value)
@@ -121,6 +131,28 @@ class StrategyManager(Node):
 
         self.publish_beacon_status(self.beacon_status_value)
         self._beacon_startup_publish_count += 1
+
+    def _publish_task_scheduler_status(self) -> None:
+        """Publish periodic scheduler status for realtime dashboard."""
+        if not hasattr(self, 'task_scheduler') or self.task_scheduler is None:
+            return
+
+        try:
+            snapshot = self.task_scheduler.get_status_snapshot(source='strategy_manager', max_queue_items=30)
+            snapshot['scheduler_started'] = True
+            snapshot['timestamp_ms'] = int(time.time() * 1000)
+            snapshot['ros_queues'] = {
+                'STM': int(len(self.queues.get('STM', []))),
+                'ESP_front': int(len(self.queues.get('ESP_front', []))),
+                'ESP_back': int(len(self.queues.get('ESP_back', []))),
+                'RASP_PI': int(len(self.queues.get('RASP_PI', []))),
+            }
+
+            msg = String()
+            msg.data = json.dumps(snapshot)
+            self.task_scheduler_status_pub.publish(msg)
+        except Exception as e:
+            self.get_logger().debug(f"task_scheduler status publish skipped: {e}")
 
     def robot_pose_callback(self, msg):
         self.latest_robot_pose = msg
@@ -255,6 +287,39 @@ class StrategyManager(Node):
         self.get_logger().info("requesting from pathfinder for checking if there is a batch or no(global pose ) ")
         color_pattern, success, direction, batch_center, batch_known_id = self.pathfinder.get_batch_color(known_id, pos)
         self.get_logger().info(f"found batch: {success}")
+
+        # Track the execution intent in task_scheduler from global-goal context.
+        # - pick_up  -> target_id = batch known_id returned by get_batch_color
+        # - put_down -> target_id = executor_module.known_id_front/back based on last ESP device
+        if hasattr(self, 'task_scheduler') and self.task_scheduler is not None:
+            tracked_type = None
+            tracked_target_id = ""
+
+            if self.last_task_command == 'pick_up':
+                tracked_type = 'pick_up'
+                tracked_target_id = str(batch_known_id or '').lower()
+            elif self.last_task_command == 'put_down':
+                tracked_type = 'put_down'
+                if self.last_task_device == 'ESP_front':
+                    tracked_target_id = str(getattr(executor_module, 'known_id_front', '') or '').lower()
+                elif self.last_task_device == 'ESP_back':
+                    tracked_target_id = str(getattr(executor_module, 'known_id_back', '') or '').lower()
+            else:
+                #remove tracked task if no longer relevant
+                if hasattr(self, 'task_scheduler') and self.task_scheduler is not None:
+                    self.task_scheduler.untrack_task()
+            if tracked_type is not None:
+                tracked_task = Task(
+                    target_id=tracked_target_id,
+                    type=tracked_type,
+                    options={},
+                    score=0.0,
+                )
+                self.task_scheduler.track_task(tracked_task)
+                self.get_logger().info(
+                    f"🧭 task_scheduler.track_task -> type={tracked_type}, target_id={tracked_target_id or 'unknown'}"
+                )
+        
         if success and self.last_task_command =='pick_up' :
             found_goal_batch=True
             if (direction == "horizontal" and y < batch_center.y) :
@@ -381,7 +446,7 @@ class StrategyManager(Node):
         for queue in self.queues.values():
             if len(queue) > 0:
                 return False
-            return True
+        return True
     
     def wait_for_all_queues_empty(self, ignore_rasp_pi: bool = False):
         """Wait until all device queues are empty (unless replanning or interrupted).
@@ -431,41 +496,13 @@ class StrategyManager(Node):
         """
         Handle YAML command `RASP_PI -> steal`.
 
-        Params format:
-          - params[0]: number of SX batches to steal
-          - params[1]: number of FX batches to steal (currently ignored)
-
-        Current behavior:
-          - Only SX stealing is enabled.
-          - Will execute SX steal sequence N times (N = params[0]).
+        Behavior:
+          - On each received steal command, generate ONE optimal runtime task set
+            from TaskScheduler and execute it immediately.
+          - Return True only if task generation and queue loading succeeded.
         """
         params = params or []
-
-        sx_count = 0
-        fx_count = 0
-
-        if len(params) >= 1:
-            try:
-                sx_count = max(0, int(float(params[0])))
-            except Exception:
-                self.get_logger().warning(f"⚠️ Invalid SX steal count '{params[0]}', using 0")
-
-        if len(params) >= 2:
-            try:
-                fx_count = max(0, int(float(params[1])))
-            except Exception:
-                self.get_logger().warning(f"⚠️ Invalid FX steal count '{params[1]}', using 0")
-
-        if sx_count <= 0:
-            self.get_logger().info("ℹ️ Steal command requested 0 SX steals; nothing to do")
-            return True
-
-        if fx_count > 0:
-            self.get_logger().info(
-                f"ℹ️ FX steal count requested ({fx_count}) but FX stealing is currently disabled; ignoring it"
-            )
-
-        self.get_logger().info(f"🏴‍☠️ Executing SX steal command {sx_count} time(s)")
+        self.get_logger().info(f"🏴‍☠️ Handling steal command (params={params})")
 
         def _enqueue_generated_tasks(generated_tasks: List[Dict], sequence_index: int) -> bool:
             ts = int(time.time() * 1000)
@@ -515,32 +552,44 @@ class StrategyManager(Node):
                         self.tasks.remove(generated_task)
             return True
 
-        # Execute steals sequentially so each next steal uses updated state
-        for i in range(sx_count):
-            self.get_logger().info(f"🎯 SX steal {i+1}/{sx_count}")
-            generated_tasks = self.decision_maker.steal_batch(
-                batch_type='sx',
-                device=None,
-                min_members=1
-            )
+        generated_tasks = None
+        generation_attempt = 0
 
-            if not generated_tasks:
-                self.get_logger().warning(
-                    f"⚠️ Could not generate SX steal task at iteration {i+1}/{sx_count}; stopping"
-                )
-                return i > 0
-
-            self.get_logger().info(
-                f"✅ Generated {len(generated_tasks)} task(s) for SX steal {i+1}/{sx_count}"
-            )
-
-            if not _enqueue_generated_tasks(generated_tasks, i + 1):
+        while generated_tasks is None:
+            if executor_module.SHUTDOWN_REQUESTED or self.end_game:
+                self.get_logger().warning("⚠️ Steal generation aborted (shutdown/end-game)")
                 return False
 
-            # Run each steal cycle fully before generating the next one
-            self.wait_for_all_queues_empty(ignore_rasp_pi=True)
+            generation_attempt += 1
 
-        # keep compatibility with caller's wait flag (already executed sequential waits)
+            start_pose = None
+            if self.latest_robot_pose is not None:
+                # TaskScheduler expects start_pose in mm/degrees, while /robot_pose_raw is m/rad.
+                start_pose = {
+                    'x': float(self.latest_robot_pose.x) * 1000.0,
+                    'y': float(self.latest_robot_pose.y) * 1000.0,
+                    'theta': math.degrees(float(self.latest_robot_pose.z)),
+                }
+
+            generated_tasks = self.task_scheduler.get_optimal_task(start_pose=start_pose)
+
+            if generated_tasks is None:
+                if generation_attempt == 1 or generation_attempt % 10 == 0:
+                    self.get_logger().warning(
+                        f"⚠️ No executable steal task yet (attempt {generation_attempt}) - retrying..."
+                    )
+                time.sleep(0.1)
+                continue
+
+        self.get_logger().info(f"✅ Generated {len(generated_tasks)} task(s) for steal command")
+
+        if not _enqueue_generated_tasks(generated_tasks, 1):
+            return False
+
+        # Execute generated steal tasks before returning.
+        self.wait_for_all_queues_empty(ignore_rasp_pi=True)
+
+        # keep compatibility with caller's wait flag
         if wait:
             self.wait_for_all_queues_empty(ignore_rasp_pi=True)
 
