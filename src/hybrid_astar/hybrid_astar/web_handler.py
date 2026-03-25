@@ -460,6 +460,12 @@ class WebHandlerNode(Node):
             10
         )
 
+        self.task_scheduler_status_pub = self.create_publisher(
+            String,
+            '/web/task_scheduler_status',
+            10
+        )
+
         self.test_controller_result_pub = self.create_publisher(
             String,
             '/web/test_controller_result',
@@ -614,6 +620,7 @@ class WebHandlerNode(Node):
             ros_node=None,
             loop_period_s=0.05,
         )
+        self.task_scheduler_status_timer = self.create_timer(0.25, self.publish_task_scheduler_status)
         self.get_logger().info('⏸️ TaskScheduler initialized in idle mode (waiting for /web/start_task_scheduler)')
         
         self.get_logger().info("=" * 60)
@@ -639,6 +646,22 @@ class WebHandlerNode(Node):
     # ========================================================================
     # Unit Conversion Utilities
     # ========================================================================
+
+    def publish_task_scheduler_status(self) -> None:
+        """Publish periodic scheduler status for realtime dashboard."""
+        if not hasattr(self, 'task_scheduler') or self.task_scheduler is None:
+            return
+
+        try:
+            snapshot = self.task_scheduler.get_status_snapshot(source='web_handler', max_queue_items=30)
+            snapshot['scheduler_started'] = bool(self.scheduler_started)
+            snapshot['timestamp_ms'] = int(time.time() * 1000)
+
+            msg = String()
+            msg.data = json.dumps(snapshot)
+            self.task_scheduler_status_pub.publish(msg)
+        except Exception as e:
+            self.get_logger().debug(f"task_scheduler status publish skipped: {e}")
     
     def mm_to_m(self, value_mm: float) -> float:
         """Convert millimeters to meters"""

@@ -978,3 +978,46 @@ class TaskScheduler:
             self.map.sync_time_left_from_round()
         self.generate_tasks()
         self.check_tracked_task_validity()
+
+    def get_status_snapshot(self, source: str = "unknown", max_queue_items: int = 20) -> Dict[str, Any]:
+        """Return a serializable snapshot of scheduler runtime status for dashboards."""
+        queue_items: List[Dict[str, Any]] = []
+        for idx, task in enumerate(self.task_queue[:max(0, int(max_queue_items))]):
+            queue_items.append({
+                'index': int(idx),
+                'target_id': str(task.target_id),
+                'type': str(task.type),
+                'score': float(task.score),
+                'options': dict(task.options or {}),
+            })
+
+        tracked_task = None
+        if self.tracked_task is not None:
+            tracked_task = {
+                'target_id': str(self.tracked_task.target_id),
+                'type': str(self.tracked_task.type),
+                'score': float(self.tracked_task.score),
+                'options': dict(self.tracked_task.options or {}),
+                'invalid': bool(self.tracked_task_invalid),
+                'end_action': str(getattr(self.tracked_task, 'end_action', '') or ''),
+                'batch_known_id': str(getattr(self.tracked_task, 'batch_known_id', '') or ''),
+                'task_name': str(getattr(self.tracked_task, 'task_name', '') or ''),
+            }
+
+        time_left_s = None
+        if hasattr(self.map, 'get_time_left'):
+            try:
+                time_left_s = float(self.map.get_time_left())
+            except Exception:
+                time_left_s = None
+
+        return {
+            'source': str(source),
+            'time_left_s': time_left_s,
+            'front_empty': bool(getattr(self.map, 'robot_front_empty', True)),
+            'back_empty': bool(getattr(self.map, 'robot_back_empty', True)),
+            'tracked_task': tracked_task,
+            'queue_size': int(len(self.task_queue)),
+            'queue': queue_items,
+            'predicted_enemy_goal': str(self.predicted_enemy_goal),
+        }

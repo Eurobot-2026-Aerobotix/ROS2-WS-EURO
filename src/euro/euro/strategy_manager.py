@@ -7,10 +7,11 @@ from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
 import os
 import time
 import threading
+import json
 from typing import List, Dict, Any, Optional
 from collections import deque
 from geometry_msgs.msg import PoseStamped, Pose2D, Quaternion, Vector3, Point
-from std_msgs.msg import Int32
+from std_msgs.msg import Int32, String
 from aruco_mapper_msgs.msg import ArucoMapperState
 from euro.yaml_loader import load_tasks_from_yaml
 import math
@@ -92,11 +93,13 @@ class StrategyManager(Node):
         beacon_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
         beacon_qos.reliability = ReliabilityPolicy.RELIABLE
         self.beacon_status_pub = self.create_publisher(Int32, '/web/beacon_status', beacon_qos)
+        self.task_scheduler_status_pub = self.create_publisher(String, '/web/task_scheduler_status', 10)
 
         self.beacon_status_value = 0
         self.publish_beacon_status(self.beacon_status_value)
         self._beacon_startup_publish_count = 0
         self._beacon_startup_timer = self.create_timer(0.5, self._publish_initial_beacon_status)
+        self._task_scheduler_status_timer = self.create_timer(0.25, self._publish_task_scheduler_status)
 
         self.pathfinder = PathfinderClient()
         self.path_called = False
@@ -128,6 +131,28 @@ class StrategyManager(Node):
 
         self.publish_beacon_status(self.beacon_status_value)
         self._beacon_startup_publish_count += 1
+
+    def _publish_task_scheduler_status(self) -> None:
+        """Publish periodic scheduler status for realtime dashboard."""
+        if not hasattr(self, 'task_scheduler') or self.task_scheduler is None:
+            return
+
+        try:
+            snapshot = self.task_scheduler.get_status_snapshot(source='strategy_manager', max_queue_items=30)
+            snapshot['scheduler_started'] = True
+            snapshot['timestamp_ms'] = int(time.time() * 1000)
+            snapshot['ros_queues'] = {
+                'STM': int(len(self.queues.get('STM', []))),
+                'ESP_front': int(len(self.queues.get('ESP_front', []))),
+                'ESP_back': int(len(self.queues.get('ESP_back', []))),
+                'RASP_PI': int(len(self.queues.get('RASP_PI', []))),
+            }
+
+            msg = String()
+            msg.data = json.dumps(snapshot)
+            self.task_scheduler_status_pub.publish(msg)
+        except Exception as e:
+            self.get_logger().debug(f"task_scheduler status publish skipped: {e}")
 
     def robot_pose_callback(self, msg):
         self.latest_robot_pose = msg
