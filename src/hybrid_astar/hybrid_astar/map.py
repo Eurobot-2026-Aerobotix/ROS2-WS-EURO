@@ -1611,6 +1611,11 @@ class MapManager:
                             if len(batch.pattern or "") >= 4:
                                 sx_batches_ready_for_obstacles.append(batch)
                         elif batch.known_id.startswith('f'):
+                            if batch.known_id in self.manual_putdown_batch_ids:
+                                self.node.get_logger().info(
+                                    f"📌 Keeping manual put_down pose for '{batch.known_id}' (skip baseline FX overwrite)"
+                                )
+                                continue
                             self.batches_fx[batch.known_id] = batch
                             self.node.get_logger().info(f"   🔒 Locked FX pattern: {batch.known_id} = '{batch.pattern}'")
                 
@@ -1843,6 +1848,14 @@ class MapManager:
             for batch in msg.batches:
                 if source == 'gx':
                     continue
+
+                if source == 'fx':
+                    with self.batches_lock:
+                        if batch.known_id in self.manual_putdown_batch_ids:
+                            self.node.get_logger().debug(
+                                f"📌 Keeping manual put_down pose for '{batch.known_id}' (ignore non-LOST beacon update)"
+                            )
+                            continue
 
                 if source == 'fx':
                     member_count = len(batch.members) if batch.members else 0
