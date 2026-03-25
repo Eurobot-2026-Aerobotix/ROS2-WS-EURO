@@ -691,7 +691,7 @@ def handle_color_pattner(strategy,front):
         strategy.get_logger().info(f"⚠️  No batch found or failed - defaulting to pattern: {color_pattern}")
     else:
         strategy.get_logger().info(f"pattern received from beacon: {color_pattern} ")
-    
+    known_idd=""
     # Delete the batch after successfully retrieving its color pattern
     if success and batch_known_id:
         deleted = strategy.pathfinder.delete_batch(batch_known_id)
@@ -717,8 +717,10 @@ def handle_color_pattner(strategy,front):
     if success and batch_known_id:
         if front:
             known_id_front = batch_known_id
+            known_idd=batch_known_id
         else:
             known_id_back = batch_known_id
+            known_idd=batch_known_id
     if success and batch_center:
         theta = math.degrees(z)  # Convert radians to degrees
         
@@ -741,7 +743,9 @@ def handle_color_pattner(strategy,front):
                 should_reverse=False
         if should_reverse:
             color_pattern = color_pattern[::-1]
-            strategy.get_logger().info(f"🔄 Reversed color pattern - direction: {direction}, front: {front}, theta: {theta:.1f}°")
+            strategy.get_logger().info(f"🔄 Reversed color pattern - direction: {direction}, front: {front}, theta: {theta:.1f}° known_id reversed:{known_idd} ")
+        else: 
+            strategy.get_logger().info(f"not Reversed color pattern - direction: {direction}, front: {front}, theta: {theta:.1f}° known_id reversed:{known_idd} ")
     else:
         strategy.get_logger().warning("Failed to get batch center from service")
     strategy.get_logger().info(f"color received from beacon{color_pattern}")
@@ -941,6 +945,27 @@ def put_down(controller,pneumatic,strategy,front):
         pneumatic.back(15)
         # time.sleep(0.5)
         # pneumatic.back(15)
+    # Sync placed batch into pathfinder obstacle map
+    if hasattr(strategy, 'pathfinder') and strategy.pathfinder is not None:
+        put_down_front = 1 if front else 0
+        put_down_color = (strategy.color or 'yellow').strip().lower() if hasattr(strategy, 'color') else 'yellow'
+        if put_down_color not in ('yellow', 'blue'): 
+            put_down_color = 'yellow'
+
+        success, message, obstacle_ids = strategy.pathfinder.put_down(
+            front=put_down_front,
+            color=put_down_color
+        )
+
+        if success:
+            strategy.get_logger().info(
+                f"✅ Pathfinder put_down synced ({'front' if front else 'back'}, color={put_down_color}) "
+                f"-> {len(obstacle_ids)} obstacles"
+            )
+        else:
+            strategy.get_logger().warning(
+                f"⚠️ Pathfinder put_down failed ({'front' if front else 'back'}, color={put_down_color}): {message}"
+            )
     if front:
         ESP_FRONT_IDLE=True
         _update_robot_holder_status(strategy, front=True, empty=True)
@@ -961,27 +986,7 @@ def put_down(controller,pneumatic,strategy,front):
         pneumatic.front(16)
     else: pneumatic.back(16)
 
-    # Sync placed batch into pathfinder obstacle map
-    if hasattr(strategy, 'pathfinder') and strategy.pathfinder is not None:
-        put_down_front = 1 if front else 0
-        put_down_color = (strategy.color or 'yellow').strip().lower() if hasattr(strategy, 'color') else 'yellow'
-        if put_down_color not in ('yellow', 'blue'):
-            put_down_color = 'yellow'
-
-        success, message, obstacle_ids = strategy.pathfinder.put_down(
-            front=put_down_front,
-            color=put_down_color
-        )
-
-        if success:
-            strategy.get_logger().info(
-                f"✅ Pathfinder put_down synced ({'front' if front else 'back'}, color={put_down_color}) "
-                f"-> {len(obstacle_ids)} obstacles"
-            )
-        else:
-            strategy.get_logger().warning(
-                f"⚠️ Pathfinder put_down failed ({'front' if front else 'back'}, color={put_down_color}): {message}"
-            )
+    
 def front_task(strategy, front_controller=None,pneumatic_controller=None):
     global color_pt_front
     global SHUTDOWN_REQUESTED
