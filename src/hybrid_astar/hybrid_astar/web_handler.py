@@ -369,16 +369,28 @@ class RoundTimer:
 
     def __init__(self, autostart: bool = True):
         self._start_time: Optional[float] = None
+        self._fixed_elapsed_s: Optional[float] = None
         if autostart:
             self.start_game()
 
     def start_game(self) -> None:
+        # Switch back to running mode.
+        self._fixed_elapsed_s = None
+        self._start_time = time.time()
+
+    def set_elapsed_seconds(self, seconds: float) -> None:
+        """Set timer to a fixed elapsed value in seconds (does not progress over time)."""
+        safe_seconds = max(0.0, float(seconds))
+        self._fixed_elapsed_s = safe_seconds
+        # Keep start_time populated for compatibility with `has_started()` checks.
         self._start_time = time.time()
 
     def has_started(self) -> bool:
-        return self._start_time is not None
+        return self._start_time is not None or self._fixed_elapsed_s is not None
 
     def time(self) -> float:
+        if self._fixed_elapsed_s is not None:
+            return float(self._fixed_elapsed_s)
         if self._start_time is None:
             return 0.0
         return time.time() - self._start_time
@@ -594,6 +606,7 @@ class WebHandlerNode(Node):
         pathfinder_adapter = PathfinderAdapter(self, callback_group=self.reentrant_group)
         self.round_timer = RoundTimer(autostart=False)
         self.scheduler_map = Map(round_timer=self.round_timer)
+        self._manual_holder_override = False
         self.scheduler_started = False
         self.task_scheduler = TaskScheduler(
             map=self.scheduler_map,
@@ -976,6 +989,10 @@ class WebHandlerNode(Node):
             start_round_timer = bool(data.get('start_round_timer', True))
             run_loop_once = bool(data.get('run_loop_once', True))
             generate_task = bool(data.get('generate_task', False))
+            manual_holder_override = bool(data.get('manual_holder_override', False))
+
+            front_empty_override = data.get('front_empty', None)
+            back_empty_override = data.get('back_empty', None)
 
             if not self.scheduler_started:
                 # Explicitly wire subscribers/timers only when requested from dashboard.
@@ -997,6 +1014,14 @@ class WebHandlerNode(Node):
 
             if hasattr(self, 'scheduler_map') and self.scheduler_map is not None and self.scheduler_map.map_updater is not None:
                 self.scheduler_map.map_updater.set_enabled(True)
+
+            # Optional manual holder-state override from dashboard.
+            if hasattr(self, 'scheduler_map') and self.scheduler_map is not None:
+                if front_empty_override is not None:
+                    self.scheduler_map.update_robot_front_status(bool(front_empty_override))
+                if back_empty_override is not None:
+                    self.scheduler_map.update_robot_back_status(bool(back_empty_override))
+                self._manual_holder_override = manual_holder_override
 
             if run_loop_once and hasattr(self, 'task_scheduler') and self.task_scheduler is not None:
                 self.task_scheduler.loop()
@@ -1028,6 +1053,9 @@ class WebHandlerNode(Node):
                 'task_queue_size': int(len(self.task_scheduler.task_queue)) if hasattr(self, 'task_scheduler') and self.task_scheduler is not None else 0,
                 'tracked_task_target': tracked_target,
                 'generated_task_count': int(len(generated_tasks)) if generated_tasks else 0,
+                'manual_holder_override': bool(getattr(self, '_manual_holder_override', False)),
+                'front_empty': bool(self.scheduler_map.robot_front_empty) if hasattr(self, 'scheduler_map') and self.scheduler_map is not None else None,
+                'back_empty': bool(self.scheduler_map.robot_back_empty) if hasattr(self, 'scheduler_map') and self.scheduler_map is not None else None,
             }
 
             self.get_logger().info(
@@ -1123,6 +1151,31 @@ class WebHandlerNode(Node):
                         'action': action,
                         'request_id': request_id,
                         'message': 'Round timer started/reset successfully'
+                    }
+
+                    self.get_logger().info(f"🧪 {response['message']}")
+                    self.publish_test_controller_result(response)
+                    return
+
+                if action in ['set_round_timer', 'set_timer_seconds']:
+                    if not hasattr(self, 'round_timer') or self.round_timer is None:
+                        raise ValueError('Round timer is not initialized')
+
+                    seconds_raw = data.get('seconds', 0)
+                    try:
+                        seconds_value = max(0.0, float(seconds_raw))
+                    except Exception:
+                        raise ValueError(f"Invalid seconds value '{seconds_raw}'")
+
+                    self.round_timer.set_elapsed_seconds(seconds_value)
+
+                    response = {
+                        'success': True,
+                        'controller': 'hybrid_astar',
+                        'action': action,
+                        'request_id': request_id,
+                        'seconds': seconds_value,
+                        'message': f'Round timer set to {seconds_value:.1f}s elapsed'
                     }
 
                     self.get_logger().info(f"🧪 {response['message']}")
@@ -1252,6 +1305,10 @@ class WebHandlerNode(Node):
         - put_down -> holder becomes empty (True)
         """
         if not hasattr(self, 'scheduler_map') or self.scheduler_map is None:
+            return
+
+        # Manual dashboard override: keep user-selected holder state fixed.
+        if bool(getattr(self, '_manual_holder_override', False)):
             return
 
         front_empty = self.scheduler_map.robot_front_empty
