@@ -421,7 +421,7 @@ class StrategyManager(Node):
         for queue in self.queues.values():
             if len(queue) > 0:
                 return False
-            return True
+        return True
     
     def wait_for_all_queues_empty(self, ignore_rasp_pi: bool = False):
         """Wait until all device queues are empty (unless replanning or interrupted).
