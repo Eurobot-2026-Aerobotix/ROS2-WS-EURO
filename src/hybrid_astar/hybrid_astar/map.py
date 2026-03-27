@@ -145,6 +145,8 @@ class MapManager:
         self.game_update_interval_sec = params.get('rates', {}).get('start_game_update_map_sec', 1.0)
         self.game_start_time_ns: Optional[int] = None
         self.game_85s_triggered = False
+        self.game_timeout_stop_sec = float(params.get('rates', {}).get('start_game_timeout_sec', 105.0))
+        self.game_timeout_stopped = False
 
         # Enemy obstacle freshness management (/obstacle_relative)
         self.enemy_obstacle_timeout_sec = params.get('rates', {}).get('enemy_obstacle_timeout_sec', 1.0)
@@ -310,6 +312,7 @@ class MapManager:
         self.start_game_requested = False
         self.game_start_time_ns = None
         self.game_85s_triggered = False
+        self.game_timeout_stopped = False
         self._stop_game_update_timer()
         self.known_ids_to_retry.clear()
         self.deleted_batch_ids.clear()
@@ -850,6 +853,7 @@ class MapManager:
         now = self.node.get_clock().now()
         self.game_start_time_ns = int(now.nanoseconds)
         self.game_85s_triggered = False
+        self.game_timeout_stopped = False
 
         if self.game_update_timer_active:
             # Reset and restart the timer
@@ -884,6 +888,11 @@ class MapManager:
         return response
 
     def _start_game_update_timer(self):
+        if self.game_timeout_stopped:
+            self.node.get_logger().warn(
+                f"⏹️ Game update timer start ignored: game already timed out at {self.game_timeout_stop_sec:.1f}s"
+            )
+            return
         if self.game_update_timer_active:
             return
         self.game_update_timer_active = True
@@ -972,6 +981,15 @@ class MapManager:
             self.game_85s_triggered = True
             self._add_wall_sima_obstacle()
             self.node.get_logger().info("⏱️ Game reached 85s (wall_sima added)")
+
+        # Hard stop for periodic game updates.
+        if (not self.game_timeout_stopped) and elapsed_s >= self.game_timeout_stop_sec:
+            self.game_timeout_stopped = True
+            self.start_game_requested = False
+            self._stop_game_update_timer()
+            self.node.get_logger().info(
+                f"⏱️ Game reached {elapsed_s:.1f}s (>= {self.game_timeout_stop_sec:.1f}s) - stopped periodic update_map"
+            )
 
     def _game_update_timer_callback(self):
         """Periodic callback that performs the same async flow as /update_map."""
@@ -1069,6 +1087,7 @@ class MapManager:
         self.start_game_requested = False
         self.game_start_time_ns = None
         self.game_85s_triggered = False
+        self.game_timeout_stopped = False
         self._stop_game_update_timer()
         self.known_ids_to_retry.clear()
         self.short_pattern_ids.clear()
