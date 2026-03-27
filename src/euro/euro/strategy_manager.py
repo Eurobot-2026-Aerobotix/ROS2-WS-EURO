@@ -319,11 +319,12 @@ class StrategyManager(Node):
                 global_y=y
                 global_angle=angle
                 self.get_logger().warn(f"Edge case: position equals batch center or unexpected direction '{direction}'")
-            self.pathfinder.set_goal(float(global_x), float(global_y), angle_rad)
+            self.get_logger().info(f"pathfinder goal set to :x = {x}, y = {y}  angle=  {angle}with pickup ")
+            self.pathfinder.set_goal(float(global_x), float(global_y), angle)
         else:
             found_goal_batch=False
             self.get_logger().info(f"pathfinder goal set to :x = {x}, y = {y}  angle=  {angle}without pickuo ")
-            self.pathfinder.set_goal(float(x), float(y), angle_rad)
+            self.pathfinder.set_goal(float(x), float(y), angle)
     def quaternion_to_yaw(self, quat: Quaternion) -> float:
         """Convert quaternion to yaw angle"""
         siny_cosp = 2 * (quat.w * quat.z + quat.x * quat.y)

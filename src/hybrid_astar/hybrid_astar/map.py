@@ -105,6 +105,7 @@ class MapManager:
         # Flag to track if we've locked the baseline patterns
         self.baselines_locked = False
         self.locked_baseline_batch_ids: set = set()
+        self.locked_baseline_all_batch_ids: set = set()
         self.pending_baseline_lock_ids: set = set()
 
         # Only the first normal update_map flow is allowed to trigger baseline locking.
@@ -199,6 +200,56 @@ class MapManager:
         msg.data = int(value)
         self.beacon_status_pub.publish(msg)
         self.node.get_logger().info(f"📡 Published beacon status from map manager: {msg.data}")
+
+    def _all_active_batches_baseline_locked(self) -> bool:
+        """Return True when all active non-manual batches have locked baselines."""
+        required_locked_ids = {
+            bid for bid in self.active_batch_ids
+            if bid not in self.manual_putdown_batch_ids
+        }
+        return required_locked_ids.issubset(self.locked_baseline_all_batch_ids)
+
+    def _try_publish_beacon_ready(self) -> None:
+        """Publish beacon-ready only once, after baseline locking is fully stable."""
+        if self.beacon_ready_published:
+            return
+
+        if not self.baselines_locked:
+            return
+
+        if self.known_ids_to_retry or self.pending_baseline_lock_ids or self.short_pattern_ids:
+            return
+
+        if not self._all_active_batches_baseline_locked():
+            self.node.get_logger().info(
+                "⏳ Beacon ready not published yet: waiting for all active batches to be baseline locked"
+            )
+            return
+
+        self._publish_beacon_status(1)
+        self.beacon_ready_published = True
+
+    def _invalidate_sx_baseline_lock(self, known_id: str, state: str) -> None:
+        """Clear SX baseline-lock markers when mapper state regresses.
+
+        This allows requesting locked baseline again for the same known_id.
+        """
+        if not known_id.startswith('s'):
+            return
+
+        was_locked = (
+            known_id in self.locked_baseline_batch_ids
+            or known_id in self.locked_baseline_all_batch_ids
+        )
+
+        self.locked_baseline_batch_ids.discard(known_id)
+        self.locked_baseline_all_batch_ids.discard(known_id)
+        self.pending_baseline_lock_ids.discard(known_id)
+
+        if was_locked:
+            self.node.get_logger().warn(
+                f"⚠️  SX '{known_id}' regressed to {state}; clearing baseline lock markers so it can be re-locked"
+            )
     
     def handle_clear_all(self, msg: Empty):
         """Clear all obstacles"""
@@ -251,6 +302,7 @@ class MapManager:
         self.baselines_locked = False
         self.beacon_ready_published = False
         self.locked_baseline_batch_ids.clear()
+        self.locked_baseline_all_batch_ids.clear()
         self.pending_baseline_lock_ids.clear()
         self.baseline_lock_pending = False
         self.start_game_requested = False
@@ -916,6 +968,7 @@ class MapManager:
         self.baseline_lock_pending = False
         self.beacon_ready_published = False
         self.locked_baseline_batch_ids.clear()
+        self.locked_baseline_all_batch_ids.clear()
         self.pending_baseline_lock_ids.clear()
         self.start_game_requested = False
         self._stop_game_update_timer()
@@ -1040,6 +1093,7 @@ class MapManager:
                     else:
                         # Only retry EMERGING SX batches
                         if batch.known_id.startswith('s'):
+                            self._invalidate_sx_baseline_lock(batch.known_id, state)
                             emerging_ids.add(batch.known_id)
                             self.node.get_logger().info(f"  ⏳ [SX] '{batch.known_id}': {state} → will retry")
                         else:
@@ -1094,6 +1148,7 @@ class MapManager:
                             skipped_count += 1
                         elif is_sx:
                             # EMERGING SX: Add to retry queue (log only on first add)
+                            self._invalidate_sx_baseline_lock(batch.known_id, state)
                             if batch.known_id not in emerging_ids and batch.known_id not in self.known_ids_to_retry:
                                 self.node.get_logger().info(f"  ⏭️  [{batch_type}] '{batch.known_id}': EMERGING → added to retry")
                             emerging_ids.add(batch.known_id)
@@ -1137,6 +1192,7 @@ class MapManager:
                         self.node.get_logger().info(f"  🗑️  [{batch_type}] '{batch.known_id}': {state} ({len(batch.members)} members) → LOST, removing from retry")
                     else:
                         # Still EMERGING
+                        self._invalidate_sx_baseline_lock(batch.known_id, state)
                         self.node.get_logger().info(f"  ⏳ [{batch_type}] '{batch.known_id}': {state} ({len(batch.members)} members) → still EMERGING, keeping in retry")
                 
                 if specific_known_id and len(filtered_batches) == 0:
@@ -1248,6 +1304,7 @@ class MapManager:
                                     self.batches_sx.pop(bid, None)
                                     self.batches_with_obstacles.discard(bid)  # Remove from tracking
                                     self.locked_baseline_batch_ids.discard(bid)
+                                    self.locked_baseline_all_batch_ids.discard(bid)
                                     self.pending_baseline_lock_ids.discard(bid)
                                     self.short_pattern_ids.discard(bid)
                                 for bid in fx_batches_ids:
@@ -1535,6 +1592,7 @@ class MapManager:
 
             pattern = target_batch.pattern if target_batch.pattern else ""
             self.locked_baseline_batch_ids.add(known_id)
+            self.locked_baseline_all_batch_ids.add(known_id)
             with self.batches_lock:
                 self.batches_sx[known_id] = target_batch
                 self.batches_with_obstacles.discard(known_id)
@@ -1578,6 +1636,7 @@ class MapManager:
             self.node.get_logger().error(traceback.format_exc())
         finally:
             self.pending_baseline_lock_ids.discard(known_id)
+            self._try_publish_beacon_ready()
     
     def _handle_lock_baseline_response(self, future):
         """Handle response from locked baseline patterns request."""
@@ -1591,10 +1650,6 @@ class MapManager:
 
                 if self.start_game_requested and not self.game_update_timer_active:
                     self._start_game_update_timer()
-
-                if not self.beacon_ready_published:
-                    self._publish_beacon_status(1)
-                    self.beacon_ready_published = True
                 
                 # Track the locked batch IDs
                 locked_batch_ids = set()
@@ -1621,20 +1676,19 @@ class MapManager:
                 
                 # CRITICAL: Add locked batches to active_batch_ids to prevent them from being removed
                 self.active_batch_ids.update(locked_batch_ids)
+                self.locked_baseline_all_batch_ids.update(locked_batch_ids)
                 self.node.get_logger().info(f"   📌 Added {len(locked_batch_ids)} locked batches to active tracking")
 
                 # Detect SX batches with short patterns (< 4 elements) and schedule re-checks
                 for batch in response.stable_state.batches:
                     pattern = batch.pattern if batch.pattern else ""
                     if batch.known_id.startswith('s') and len(pattern) < 4:
-                        self.short_pattern_ids.add(batch.known_id)
                         self.node.get_logger().warn(
                             f"⚠️  Short pattern after baseline lock for '{batch.known_id}': "
-                            f"'{pattern}' ({len(pattern)} elements, expected 4) — will re-check"
+                            f"'{pattern}' ({len(pattern)} elements, expected 4) — keeping first lock, no re-check"
                         )
 
-                if self.short_pattern_ids:
-                    self._start_short_pattern_retry_timer()
+                self._try_publish_beacon_ready()
 
                 if sx_batches_ready_for_obstacles:
                     with self.batches_lock:
@@ -1785,6 +1839,7 @@ class MapManager:
                     )
 
                     self.locked_baseline_batch_ids.add(known_id)
+                    self.locked_baseline_all_batch_ids.add(known_id)
 
                     with self.batches_lock:
                         self.batches_sx[known_id] = batch
@@ -1814,6 +1869,8 @@ class MapManager:
                     self.short_pattern_ids.discard(known_id)
                     if not self.short_pattern_ids:
                         self._stop_short_pattern_retry_timer()
+
+                    self._try_publish_beacon_ready()
 
                 elif len(new_pattern) > len(old_pattern):
                     self.node.get_logger().info(

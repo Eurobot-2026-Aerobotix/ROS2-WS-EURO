@@ -927,11 +927,11 @@ def put_down(controller,pneumatic,strategy,front):
     if SHUTDOWN_REQUESTED:
         return
     
-    time.sleep(1)
     color_pattern = color_pt_front if front else color_pt_back
     strategy.get_logger().info(f"color_pattern {color_pattern}")
     color_to_N20=int(str(color_pattern).replace('1', '4').replace('0','1'))
     strategy.get_logger().info(f"TO n20 command  {color_to_N20}")
+    time.sleep(0.3)
     #controller.n20(color_to_N20)
     #stana(controller)
     if SHUTDOWN_REQUESTED:
