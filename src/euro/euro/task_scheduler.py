@@ -643,7 +643,7 @@ class TaskScheduler:
         device: str,
         start_pose: Optional[Dict[str, float]] = None,
         insert_distance_mm: float = 200.0,
-        retreat_distance_mm: float = 100.0,
+        retreat_distance_mm: float = 250.0,
     ) -> Optional[List[Dict[str, Any]]]:
         """
         Build a put_down task.

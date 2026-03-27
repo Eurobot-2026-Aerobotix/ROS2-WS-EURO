@@ -1164,12 +1164,49 @@ def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=No
                 # Generate and queue dynamic steal tasks from YAML command
                 # Params example: [3, 0] => min_members=3, device=auto
                 try:
-                    # Always execute generated steal tasks synchronously for this command.
-                    success = strategy.handle_steal_command(params=params, wait=True)
-                    if success:
-                        strategy.get_logger().info("✅ RASP_PI steal command handled")
+                    repeat_count = 1
+                    if isinstance(params, list) and len(params) > 0:
+                        try:
+                            repeat_count = int(float(params[0]))
+                        except (TypeError, ValueError):
+                            strategy.get_logger().warning(
+                                f"⚠️ Invalid steal repeat count '{params[0]}', defaulting to 1"
+                            )
+                            repeat_count = 1
+
+                    if repeat_count <= 0:
+                        strategy.get_logger().warning(
+                            f"⚠️ Steal repeat count is {repeat_count}; skipping steal execution"
+                        )
                     else:
-                        strategy.get_logger().warning("⚠️ RASP_PI steal command did not generate executable tasks")
+                        strategy.get_logger().info(
+                            f"🏴‍☠️ Executing steal {repeat_count} time(s) from params={params}"
+                        )
+
+                        all_success = True
+                        for attempt in range(1, repeat_count + 1):
+                            if not rclpy.ok() or SHUTDOWN_REQUESTED:
+                                strategy.get_logger().warning(
+                                    "⚠️ Stopping repeated steal execution due to shutdown"
+                                )
+                                all_success = False
+                                break
+
+                            strategy.get_logger().info(
+                                f"🏴‍☠️ Steal attempt {attempt}/{repeat_count}"
+                            )
+                            success = strategy.handle_steal_command(params=params, wait=True)
+                            if not success:
+                                strategy.get_logger().warning(
+                                    f"⚠️ Steal attempt {attempt}/{repeat_count} did not generate executable tasks"
+                                )
+                                all_success = False
+                                break
+
+                        if all_success:
+                            strategy.get_logger().info(
+                                f"✅ RASP_PI steal command completed {repeat_count} time(s)"
+                            )
                 except Exception as e:
                     strategy.get_logger().error(f"❌ Error handling RASP_PI steal command: {e}")
 
