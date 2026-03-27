@@ -460,6 +460,12 @@ class WebHandlerNode(Node):
             10
         )
 
+        self.task_scheduler_status_pub = self.create_publisher(
+            String,
+            '/web/task_scheduler_status',
+            10
+        )
+
         self.test_controller_result_pub = self.create_publisher(
             String,
             '/web/test_controller_result',
@@ -614,6 +620,7 @@ class WebHandlerNode(Node):
             ros_node=None,
             loop_period_s=0.05,
         )
+        self.task_scheduler_status_timer = self.create_timer(0.25, self.publish_task_scheduler_status)
         self.get_logger().info('⏸️ TaskScheduler initialized in idle mode (waiting for /web/start_task_scheduler)')
         
         self.get_logger().info("=" * 60)
@@ -639,10 +646,43 @@ class WebHandlerNode(Node):
     # ========================================================================
     # Unit Conversion Utilities
     # ========================================================================
+
+    def publish_task_scheduler_status(self) -> None:
+        """Publish periodic scheduler status for realtime dashboard."""
+        if not hasattr(self, 'task_scheduler') or self.task_scheduler is None:
+            return
+
+        try:
+            snapshot = self.task_scheduler.get_status_snapshot(source='web_handler', max_queue_items=30)
+            snapshot['scheduler_started'] = bool(self.scheduler_started)
+            snapshot['timestamp_ms'] = int(time.time() * 1000)
+
+            msg = String()
+            msg.data = json.dumps(snapshot)
+            self.task_scheduler_status_pub.publish(msg)
+        except Exception as e:
+            self.get_logger().debug(f"task_scheduler status publish skipped: {e}")
     
     def mm_to_m(self, value_mm: float) -> float:
         """Convert millimeters to meters"""
         return value_mm / 1000.0
+
+    @staticmethod
+    def _coerce_bool(value, default: bool = False) -> bool:
+        """Coerce web JSON values to bool safely (handles bool/int/str)."""
+        if value is None:
+            return bool(default)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            text = value.strip().lower()
+            if text in ('true', '1', 'yes', 'y', 'on'):
+                return True
+            if text in ('false', '0', 'no', 'n', 'off', '', 'none', 'null'):
+                return False
+        return bool(default)
     
     def m_to_mm(self, value_m: float) -> float:
         """Convert meters to millimeters"""
@@ -986,10 +1026,10 @@ class WebHandlerNode(Node):
         try:
             data = json.loads(msg.data) if msg.data else {}
             request_id = data.get('request_id')
-            start_round_timer = bool(data.get('start_round_timer', True))
-            run_loop_once = bool(data.get('run_loop_once', True))
-            generate_task = bool(data.get('generate_task', False))
-            manual_holder_override = bool(data.get('manual_holder_override', False))
+            start_round_timer = self._coerce_bool(data.get('start_round_timer', True), True)
+            run_loop_once = self._coerce_bool(data.get('run_loop_once', True), True)
+            generate_task = self._coerce_bool(data.get('generate_task', False), False)
+            manual_holder_override = self._coerce_bool(data.get('manual_holder_override', False), False)
 
             front_empty_override = data.get('front_empty', None)
             back_empty_override = data.get('back_empty', None)
@@ -1018,9 +1058,13 @@ class WebHandlerNode(Node):
             # Optional manual holder-state override from dashboard.
             if hasattr(self, 'scheduler_map') and self.scheduler_map is not None:
                 if front_empty_override is not None:
-                    self.scheduler_map.update_robot_front_status(bool(front_empty_override))
+                    self.scheduler_map.update_robot_front_status(
+                        self._coerce_bool(front_empty_override, self.scheduler_map.robot_front_empty)
+                    )
                 if back_empty_override is not None:
-                    self.scheduler_map.update_robot_back_status(bool(back_empty_override))
+                    self.scheduler_map.update_robot_back_status(
+                        self._coerce_bool(back_empty_override, self.scheduler_map.robot_back_empty)
+                    )
                 self._manual_holder_override = manual_holder_override
 
             if run_loop_once and hasattr(self, 'task_scheduler') and self.task_scheduler is not None:
@@ -1298,56 +1342,74 @@ class WebHandlerNode(Node):
 
     def _sync_scheduler_holder_status_from_tasks(self, tasks: List[Dict]) -> None:
         """
-        Update SimpleMap holder-empty flags from generated task commands.
+                Update SimpleMap holder-empty flags from the NEXT generated steal task.
 
         Rules requested:
         - pick_up  -> holder becomes NOT empty (False)
         - put_down -> holder becomes empty (True)
+
+                Notes:
+                - We only apply the first ESP action from the first task because this
+                    reflects the immediate command the robot will execute next.
+                - This avoids applying future put_down steps too early when steal
+                    generation returns [pickup_task, putdown_task].
         """
         if not hasattr(self, 'scheduler_map') or self.scheduler_map is None:
             return
 
-        # Manual dashboard override: keep user-selected holder state fixed.
+        # For STEAL generation we always sync holder state from generated task,
+        # even if manual override was enabled previously.
         if bool(getattr(self, '_manual_holder_override', False)):
-            return
+            self.get_logger().info('🧺 Disabling manual holder override due to steal task generation sync')
+            self._manual_holder_override = False
 
         front_empty = self.scheduler_map.robot_front_empty
         back_empty = self.scheduler_map.robot_back_empty
         changed = False
 
-        for task in tasks:
-            sequence = task.get('sequence', []) if isinstance(task, dict) else []
-            for step in sequence:
-                if not isinstance(step, dict):
-                    continue
-                device = str(step.get('device', '')).strip().lower()
-                command = str(step.get('command', '')).strip().lower()
+        next_task = tasks[0] if isinstance(tasks, list) and tasks else None
+        sequence = next_task.get('sequence', []) if isinstance(next_task, dict) else []
 
-                if device == 'esp_front':
-                    if command == 'pick_up':
-                        if front_empty:
-                            front_empty = False
-                            changed = True
-                    elif command == 'put_down':
-                        if not front_empty:
-                            front_empty = True
-                            changed = True
+        for step in sequence:
+            if not isinstance(step, dict):
+                continue
 
-                elif device == 'esp_back':
-                    if command == 'pick_up':
-                        if back_empty:
-                            back_empty = False
-                            changed = True
-                    elif command == 'put_down':
-                        if not back_empty:
-                            back_empty = True
-                            changed = True
+            device = str(step.get('device', '')).strip().lower()
+            command = str(step.get('command', '')).strip().lower().replace('-', '_')
+
+            if device == 'esp_front':
+                if command in ('pick_up', 'pickup'):
+                    if front_empty:
+                        front_empty = False
+                        changed = True
+                    break
+                if command in ('put_down', 'putdown'):
+                    if not front_empty:
+                        front_empty = True
+                        changed = True
+                    break
+
+            elif device == 'esp_back':
+                if command in ('pick_up', 'pickup'):
+                    if back_empty:
+                        back_empty = False
+                        changed = True
+                    break
+                if command in ('put_down', 'putdown'):
+                    if not back_empty:
+                        back_empty = True
+                        changed = True
+                    break
 
         if changed:
             self.scheduler_map.update_robot_front_status(front_empty)
             self.scheduler_map.update_robot_back_status(back_empty)
             self.get_logger().info(
                 f"🧺 Updated holder status from tasks: front_empty={front_empty}, back_empty={back_empty}"
+            )
+        else:
+            self.get_logger().warning(
+                "⚠️ Holder status not changed from generated tasks (no ESP pick_up/put_down found in first task sequence)"
             )
     
     # ========================================================================

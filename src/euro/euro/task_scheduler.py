@@ -25,6 +25,7 @@ class TaskScheduler:
     """Simple task scheduler that generates tasks based on the current map state."""
     # NOTE: `Map.get_time_left()` is expressed in seconds.
     # Keep these thresholds in seconds as well.
+    allow_fx = False
     must_dropoff_time = 12.0
     must_go_home_time = 7.0  # travel budget at 1m distance from nest (seconds)
     max_distance_for_predict_enemy_goal = 1500.0 # in meters
@@ -205,10 +206,13 @@ class TaskScheduler:
         else:
             score += self.coeffs["distance_to_enemy"] * 1000.0  # If enemy not detected, assume far away
         if task.type == "pickup":
-            batch = self.map.batches.get(task.target_id)
-            if batch is not None:
-                pattern = str(batch.color or "")
-                score += self.coeffs["number_of_opposite_crates"] * (len(pattern) - pattern.count(self.map.robot_color[0]))
+            if task.target_id[0] == "f":
+                batch = self.map.batches.get(task.target_id)
+                if batch is not None:
+                    pattern = str(batch.color or "")
+                    score += self.coeffs["number_of_opposite_crates"] * (len(pattern) - pattern.count(self.map.robot_color[0]))
+            else:
+                score += self.coeffs["number_of_opposite_crates"] * 4.0  # Assume all 4 crates are opposite color for storage pickups
         return score
     
     def choose_side(self, task: Task) -> bool:
@@ -353,6 +357,10 @@ class TaskScheduler:
         # generate pickup tasks if we have space in the robot
         if self.map.robot_front_empty or self.map.robot_back_empty:
             for batch_id, batch in self.map.batches.items():
+                if (self.allow_fx == False) and (batch_id[0] == "f"):
+                    if self.ros_node is not None:
+                        self.ros_node.get_logger().debug(f"⏭️ Skip pickup {batch_id}: fx pickups disabled")
+                    continue
                 if batch_id in ["f3", "f5", "f8"]:
                     if self.ros_node is not None:
                         self.ros_node.get_logger().debug(f"⏭️ Skip pickup {batch_id}: reserved center drop-off zone")
@@ -403,7 +411,7 @@ class TaskScheduler:
         # generate dropoff tasks if we have crates in the robot
         if not self.map.robot_front_empty or not self.map.robot_back_empty:
             for dropoff_id, dropoff in self.map.drop_offs.items():
-                if dropoff_id in ["f3", "f5", "f8"] or dropoff["status"] != "empty":
+                if ( not (dropoff_id in ["f3", "f5", "f8"]) or dropoff["status"] != "empty" ):
                     continue
                 task = Task(target_id=dropoff_id, type="dropoff")
                 task.score = self.calculate_score(task)
@@ -978,3 +986,46 @@ class TaskScheduler:
             self.map.sync_time_left_from_round()
         self.generate_tasks()
         self.check_tracked_task_validity()
+
+    def get_status_snapshot(self, source: str = "unknown", max_queue_items: int = 20) -> Dict[str, Any]:
+        """Return a serializable snapshot of scheduler runtime status for dashboards."""
+        queue_items: List[Dict[str, Any]] = []
+        for idx, task in enumerate(self.task_queue[:max(0, int(max_queue_items))]):
+            queue_items.append({
+                'index': int(idx),
+                'target_id': str(task.target_id),
+                'type': str(task.type),
+                'score': float(task.score),
+                'options': dict(task.options or {}),
+            })
+
+        tracked_task = None
+        if self.tracked_task is not None:
+            tracked_task = {
+                'target_id': str(self.tracked_task.target_id),
+                'type': str(self.tracked_task.type),
+                'score': float(self.tracked_task.score),
+                'options': dict(self.tracked_task.options or {}),
+                'invalid': bool(self.tracked_task_invalid),
+                'end_action': str(getattr(self.tracked_task, 'end_action', '') or ''),
+                'batch_known_id': str(getattr(self.tracked_task, 'batch_known_id', '') or ''),
+                'task_name': str(getattr(self.tracked_task, 'task_name', '') or ''),
+            }
+
+        time_left_s = None
+        if hasattr(self.map, 'get_time_left'):
+            try:
+                time_left_s = float(self.map.get_time_left())
+            except Exception:
+                time_left_s = None
+
+        return {
+            'source': str(source),
+            'time_left_s': time_left_s,
+            'front_empty': bool(getattr(self.map, 'robot_front_empty', True)),
+            'back_empty': bool(getattr(self.map, 'robot_back_empty', True)),
+            'tracked_task': tracked_task,
+            'queue_size': int(len(self.task_queue)),
+            'queue': queue_items,
+            'predicted_enemy_goal': str(self.predicted_enemy_goal),
+        }
