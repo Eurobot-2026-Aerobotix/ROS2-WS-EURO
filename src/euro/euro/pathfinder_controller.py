@@ -673,13 +673,25 @@ class PathfinderClient(Node):
     # =========================================================
     # 4️⃣ PUT DOWN BATCH (4 crates)
     # =========================================================
-    def put_down(self, front: int = 1, color: str = 'yellow'):
+    def put_down(
+        self,
+        front: int = 1,
+        color: str = 'yellow',
+        use_pose: bool = False,
+        x_mm: float = 0.0,
+        y_mm: float = 0.0,
+        theta_deg: float = 0.0,
+    ):
         """
         Request /put_down to add a 4-member placed batch near robot pose.
 
         Args:
             front: 1 => front, 0 => back
             color: 'yellow' or 'blue'
+            use_pose: when True, use provided (x_mm, y_mm, theta_deg)
+            x_mm: robot x in mm (used when use_pose=True)
+            y_mm: robot y in mm (used when use_pose=True)
+            theta_deg: robot heading in degrees (used when use_pose=True)
 
         Returns:
             success (bool), message (str), obstacle_ids (list[str])
@@ -699,6 +711,10 @@ class PathfinderClient(Node):
         request = PutDown.Request()
         request.direction = direction
         request.color = normalized_color
+        request.use_pose = bool(use_pose)
+        request.x_mm = float(x_mm)
+        request.y_mm = float(y_mm)
+        request.theta_deg = float(theta_deg)
 
         future = self.put_down_client.call_async(request)
         rclpy.spin_until_future_complete(self, future, timeout_sec=5.0)

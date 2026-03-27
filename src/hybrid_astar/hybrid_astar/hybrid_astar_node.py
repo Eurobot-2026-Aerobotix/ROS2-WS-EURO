@@ -1163,6 +1163,7 @@ class HybridAStarNode(Node):
         Request:
           - direction: 1 (front) or 0 (back)
           - color: 'yellow' or 'blue'
+                    - use_pose: if true, use (x_mm, y_mm, theta_deg) from request
         """
         direction = int(request.direction)
         if direction not in (0, 1):
@@ -1178,14 +1179,20 @@ class HybridAStarNode(Node):
             response.obstacle_ids = []
             return response
 
-        robot_pose = self._get_robot_pose_for_put_down()
-        if robot_pose is None:
-            response.success = False
-            response.message = "Robot pose unavailable (no TF and no previous start pose)"
-            response.obstacle_ids = []
-            return response
+        if bool(request.use_pose):
+            robot_x_mm = float(request.x_mm)
+            robot_y_mm = float(request.y_mm)
+            robot_theta = math.radians(float(request.theta_deg))
+            self.last_robot_pose_mm = (robot_x_mm, robot_y_mm, robot_theta)
+        else:
+            robot_pose = self._get_robot_pose_for_put_down()
+            if robot_pose is None:
+                response.success = False
+                response.message = "Robot pose unavailable (no TF and no previous start pose)"
+                response.obstacle_ids = []
+                return response
 
-        robot_x_mm, robot_y_mm, robot_theta = robot_pose
+            robot_x_mm, robot_y_mm, robot_theta = robot_pose
 
         # Geometry requested by user
         crate_length_mm = 150.0
