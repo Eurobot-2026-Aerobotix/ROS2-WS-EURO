@@ -482,6 +482,9 @@ class Map:
     def _robot_pose_callback(self, msg) -> None:
         """/robot_pose_raw callback (geometry_msgs/msg/Vector3)."""
         self.set_robot_position(float(msg.x) * 1000.0, float(msg.y) * 1000.0, float(msg.z))
+        # /obstacle_relative is in robot frame; refresh absolute enemy pose when robot moves.
+        if self.enemy_relative.detected:
+            self.update_enemy_absolute()
 
     def _enemy_relative_callback(self, msg) -> None:
         """/obstacle_relative callback (geometry_msgs/msg/PoseStamped)."""

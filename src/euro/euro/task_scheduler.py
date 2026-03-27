@@ -5,7 +5,7 @@ try:
 except ImportError:
     # Fallback for direct execution in development contexts.
     from simple_map import Map, Pose2D
-from typing import Any, List, Dict, Optional
+from typing import Any, List, Dict, Optional, Tuple
 from dataclasses import dataclass, field
 
 
@@ -26,18 +26,23 @@ class TaskScheduler:
     # NOTE: `Map.get_time_left()` is expressed in seconds.
     # Keep these thresholds in seconds as well.
     allow_fx = False
-    must_dropoff_time = 12.0
-    must_go_home_time = 7.0  # travel budget at 1m distance from nest (seconds)
+    must_dropoff_time = 5.0
+    must_go_home_time = 6.0  # travel budget at 1m distance from nest (seconds)
     max_distance_for_predict_enemy_goal = 1500.0 # in meters
-    drop_off_distance = 300.0
+    drop_off_distance = 250.0
     distance_from_wall = 200.0
+    switch_distance=550.0
+
     coeffs = {
-        "is_enemy_goal": 0.001,
-        "distance_to_goal": -0.001,
+        "is_enemy_goal": 0.0,
+        "distance_to_goal_far": 0.001,
         "number_of_obstacles_between": -0.5,
-        "distance_to_enemy": 0.003,
-        "number_of_opposite_crates": 1
+        "distance_to_enemy": 0.001,
+        "number_of_opposite_crates": 1,
+        "distance_to_goal_close":0.008,
     }
+    log_score_breakdown = True
+    log_task_queue_snapshot = True
     def __init__(self, map: Map, pathfinder_client=None, ros_node=None, loop_period_s: float = 0.05):
         self.map = map
         self.pathfinder = pathfinder_client
@@ -51,6 +56,7 @@ class TaskScheduler:
         self._loop_timer = None
         self._last_available_batches_signature = None
         self._last_pickup_queue_signature = None
+        self._last_task_queue_signature = None
 
         # Explicit ROS wiring only:
         # - If a node is provided and map is a plain data-map, attach subscribers on it.
@@ -180,40 +186,118 @@ class TaskScheduler:
     
     def calculate_score(self, task: Task) -> float:
         """Calculate a score for the given task based on the current map state."""
-        # Placeholder scoring logic - can be expanded with more complex heuristics
+        score, _ = self._calculate_score_with_breakdown(task)
+        return score
+
+    def _calculate_score_with_breakdown(self, task: Task) -> Tuple[float, Dict[str, float]]:
+        """Calculate score and return per-term contributions for debugging/visualization."""
         if task.type == "pickup":
             batch = self.map.batches.get(task.target_id)
             if batch is None:
-                return float("-inf")
+                return float("-inf"), {}
             target_pos = Pose2D(x=batch.x, y=batch.y)
         elif task.type == "dropoff":
             dropoff = self.map.drop_offs.get(task.target_id)
             if dropoff is None:
-                return float("-inf")
+                return float("-inf"), {}
             target_pos = Pose2D(x=float(dropoff["x"]), y=float(dropoff["y"]))
         else:
-            return 0.0
+            return 0.0, {}
 
         score = 0.0
+        contributions: Dict[str, float] = {
+            "is_enemy_goal": 0.0,
+            "distance_to_goal": 0.0,
+            "number_of_obstacles_between": 0.0,
+            "distance_to_enemy": 0.0,
+            "number_of_opposite_crates": 0.0,
+        }
+
         if self.predicted_enemy_goal != "unknown" and task.target_id == self.predicted_enemy_goal:
-            score += self.coeffs["is_enemy_goal"] * (self.map.distance_from(self.map.robot_position, target_pos) - self.map.distance_from(self.map.enemy_absolute, target_pos))
+            contributions["is_enemy_goal"] = self.coeffs["is_enemy_goal"] * (
+                self.map.distance_from(self.map.robot_position, target_pos)
+                - self.map.distance_from(self.map.enemy_absolute, target_pos)
+            )
         else:
-            score += self.coeffs["is_enemy_goal"] * 700.0
-        score += self.coeffs["distance_to_goal"] * self.map.distance_from(self.map.robot_position, target_pos)
-        score += self.map.calculate_number_of_obstacles_to(target_pos) * self.coeffs["number_of_obstacles_between"]
+            contributions["is_enemy_goal"] = self.coeffs["is_enemy_goal"] * 700.0
+        distance=self.map.distance_from(self.map.robot_position, target_pos)
+        if distance < self.switch_distance:
+            contributions["distance_to_goal"] = (
+                self.coeffs["distance_to_goal_close"] * (self.switch_distance*2 - distance)
+            )
+        else:
+            contributions["distance_to_goal"] = (
+                self.coeffs["distance_to_goal_far"] * distance
+            )
+        contributions["number_of_obstacles_between"] = (
+            self.map.calculate_number_of_obstacles_to(target_pos) * self.coeffs["number_of_obstacles_between"]
+        )
+
         if self.map.enemy_relative.detected:
-            score += self.coeffs["distance_to_enemy"] * self.map.distance_from(self.map.enemy_absolute, target_pos)
+            contributions["distance_to_enemy"] = (
+                self.coeffs["distance_to_enemy"] * self.map.distance_from(self.map.enemy_absolute, target_pos)
+            )
         else:
-            score += self.coeffs["distance_to_enemy"] * 1000.0  # If enemy not detected, assume far away
+            contributions["distance_to_enemy"] = self.coeffs["distance_to_enemy"] * 1000.0  # If enemy not detected, assume far away
+
         if task.type == "pickup":
             if task.target_id[0] == "f":
                 batch = self.map.batches.get(task.target_id)
                 if batch is not None:
                     pattern = str(batch.color or "")
-                    score += self.coeffs["number_of_opposite_crates"] * (len(pattern) - pattern.count(self.map.robot_color[0]))
+                    contributions["number_of_opposite_crates"] = (
+                        self.coeffs["number_of_opposite_crates"]
+                        * (len(pattern) - pattern.count(self.map.robot_color[0]))
+                    )
             else:
-                score += self.coeffs["number_of_opposite_crates"] * 4.0  # Assume all 4 crates are opposite color for storage pickups
-        return score
+                contributions["number_of_opposite_crates"] = self.coeffs["number_of_opposite_crates"] * 4.0  # Assume all 4 crates are opposite color for storage pickups
+
+        score = sum(contributions.values())
+        return score, contributions
+
+    def _log_score_breakdown(self, task: Task, contributions: Dict[str, float]) -> None:
+        """Log score decomposition per task for runtime observability."""
+        if not self.log_score_breakdown:
+            return
+
+        message = (
+            f"🧮 Score {task.type}:{task.target_id} total={task.score:.3f} | "
+            f"enemy_goal={contributions.get('is_enemy_goal', 0.0):+.3f}, "
+            f"dist_goal={contributions.get('distance_to_goal', 0.0):+.3f}, "
+            f"obstacles={contributions.get('number_of_obstacles_between', 0.0):+.3f}, "
+            f"dist_enemy={contributions.get('distance_to_enemy', 0.0):+.3f}, "
+            f"opposite_crates={contributions.get('number_of_opposite_crates', 0.0):+.3f}"
+        )
+
+        if self.ros_node is not None:
+            self.ros_node.get_logger().info(message)
+        else:
+            print(f"[TaskScheduler] {message}")
+
+    def _log_task_queue_snapshot(self, queue: List[Task]) -> None:
+        """Log final ordered queue so all candidate tasks are visible."""
+        if not self.log_task_queue_snapshot:
+            return
+
+        if queue:
+            rows = [
+                f"#{idx}:{task.type}:{task.target_id}(score={task.score:.3f},options={task.options})"
+                for idx, task in enumerate(queue)
+            ]
+            message = f"🗂️ Task queue ({len(queue)}): " + " | ".join(rows)
+            queue_signature = tuple(rows)
+        else:
+            message = "🗂️ Task queue (0): empty"
+            queue_signature = ()
+
+        if queue_signature == self._last_task_queue_signature:
+            return
+
+        if self.ros_node is not None:
+            self.ros_node.get_logger().info(message)
+        else:
+            print(f"[TaskScheduler] {message}")
+        self._last_task_queue_signature = queue_signature
     
     def choose_side(self, task: Task) -> bool:
         if task.type == "pickup":
@@ -382,7 +466,8 @@ class TaskScheduler:
                             )
                         continue
                 task = Task(target_id=batch_id, type="pickup")
-                task.score = self.calculate_score(task)
+                task.score, contributions = self._calculate_score_with_breakdown(task)
+                self._log_score_breakdown(task, contributions)
                 if (self.choose_side(task)):
                     queue.append(task)
                     queued_pickup_debug_rows.append(
@@ -414,7 +499,8 @@ class TaskScheduler:
                 if ( not (dropoff_id in ["f3", "f5", "f8"]) or dropoff["status"] != "empty" ):
                     continue
                 task = Task(target_id=dropoff_id, type="dropoff")
-                task.score = self.calculate_score(task)
+                task.score, contributions = self._calculate_score_with_breakdown(task)
+                self._log_score_breakdown(task, contributions)
                 if (self.choose_side(task)):
                     queue.append(task)
         
@@ -429,12 +515,13 @@ class TaskScheduler:
         queue.sort(key=lambda t: t.score, reverse=True)
 
         queue = [t for t in queue if t.target_id[0] == "s"] + [t for t in queue if t.target_id[0] == "f"]
+        go_home_time=max(self.must_go_home_time * self.map.distance_from(self.map.robot_position, self.map.nest_position)/1000.0, 5)
 
-        if self.map.get_time_left() < self.must_dropoff_time:
+        if self.map.get_time_left() < max(go_home_time, self.must_dropoff_time):
             # If time is running out, prioritize dropoff tasks
             queue = [t for t in queue if t.type == "dropoff"] + [t for t in queue if t.type != "dropoff"]
         
-        if (self.map.get_time_left() < max(self.must_go_home_time * self.map.distance_from(self.map.robot_position, self.map.nest_position)/1000.0, 5)) and len([t for t in queue if t.type == "dropoff"]) == 0:
+        if (self.map.get_time_left() < max(go_home_time, self.must_dropoff_time)) and len([t for t in queue if t.type == "dropoff"]) == 0:
             task = Task(target_id="nest", type="return_home")
             task.options["drop"] = "none"
             if not self.map.robot_front_empty:
@@ -442,7 +529,8 @@ class TaskScheduler:
             elif not self.map.robot_back_empty:
                 task.options["drop"] = "back"
             queue.insert(0, task)  # Prioritize return home task
-            
+
+        self._log_task_queue_snapshot(queue)
         self.task_queue = queue
     
     def check_tracked_task_validity(self) -> Optional[str]:
@@ -895,6 +983,90 @@ class TaskScheduler:
             return 'back'
         return None
 
+    def build_return_home(self) -> Optional[List[Dict[str, Any]]]:
+        """
+        Build a return-to-home task sequence for end-game.
+        
+        Sequence:
+        1. If robot color is yellow, navigate to intermediate waypoint (803, 879)
+        2. Wait for end game (RASP_PI wait_end_game with 12 second param)
+        3. Perform bezier backwards movement to home position (251.19, 277.60, θ=0.36)
+        
+        Returns:
+            List of executable task dicts, or None if build fails
+        """
+        tasks: List[Dict[str, Any]] = []
+        
+        # Task 1: If yellow, navigate to intermediate waypoint
+        if self.map.robot_color.lower() == "yellow":
+            intermediate_task = {
+                'name': 'return_home_intermediate_yellow',
+                'sequence': [
+                    {
+                        'device': 'STM',
+                        'command': 'go_to',
+                        'params': [803.0, 879.0, 1100.0, 0.0, {'from_return_home': True}],
+                        'wait': True
+                    }
+                ],
+                'global_goal': {
+                    'x': 803.0,
+                    'y': 879.0,
+                    'theta': 0.0
+                }
+            }
+            tasks.append(intermediate_task)
+        
+        # Task 2: Wait for end game
+        wait_task = {
+            'name': 'return_home_wait_end_game',
+            'sequence': [
+                {
+                    'device': 'RASP_PI',
+                    'command': 'wait_end_game',
+                    'params': [12],
+                    'wait': False
+                }
+            ],
+            'global_goal': {
+                'x': float(self.map.robot_position.x),
+                'y': float(self.map.robot_position.y),
+                'theta': float(self.map.robot_position.theta)
+            }
+        }
+        tasks.append(wait_task)
+        
+        # Task 3: Bezier backwards movement to home
+        home_task = {
+            'name': 'return_home_bezier',
+            'sequence': [
+                {
+                    'device': 'STM',
+                    'command': 'bezier_backwards',
+                    'params': [
+                        '791.09',
+                        '267.57000000000016',
+                        '655.44',
+                        '280.14',
+                        '251.19',
+                        '277.60',
+                        1000,
+                        1000,
+                        1100
+                    ],
+                    'wait': False
+                }
+            ],
+            'global_goal': {
+                'x': '251.19',
+                'y': '277.60',
+                'theta': 0.3599984288435678
+            }
+        }
+        tasks.append(home_task)
+        
+        return tasks
+
     def get_optimal_task(self, start_pose: Optional[Dict[str, float]] = None) -> Optional[List[Dict[str, Any]]]:
         """
         Pop the best scored high-level task, build executable task(s), and enqueue them in `rpi_queue`.
@@ -963,8 +1135,11 @@ class TaskScheduler:
                 start_pose=start_pose,
             )
 
+        elif task.type == 'return_home':
+            generated_tasks = self.build_return_home()
+
         else:
-            # Only pickup/dropoff are converted here.
+            # Only pickup/dropoff/return_home are converted here.
             return None
 
         if not generated_tasks:

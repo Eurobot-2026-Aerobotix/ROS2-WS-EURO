@@ -619,9 +619,9 @@ class WebHandlerNode(Node):
             map=self.scheduler_map,
             pathfinder_client=pathfinder_adapter,
             ros_node=None,
-            loop_period_s=0.05,
+            loop_period_s=0.5,
         )
-        self.task_scheduler_status_timer = self.create_timer(0.25, self.publish_task_scheduler_status)
+        self.task_scheduler_status_timer = self.create_timer(1, self.publish_task_scheduler_status)
         self.get_logger().info('⏸️ TaskScheduler initialized in idle mode (waiting for /web/start_task_scheduler)')
         
         self.get_logger().info("=" * 60)
@@ -1038,7 +1038,7 @@ class WebHandlerNode(Node):
             if not self.scheduler_started:
                 # Explicitly wire subscribers/timers only when requested from dashboard.
                 self.task_scheduler.attach_map_subscribers(self, qos=10)
-                self.task_scheduler.attach_loop_timer(self, period_s=0.05)
+                self.task_scheduler.attach_loop_timer(self, period_s=0.5)
                 self.scheduler_started = True
                 self.get_logger().info('▶️ TaskScheduler + SimpleMap updater started from dashboard request')
 
