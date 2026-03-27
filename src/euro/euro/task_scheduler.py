@@ -29,10 +29,11 @@ class TaskScheduler:
     must_dropoff_time = 5.0
     must_go_home_time = 6.0  # travel budget at 1m distance from nest (seconds)
     max_distance_for_predict_enemy_goal = 1500.0 # in meters
-    drop_off_distance = 250.0
+    drop_off_distance = 400.0
+    retreat_distance = 250.0
     distance_from_wall = 200.0
     switch_distance=550.0
-
+    retreat_distance=175.0
     coeffs = {
         "is_enemy_goal": 0.0,
         "distance_to_goal_far": 0.001,
@@ -352,6 +353,20 @@ class TaskScheduler:
                 if self.map.check_collision(candidate, ignore_batch_id=task.target_id):
                     continue
 
+                # Also validate a point projected toward the drop-off center.
+                # This helps reject candidates where near-center motion is blocked.
+                to_center_dx = center_x - float(candidate.x)
+                to_center_dy = center_y - float(candidate.y)
+                to_center_norm = math.hypot(to_center_dx, to_center_dy)
+                if to_center_norm > 1e-6:
+                    probe_distance = max(0.0, float(self.retreat_distance))
+                    toward_center_probe = Pose2D(
+                        x=float(candidate.x) + probe_distance * (to_center_dx / to_center_norm),
+                        y=float(candidate.y) + probe_distance * (to_center_dy / to_center_norm),
+                    )
+                    if self.map.check_collision(toward_center_probe, ignore_batch_id=task.target_id):
+                        continue
+                
                 dist = self.map.distance_from(self.map.robot_position, candidate)
                 if dist < best_dist:
                     best_dist = dist
@@ -731,7 +746,7 @@ class TaskScheduler:
         device: str,
         start_pose: Optional[Dict[str, float]] = None,
         insert_distance_mm: float = 200.0,
-        retreat_distance_mm: float = 250.0,
+        retreat_distance_mm: float = 175.0,
     ) -> Optional[List[Dict[str, Any]]]:
         """
         Build a put_down task.
@@ -763,7 +778,7 @@ class TaskScheduler:
         """
         if self.pathfinder is None:
             return None
-
+        retreat_distance_mm=self.retreat_distance
         normalized_id = str(batch_known_id).lower()
         zone = self.map.drop_offs.get(normalized_id)
         if zone is None:
