@@ -228,7 +228,10 @@ class Map:
                 self.map_updater._last_state_log_s = now
 
     def update_batches_from_active_batch_info(self, batch_info: Dict[str, List[Any]]) -> int:
-        """Update internal `batches` map from pathfinder `get_active_batches()` response."""
+        """Update internal `batches` map from pathfinder `get_active_batches()` response.
+        
+        Uses set_batch() and remove_batch() to ensure dropoff status is synced per-batch.
+        """
         required = ['known_ids', 'member_counts', 'directions', 'centers']
         for key in required:
             if key not in batch_info:
@@ -243,8 +246,8 @@ class Map:
 
         n = min(len(known_ids), len(member_counts), len(directions), len(centers))
 
-        # Rebuild active list: only keep batches that still have members.
-        next_batches: Dict[str, BatchInfo] = {}
+        # Collect next active batch IDs
+        next_batch_ids = set()
         for i in range(n):
             member_count = int(member_counts[i])
             if member_count <= 0:
@@ -253,6 +256,10 @@ class Map:
             known_id = self._normalize_batch_id(known_ids[i])
             if not known_id or known_id in self.deleted_batch_ids:
                 continue
+            
+            next_batch_ids.add(known_id)
+            
+            # Update or add this batch using set_batch() (which handles dropoff status)
             direction = str(directions[i]).lower()
             center = centers[i]
             if i < len(theta_degrees_list):
@@ -260,18 +267,22 @@ class Map:
             else:
                 phi_degrees = 0.0 if direction == 'horizontal' else (90.0 if direction == 'vertical' else 0.0)
 
-            pattern = str(patterns[i]).lower() if i < len(patterns) else ''
+            pattern = str(patterns[i]).lower() if i < len(patterns) else 'unknown'
             batch_color = pattern if pattern else 'unknown'
 
-            next_batches[known_id] = BatchInfo(
+            self.set_batch(
                 known_id=known_id,
                 x=float(center.x) * 1000.0,
                 y=float(center.y) * 1000.0,
                 phi_degrees=phi_degrees,
-                color=batch_color,
+                color=batch_color
             )
-
-        self.batches = next_batches
+        
+        # Remove batches that are no longer active (using remove_batch which handles dropoff status)
+        batches_to_remove = [bid for bid in self.batches.keys() if bid not in next_batch_ids]
+        for batch_id in batches_to_remove:
+            self.remove_batch(batch_id, persistently=False)
+        
         return len(self.batches)
 
     def set_round_timer(self, round_timer: Any, game_duration_s: Optional[float] = None) -> None:

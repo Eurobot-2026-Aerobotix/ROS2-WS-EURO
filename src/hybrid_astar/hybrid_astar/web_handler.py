@@ -22,6 +22,7 @@ import rclpy
 from rclpy.node import Node
 import math
 import json
+import re
 import requests
 import socket
 import uuid
@@ -1411,6 +1412,33 @@ class WebHandlerNode(Node):
             self.get_logger().warning(
                 "⚠️ Holder status not changed from generated tasks (no ESP pick_up/put_down found in first task sequence)"
             )
+
+        # Keep scheduler map consistent with the immediate generated task intent,
+        # so repeated manual steal requests do not target the same IDs forever.
+        # Examples:
+        # - pickup_s3_front  -> mark s3 removed in SimpleMap
+        # - putdown_f3_front -> mark f3 drop-off as full
+        task_name = str(next_task.get('name', '') if isinstance(next_task, dict) else '').strip().lower()
+        if task_name:
+            pickup_match = re.match(r'^pickup_([^_]+)_', task_name)
+            if pickup_match:
+                pickup_id = str(pickup_match.group(1)).lower()
+                try:
+                    self.scheduler_map.remove_batch(pickup_id, persistently=True)
+                    self.get_logger().info(f"🧠 SimpleMap sync: pickup '{pickup_id}' marked as removed")
+                except Exception as e:
+                    self.get_logger().warning(
+                        f"⚠️ Failed to sync pickup '{pickup_id}' into SimpleMap: {e}"
+                    )
+
+            putdown_match = re.match(r'^putdown_([^_]+)_', task_name)
+            if putdown_match:
+                dropoff_id = str(putdown_match.group(1)).lower()
+                if dropoff_id in self.scheduler_map.drop_offs:
+                    self.scheduler_map.drop_offs[dropoff_id]['status'] = 'full'
+                    self.get_logger().info(
+                        f"🧠 SimpleMap sync: drop-off '{dropoff_id}' marked full after generated putdown"
+                    )
     
     # ========================================================================
     # Service Calls
