@@ -952,14 +952,31 @@ def put_down(controller,pneumatic,strategy,front):
         if put_down_color not in ('yellow', 'blue'): 
             put_down_color = 'yellow'
 
+        use_pose = False
+        x_mm = 0.0
+        y_mm = 0.0
+        theta_deg = 0.0
+        if hasattr(strategy, 'latest_robot_pose') and strategy.latest_robot_pose is not None:
+            try:
+                x_mm = float(strategy.latest_robot_pose.x) * 1000.0
+                y_mm = float(strategy.latest_robot_pose.y) * 1000.0
+                theta_deg = math.degrees(float(strategy.latest_robot_pose.z))
+                use_pose = True
+            except Exception as e:
+                strategy.get_logger().warning(f"⚠️ Could not use latest_robot_pose for put_down: {e}")
+
         success, message, obstacle_ids = strategy.pathfinder.put_down(
             front=put_down_front,
-            color=put_down_color
+            color=put_down_color,
+            use_pose=use_pose,
+            x_mm=x_mm,
+            y_mm=y_mm,
+            theta_deg=theta_deg,
         )
 
         if success:
             strategy.get_logger().info(
-                f"✅ Pathfinder put_down synced ({'front' if front else 'back'}, color={put_down_color}) "
+                f"✅ Pathfinder put_down synced ({'front' if front else 'back'}, color={put_down_color}, use_pose={use_pose}) "
                 f"-> {len(obstacle_ids)} obstacles"
             )
         else:
