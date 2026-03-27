@@ -143,6 +143,8 @@ class MapManager:
         self.game_update_timer_active = False
         self.game_update_pending = 0
         self.game_update_interval_sec = params.get('rates', {}).get('start_game_update_map_sec', 1.0)
+        self.game_start_time_ns: Optional[int] = None
+        self.game_85s_triggered = False
 
         # Enemy obstacle freshness management (/obstacle_relative)
         self.enemy_obstacle_timeout_sec = params.get('rates', {}).get('enemy_obstacle_timeout_sec', 1.0)
@@ -306,6 +308,8 @@ class MapManager:
         self.pending_baseline_lock_ids.clear()
         self.baseline_lock_pending = False
         self.start_game_requested = False
+        self.game_start_time_ns = None
+        self.game_85s_triggered = False
         self._stop_game_update_timer()
         self.known_ids_to_retry.clear()
         self.deleted_batch_ids.clear()
@@ -765,7 +769,7 @@ class MapManager:
         delete_marker.action = Marker.DELETEALL
         marker_array.markers.append(delete_marker)
         
-        crates = [obs for obs in obstacles if obs['color'] != 'wall']
+        crates = list(obstacles)
         
         marker_id = 1
         # Visualize CRATES (small, colored, on ground)
@@ -782,13 +786,19 @@ class MapManager:
             # Position (on ground level) - x/y are centers
             crate_marker.pose.position.x = obs['x'] / 1000.0
             crate_marker.pose.position.y = obs['y'] / 1000.0
-            crate_marker.pose.position.z = 0.03  # 30mm high (half of 150mm)
+            if obs['color'] == 'wall':
+                crate_marker.pose.position.z = 0.15  # make wall easier to see
+            else:
+                crate_marker.pose.position.z = 0.03  # 30mm high (half of 150mm)
             crate_marker.pose.orientation = self.yaw_to_quaternion(obs.get('theta', 0.0))
             
-            # Size: small crates
+            # Size
             crate_marker.scale.x = obs['width'] / 1000.0
             crate_marker.scale.y = obs['height'] / 1000.0
-            crate_marker.scale.z = 0.15  # 150mm tall crates
+            if obs['color'] == 'wall':
+                crate_marker.scale.z = 0.30
+            else:
+                crate_marker.scale.z = 0.15  # 150mm tall crates
             
             # Color based on crate color
             if obs['color'] == 'yellow':
@@ -801,6 +811,11 @@ class MapManager:
                 crate_marker.color.g = 0.5
                 crate_marker.color.b = 1.0
                 crate_marker.color.a = 0.8
+            elif obs['color'] == 'wall':
+                crate_marker.color.r = 0.5
+                crate_marker.color.g = 0.5
+                crate_marker.color.b = 0.5
+                crate_marker.color.a = 0.9
             else:  # red or other
                 crate_marker.color.r = 1.0
                 crate_marker.color.g = 0.0
@@ -831,6 +846,10 @@ class MapManager:
         baseline lock is complete.
         """
         self.start_game_requested = True
+        # Start/restart game-time counting from this request.
+        now = self.node.get_clock().now()
+        self.game_start_time_ns = int(now.nanoseconds)
+        self.game_85s_triggered = False
 
         if self.game_update_timer_active:
             # Reset and restart the timer
@@ -879,8 +898,85 @@ class MapManager:
         self.game_update_pending = 0
         self.node.get_logger().info("🛑 Game update timer stopped")
 
+    def _add_wall_sima_obstacle(self) -> None:
+        """Add/update a timed game obstacle used to block a busy zone."""
+        wall_id = 'wall_sima'
+        wall_id_2 = 'wall_sima_2'
+
+        # Requested values:
+        # - center in mm
+        # - width/height provided in meters
+        center_x_mm = 1500.0
+        center_y_mm = 800.0
+        width_mm = 600.0
+        height_mm = 1500.0
+
+        # Second requested wall
+        center2_x_mm = 550.0
+        center2_y_mm = 1250.0
+        width2_mm = 300.0
+        height2_mm = 300.0
+
+        with self.obstacles_lock:
+            # Remove any previous instance with same id so we can re-add cleanly.
+            self.obstacles = [obs for obs in self.obstacles if obs.id not in (wall_id, wall_id_2)]
+
+            obs = Obstacle()
+            obs.id = wall_id
+            obs.type = 'wall'
+            obs.color = 'wall'
+            obs.pose.x = center_x_mm
+            obs.pose.y = center_y_mm
+            obs.pose.theta = 0.0
+            obs.width_mm = width_mm
+            obs.height_mm = height_mm
+            obs.detected_at = self.node.get_clock().now().to_msg()
+
+            self.obstacles.append(obs)
+            self.obstacle_sources[wall_id] = 'game_zone'
+
+            obs2 = Obstacle()
+            obs2.id = wall_id_2
+            obs2.type = 'wall'
+            obs2.color = 'wall'
+            obs2.pose.x = center2_x_mm
+            obs2.pose.y = center2_y_mm
+            obs2.pose.theta = 0.0
+            obs2.width_mm = width2_mm
+            obs2.height_mm = height2_mm
+            obs2.detected_at = self.node.get_clock().now().to_msg()
+
+            self.obstacles.append(obs2)
+            self.obstacle_sources[wall_id_2] = 'game_zone'
+
+        self.node.get_logger().info(
+            "🧱 Added timed obstacle 'wall_sima' at 85s "
+            f"(center=({center_x_mm:.1f}, {center_y_mm:.1f})mm, size={width_mm:.1f}x{height_mm:.1f}mm)"
+        )
+        self.node.get_logger().info(
+            "🧱 Added timed obstacle 'wall_sima_2' at 85s "
+            f"(center=({center2_x_mm:.1f}, {center2_y_mm:.1f})mm, size={width2_mm:.1f}x{height2_mm:.1f}mm)"
+        )
+
+    def _check_game_time_events(self) -> None:
+        """Check elapsed game time and fire one-shot hooks (e.g., at 85s)."""
+        if not self.start_game_requested:
+            return
+        if self.game_start_time_ns is None:
+            return
+
+        elapsed_s = (int(self.node.get_clock().now().nanoseconds) - int(self.game_start_time_ns)) / 1e9
+
+        # One-shot event at 85s (hook placeholder for future actions).
+        if (not self.game_85s_triggered) and elapsed_s >= 85.0:
+            self.game_85s_triggered = True
+            self._add_wall_sima_obstacle()
+            self.node.get_logger().info("⏱️ Game reached 85s (wall_sima added)")
+
     def _game_update_timer_callback(self):
         """Periodic callback that performs the same async flow as /update_map."""
+        self._check_game_time_events()
+
         if not self.game_update_timer_active:
             return
         if not self.baselines_locked:
@@ -971,6 +1067,8 @@ class MapManager:
         self.locked_baseline_all_batch_ids.clear()
         self.pending_baseline_lock_ids.clear()
         self.start_game_requested = False
+        self.game_start_time_ns = None
+        self.game_85s_triggered = False
         self._stop_game_update_timer()
         self.known_ids_to_retry.clear()
         self.short_pattern_ids.clear()
