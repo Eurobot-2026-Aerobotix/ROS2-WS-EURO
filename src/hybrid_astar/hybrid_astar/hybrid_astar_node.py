@@ -40,7 +40,7 @@ from tf2_ros import Buffer, TransformListener, LookupException, ConnectivityExce
 from hybrid_astar.msg import Obstacle, ObstacleArray, ColorCommand, ActiveBatches
 from aruco_mapper_msgs.msg import ArucoMapperState, Batch, BatchMember
 from aruco_mapper_msgs.srv import GetStableBatches
-from hybrid_astar.srv import ComputePath, GetBatchColorPattern, DeleteBatch, GetActiveBatches, PutDown
+from hybrid_astar.srv import ComputePath, GetBatchColorPattern, DeleteBatch, GetActiveBatches, PutDown, SetTeamColor
 
 # Import the pathfinding algorithm
 from hybrid_astar.hybrid_astar import HybridAStarPathfinder
@@ -133,6 +133,11 @@ class HybridAStarNode(Node):
         # Backward-compatible alias
         self.get_active_batches_service_alias = self.create_service(
             GetActiveBatches, '/get_active_batches', self.handle_get_active_batches,
+            callback_group=self.reentrant_group)
+
+        # Set team color used for timed 85s PAMI wall symmetry behavior.
+        self.set_team_color_service = self.create_service(
+            SetTeamColor, '/set_team_color', self.map_manager.handle_set_team_color,
             callback_group=self.reentrant_group)
 
         # Topic publisher for active batches (same payload fields as GetActiveBatches response)

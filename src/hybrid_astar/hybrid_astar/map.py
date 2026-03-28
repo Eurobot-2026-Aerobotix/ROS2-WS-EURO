@@ -20,6 +20,7 @@ from visualization_msgs.msg import Marker, MarkerArray
 
 # Custom messages
 from hybrid_astar.msg import Obstacle, ObstacleArray
+from hybrid_astar.srv import SetTeamColor
 from aruco_mapper_msgs.msg import ArucoMapperState, Batch, BatchMember
 from aruco_mapper_msgs.srv import GetStableBatches
 
@@ -152,6 +153,13 @@ class MapManager:
         self.enemy_obstacle_timeout_sec = params.get('rates', {}).get('enemy_obstacle_timeout_sec', 1.0)
         self.last_enemy_update_ns: Optional[int] = None
         self.enemy_from_web: bool = False
+
+        # Team color used to mirror 85s timed PAMI walls.
+        # yellow: default coordinates, blue: mirrored on x-axis (y mirrored around horizontal center axis).
+        self.team_color: str = 'yellow'
+        field_width = float(params.get('map', {}).get('width_mm', 3000.0))
+        field_height = float(params.get('map', {}).get('height_mm', 2000.0))
+        self._symmetry_axis_y_mm = 1500.0  # Horizontal center axis for y-symmetry
         
         # Create publishers
         self.current_obs_pub = node.create_publisher(
@@ -907,6 +915,22 @@ class MapManager:
         self.game_update_pending = 0
         self.node.get_logger().info("🛑 Game update timer stopped")
 
+    def handle_set_team_color(self, request: SetTeamColor.Request, response: SetTeamColor.Response) -> SetTeamColor.Response:
+        """Service handler to set active team color for timed PAMI wall symmetry."""
+        color = str(getattr(request, 'color', '') or '').strip().lower()
+        if color not in ('yellow', 'blue'):
+            response.success = False
+            response.message = "Invalid color. Use 'yellow' or 'blue'."
+            return response
+
+        self.team_color = color
+        response.success = True
+        response.message = f"Team color set to {self.team_color}"
+        self.node.get_logger().info(
+            f"🎨 Team color updated: {self.team_color} (85s wall symmetry axis y={self._symmetry_axis_y_mm:.1f}mm)"
+        )
+        return response
+
     def _add_wall_sima_obstacle(self) -> None:
         """Add/update a timed game obstacle used to block a busy zone."""
         wall_id = 'wall_sima'
@@ -925,6 +949,11 @@ class MapManager:
         center2_y_mm = 1250.0
         width2_mm = 300.0
         height2_mm = 300.0
+
+        # For blue, apply x-axis symmetry: mirror y around horizontal center axis.
+        if self.team_color == 'blue':
+            center_y_mm = (2.0 * self._symmetry_axis_y_mm) - center_y_mm
+            center2_y_mm = (2.0 * self._symmetry_axis_y_mm) - center2_y_mm
 
         with self.obstacles_lock:
             # Remove any previous instance with same id so we can re-add cleanly.
@@ -959,11 +988,11 @@ class MapManager:
             self.obstacle_sources[wall_id_2] = 'game_zone'
 
         self.node.get_logger().info(
-            "🧱 Added timed obstacle 'wall_sima' at 85s "
+            f"🧱 Added timed obstacle 'wall_sima' at 85s for {self.team_color} "
             f"(center=({center_x_mm:.1f}, {center_y_mm:.1f})mm, size={width_mm:.1f}x{height_mm:.1f}mm)"
         )
         self.node.get_logger().info(
-            "🧱 Added timed obstacle 'wall_sima_2' at 85s "
+            f"🧱 Added timed obstacle 'wall_sima_2' at 85s for {self.team_color} "
             f"(center=({center2_x_mm:.1f}, {center2_y_mm:.1f})mm, size={width2_mm:.1f}x{height2_mm:.1f}mm)"
         )
 

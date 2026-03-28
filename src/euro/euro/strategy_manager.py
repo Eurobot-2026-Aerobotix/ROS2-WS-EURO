@@ -762,6 +762,14 @@ def main(args=None):
     try:
         strategy.tasks, strategy.color, strategy.strategy_name = load_tasks_from_yaml(tasks_file)
         
+        # Send team color to hybrid_astar immediately after loading from YAML
+        color_to_send = strategy.color if strategy.color else 'yellow'
+        success, message = strategy.pathfinder.set_team_color(color_to_send)
+        if success:
+            strategy.get_logger().info(f"🎨 Team color loaded and sent to hybrid_astar: {message}")
+        else:
+            strategy.get_logger().warning(f"⚠️ Failed to send team color to hybrid_astar: {message}")
+        
         # Load and publish PAMI strategies
         pami_folder = os.path.join(os.path.dirname(tasks_file), '..', 'pami_strategies')
         pami_folder = os.path.abspath(pami_folder)

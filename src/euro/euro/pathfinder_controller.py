@@ -6,7 +6,7 @@ from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped, Point,Vector3
 from nav_msgs.msg import Path
 
-from hybrid_astar.srv import ComputePath, GetBatchColorPattern, DeleteBatch, GetActiveBatches, PutDown
+from hybrid_astar.srv import ComputePath, GetBatchColorPattern, DeleteBatch, GetActiveBatches, PutDown, SetTeamColor
 from std_srvs.srv import Trigger
 
 class PathfinderClient(Node):
@@ -64,7 +64,10 @@ class PathfinderClient(Node):
             '/put_down'
         )
 
-        # Don't block on wait_for_service - it will timeout if service isn't available
+        self.set_team_color_client = self.create_client(
+            SetTeamColor,
+            '/set_team_color'
+        )
         self.get_logger().info('Waiting for /compute_path service...')
         if not self.path_client.wait_for_service(timeout_sec=5.0):
             self.get_logger().warning('⚠️  /compute_path service not available after 5 seconds')
@@ -112,6 +115,12 @@ class PathfinderClient(Node):
             self.get_logger().warning('⚠️  /put_down service not available after 5 seconds')
         else:
             self.get_logger().info('✅ /put_down service is ready')
+
+        self.get_logger().info('Waiting for /set_team_color service...')
+        if not self.set_team_color_client.wait_for_service(timeout_sec=5.0):
+            self.get_logger().warning('⚠️  /set_team_color service not available after 5 seconds')
+        else:
+            self.get_logger().info('✅ /set_team_color service is ready')
 
         # Goal storage
         self.goal_x = None
@@ -517,6 +526,49 @@ class PathfinderClient(Node):
             return True, response.message
         else:
             self.get_logger().warning(f'⚠️ Game start failed: {response.message}')
+            return False, response.message
+
+    def set_team_color(self, color: str):
+        """
+        Send team color to hybrid_astar for dynamic wall placement symmetry.
+        
+        Args:
+            color (str): Team color - 'blue' or 'yellow'
+        
+        Returns:
+            success (bool): Whether the set_team_color call succeeded
+            message (str): Status message
+        """
+        # Check if service is available
+        if not self.set_team_color_client.service_is_ready():
+            self.get_logger().error(f'❌ /set_team_color service is not available!')
+            return False, 'Service not available'
+
+        self.get_logger().info(f'🎨 Setting team color to {color}...')
+
+        request = SetTeamColor.Request()
+        request.color = str(color).strip().lower()
+        
+        future = self.set_team_color_client.call_async(request)
+        
+        # Wait for future to complete with proper spinning
+        rclpy.spin_until_future_complete(self, future, timeout_sec=5.0)
+        
+        if not future.done():
+            self.get_logger().error('❌ Set team color service call timed out after 5s')
+            return False, 'Timeout'
+
+        if not future.result():
+            self.get_logger().error('❌ Set team color service call failed - no response received')
+            return False, 'No response'
+
+        response = future.result()
+
+        if response.success:
+            self.get_logger().info(f'✅ Team color set: {response.message}')
+            return True, response.message
+        else:
+            self.get_logger().warning(f'⚠️ Team color setting failed: {response.message}')
             return False, response.message
 
     # =========================================================    # 3️⃣ GET BATCH COLOR
