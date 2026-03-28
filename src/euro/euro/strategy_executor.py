@@ -830,6 +830,7 @@ def pick_up(controller,pneumatic,strategy,front):
     time.sleep(0.8)
     controller.n20(1111)
     stana(controller)
+    time.sleep(1)
     if SHUTDOWN_REQUESTED:
         return
     
