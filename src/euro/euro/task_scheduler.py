@@ -33,6 +33,9 @@ class TaskScheduler:
     retreat_distance = 250.0
     distance_from_wall = 200.0
     dropoff_min_clearance_to_sx = 420.0
+    dropoff_min_clearance_to_fx = 330.0
+    putdown_insert_distance = 175.0
+    putdown_retreat_distance = 250.0
     switch_distance=550.0
     retreat_distance=175.0
     coeffs = {
@@ -340,6 +343,11 @@ class TaskScheduler:
                 for bid, b in self.map.batches.items()
                 if str(bid).startswith("s")
             ]
+            fx_positions = [
+                (float(b.x), float(b.y), str(bid))
+                for bid, b in self.map.batches.items()
+                if str(bid).startswith("f") and str(bid) != str(task.target_id)
+            ]
 
             for i in range(sample_count):
                 angle = (2.0 * math.pi * float(i)) / float(sample_count)
@@ -369,15 +377,37 @@ class TaskScheduler:
                         min_clearance_to_sx = d
                         nearest_sx_id = sx_id
 
+                min_clearance_to_fx = float("inf")
+                nearest_fx_id = None
+                for fx_x, fx_y, fx_id in fx_positions:
+                    d = math.hypot(float(candidate.x) - fx_x, float(candidate.y) - fx_y)
+                    if d < min_clearance_to_fx:
+                        min_clearance_to_fx = d
+                        nearest_fx_id = fx_id
+
                 if sx_positions and min_clearance_to_sx < float(self.dropoff_min_clearance_to_sx):
                     # Save best fallback in case no candidate can satisfy the clearance.
-                    if min_clearance_to_sx > best_fallback_clearance:
-                        best_fallback_clearance = min_clearance_to_sx
+                    candidate_clearance = min(min_clearance_to_sx, min_clearance_to_fx)
+                    if candidate_clearance > best_fallback_clearance:
+                        best_fallback_clearance = candidate_clearance
                         best_fallback_pos = candidate
                     if self.ros_node is not None:
                         self.ros_node.get_logger().debug(
                             f"⏭️ Skip dropoff point ({candidate.x:.1f},{candidate.y:.1f}) for {task.target_id}: "
                             f"too close to {nearest_sx_id} ({min_clearance_to_sx:.1f}mm < {self.dropoff_min_clearance_to_sx:.1f}mm)"
+                        )
+                    continue
+
+                if fx_positions and min_clearance_to_fx < float(self.dropoff_min_clearance_to_fx):
+                    # Save best fallback in case no candidate can satisfy the clearance.
+                    candidate_clearance = min(min_clearance_to_sx, min_clearance_to_fx)
+                    if candidate_clearance > best_fallback_clearance:
+                        best_fallback_clearance = candidate_clearance
+                        best_fallback_pos = candidate
+                    if self.ros_node is not None:
+                        self.ros_node.get_logger().debug(
+                            f"⏭️ Skip dropoff point ({candidate.x:.1f},{candidate.y:.1f}) for {task.target_id}: "
+                            f"too close to {nearest_fx_id} ({min_clearance_to_fx:.1f}mm < {self.dropoff_min_clearance_to_fx:.1f}mm)"
                         )
                     continue
 
@@ -780,8 +810,8 @@ class TaskScheduler:
         y: float,
         device: str,
         start_pose: Optional[Dict[str, float]] = None,
-        insert_distance_mm: float = 200.0,
-        retreat_distance_mm: float = 175.0,
+        insert_distance_mm: Optional[float] = None,
+        retreat_distance_mm: Optional[float] = None,
     ) -> Optional[List[Dict[str, Any]]]:
         """
         Build a put_down task.
@@ -802,8 +832,8 @@ class TaskScheduler:
             y: Target y in mm
             device: 'front'/'back' or 'ESP_front'/'ESP_back'
             start_pose: Optional {'x','y','theta'} in mm/degrees for explicit path start
-            insert_distance_mm: Insertion move distance for type B zones (default 200mm)
-            retreat_distance_mm: Final retreat distance after put_down flow (default 100mm)
+            insert_distance_mm: Insertion move distance for type B zones (default 175mm)
+            retreat_distance_mm: Final retreat distance after put_down flow (default 250mm)
 
         Returns:
             Ordered list of task dicts compatible with strategy_manager queue format:
@@ -813,7 +843,12 @@ class TaskScheduler:
         """
         if self.pathfinder is None:
             return None
-        retreat_distance_mm=self.retreat_distance
+
+        if insert_distance_mm is None:
+            insert_distance_mm = float(self.putdown_insert_distance)
+        if retreat_distance_mm is None:
+            retreat_distance_mm = float(self.putdown_retreat_distance)
+
         normalized_id = str(batch_known_id).lower()
         zone = self.map.drop_offs.get(normalized_id)
         if zone is None:
