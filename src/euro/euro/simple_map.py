@@ -176,7 +176,7 @@ class Map:
         self.time_left = 100.0
         self.round_timer = round_timer
         self.game_duration_s = float(game_duration_s)
-        self.robot_color = "unknown"
+        self.robot_color = "yellow"
         self.robot_front_empty = True
         self.robot_back_empty = True
         self.nest_position = Pose2D(x=200.0, y=2700.0)

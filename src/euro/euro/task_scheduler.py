@@ -1081,19 +1081,159 @@ class TaskScheduler:
             List of executable task dicts, or None if build fails
         """
         tasks: List[Dict[str, Any]] = []
-        
-        # Task 1: If yellow, navigate to intermediate waypoint
-        if self.map.robot_color.lower() == "yellow":
-            intermediate_task = {
-                'name': 'return_home_intermediate_yellow',
+        robot_color = str(self.map.robot_color or "").lower()
+
+        # Blue return-home: path to staging point, wait end-game, then bezier to blue home.
+        if robot_color == "blue":
+            if self.pathfinder is None:
+                if self.ros_node is not None:
+                    self.ros_node.get_logger().warning(
+                        "⚠️ Return home (blue): pathfinder unavailable for staging waypoint"
+                    )
+                return None
+
+            blue_stage_x = 899.23
+            blue_stage_y = 2197.79
+            blue_stage_theta_deg = 90.25191526508233
+
+            stm32_commands, path_success = self.pathfinder.path_full(
+                target_x=blue_stage_x / 1000.0,
+                target_y=blue_stage_y / 1000.0,
+                target_theta=math.radians(blue_stage_theta_deg),
+            )
+
+            if not path_success:
+                if self.ros_node is not None:
+                    self.ros_node.get_logger().warning(
+                        "⚠️ Return home (blue): failed to build path to staging waypoint"
+                    )
+                return None
+
+            intermediate_sequence: List[Dict[str, Any]] = []
+            last_cmd = None
+            for cmd in stm32_commands:
+                values = cmd.replace('go_to(', '').replace(')', '').split(',')
+                waypoint_x = float(values[0].strip())
+                waypoint_y = float(values[1].strip())
+                if cmd != last_cmd:
+                    intermediate_sequence.append({
+                        'device': 'STM',
+                        'command': 'go_to',
+                        'params': [waypoint_x, waypoint_y, 1100.0, 0.0, {'from_pathfinding': True, 'from_return_home': True, 'blue_staging': True}],
+                        'wait': False
+                    })
+                last_cmd = cmd
+
+            intermediate_sequence.append({
+                'device': 'STM',
+                'command': 'go_to',
+                'params': [blue_stage_x, blue_stage_y, 1100.0, 1.0, {'from_pathfinding': True, 'from_return_home': True, 'blue_staging': True}],
+                'wait': True
+            })
+
+            tasks.append({
+                'name': 'return_home_intermediate_blue',
+                'sequence': intermediate_sequence,
+                'global_goal': {
+                    'x': blue_stage_x,
+                    'y': blue_stage_y,
+                    'theta': blue_stage_theta_deg,
+                }
+            })
+
+            tasks.append({
+                'name': 'return_home_wait_end_game',
+                'sequence': [
+                    {
+                        'device': 'RASP_PI',
+                        'command': 'wait_end_game',
+                        'params': [13],
+                        'wait': False
+                    }
+                ],
+                'global_goal': {
+                    'x': blue_stage_x,
+                    'y': blue_stage_y,
+                    'theta': blue_stage_theta_deg,
+                }
+            })
+
+            tasks.append({
+                'name': 'return_home_bezier_blue',
                 'sequence': [
                     {
                         'device': 'STM',
-                        'command': 'go_to',
-                        'params': [803.0, 879.0, 1100.0, 0.0, {'from_return_home': True}],
-                        'wait': True
+                        'command': 'bezier',
+                        'params': [
+                            '897.99',
+                            '2390.29',
+                            923.4,
+                            2770.13,
+                            285,
+                            2765.04,
+                            1000,
+                            1000,
+                            1100
+                        ],
+                        'wait': False
                     }
                 ],
+                'global_goal': {
+                    'x': 285,
+                    'y': 2765.04,
+                    'theta': -179.5431871268251,
+                }
+            })
+
+            return tasks
+
+        # Task 1: If yellow, navigate to intermediate waypoint via pathfinding
+        if robot_color == "yellow":
+            if self.pathfinder is None:
+                if self.ros_node is not None:
+                    self.ros_node.get_logger().warning(
+                        "⚠️ Return home (yellow): pathfinder unavailable for intermediate waypoint"
+                    )
+                return None
+
+            stm32_commands, path_success = self.pathfinder.path_full(
+                target_x=803.0 / 1000.0,
+                target_y=879.0 / 1000.0,
+                target_theta=0.0,
+            )
+
+            if not path_success:
+                if self.ros_node is not None:
+                    self.ros_node.get_logger().warning(
+                        "⚠️ Return home (yellow): failed to build path to intermediate waypoint"
+                    )
+                return None
+
+            intermediate_sequence: List[Dict[str, Any]] = []
+            last_cmd = None
+            for cmd in stm32_commands:
+                values = cmd.replace('go_to(', '').replace(')', '').split(',')
+                waypoint_x = float(values[0].strip())
+                waypoint_y = float(values[1].strip())
+                if cmd != last_cmd:
+                    intermediate_sequence.append({
+                        'device': 'STM',
+                        'command': 'go_to',
+                        'params': [waypoint_x, waypoint_y, 1100.0, 0.0, {'from_pathfinding': True, 'from_return_home': True}],
+                        'wait': False
+                    })
+                last_cmd = cmd
+
+            intermediate_sequence.append({
+                'device': 'STM',
+                'command': 'go_to',
+                'params': [803.0, 879.0, 1100.0, 1.0, {'from_pathfinding': True, 'from_return_home': True}],
+                'wait': True
+            })
+
+            intermediate_task = {
+                'name': 'return_home_intermediate_yellow',
+                'sequence': intermediate_sequence,
                 'global_goal': {
                     'x': 803.0,
                     'y': 879.0,
