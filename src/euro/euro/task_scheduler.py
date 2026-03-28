@@ -261,19 +261,12 @@ class TaskScheduler:
         if not self.log_score_breakdown:
             return
 
-        message = (
-            f"🧮 Score {task.type}:{task.target_id} total={task.score:.3f} | "
-            f"enemy_goal={contributions.get('is_enemy_goal', 0.0):+.3f}, "
-            f"dist_goal={contributions.get('distance_to_goal', 0.0):+.3f}, "
-            f"obstacles={contributions.get('number_of_obstacles_between', 0.0):+.3f}, "
-            f"dist_enemy={contributions.get('distance_to_enemy', 0.0):+.3f}, "
-            f"opposite_crates={contributions.get('number_of_opposite_crates', 0.0):+.3f}"
-        )
+        # message = f"🧮 Score {task.type}:{task.target_id} total={task.score:.3f}"
 
-        if self.ros_node is not None:
-            self.ros_node.get_logger().info(message)
-        else:
-            print(f"[TaskScheduler] {message}")
+        # if self.ros_node is not None:
+        #     self.ros_node.get_logger().info(message)
+        # else:
+        #     print(f"[TaskScheduler] {message}")
 
     def _log_task_queue_snapshot(self, queue: List[Task]) -> None:
         """Log final ordered queue so all candidate tasks are visible."""
