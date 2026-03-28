@@ -1114,6 +1114,29 @@ class HybridAStarNode(Node):
                 response.success = False
                 response.message = "No path found - start/goal in collision or blocked"
                 self.get_logger().warn(f"❌ {response.message}")
+                start_collision = self.pathfinder.is_collision(start_x, start_y, start_theta, grid_resolution)
+                goal_collision = self.pathfinder.is_collision(goal_x, goal_y, goal_theta, grid_resolution)
+
+                if start_collision:
+                    self.get_logger().warn(
+                        f"   Start pose in collision: ({start_x:.1f}, {start_y:.1f}, {math.degrees(start_theta):.1f}°)"
+                    )
+                    start_hits = self.pathfinder.get_collision_debug_info(
+                        start_x, start_y, start_theta, grid_resolution, max_items=8
+                    )
+                    for idx, hit in enumerate(start_hits, start=1):
+                        self.get_logger().warn(f"      start_collision[{idx}]: {hit}")
+
+                if goal_collision and not allow_goal_collision:
+                    self.get_logger().warn(
+                        f"   Goal pose in collision: ({goal_x:.1f}, {goal_y:.1f}, {math.degrees(goal_theta):.1f}°)"
+                    )
+                    goal_hits = self.pathfinder.get_collision_debug_info(
+                        goal_x, goal_y, goal_theta, grid_resolution, max_items=8
+                    )
+                    for idx, hit in enumerate(goal_hits, start=1):
+                        self.get_logger().warn(f"      goal_collision[{idx}]: {hit}")
+
                 self.get_logger().warn("Possible issues:")
                 self.get_logger().warn("  - Start or goal in collision with obstacles")
                 self.get_logger().warn("  - Path blocked by obstacles")
@@ -1198,7 +1221,7 @@ class HybridAStarNode(Node):
         crate_length_mm = 150.0
 
         # Forward offset: 150mm + 50mm, then center by +half crate length
-        robot_to_batch_face_mm = 150.0 + 50.0
+        robot_to_batch_face_mm = 150.0 + 100.0
         center_forward_offset_mm = robot_to_batch_face_mm + (crate_length_mm / 2.0)
         if direction == 0:
             center_forward_offset_mm *= -1.0

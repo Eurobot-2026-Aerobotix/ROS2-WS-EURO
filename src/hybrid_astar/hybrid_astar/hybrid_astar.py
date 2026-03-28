@@ -39,6 +39,10 @@ class HybridAStarPathfinder:
         
         # Binary occupancy grid
         self.grid = np.zeros((grid_height, grid_width), dtype=bool)
+
+        # Debug metadata of occupied regions used to explain collision failures.
+        # Updated on every set_obstacles() call.
+        self.collision_sources: List[Dict[str, object]] = []
         
         # Permanent static obstacle areas (always blocked, never cleared)
         self.permanent_obstacles = []
@@ -158,6 +162,7 @@ class HybridAStarPathfinder:
         """
         # Clear grid
         self.grid.fill(False)
+        self.collision_sources = []
         
         # Re-apply permanent obstacle areas FIRST with CORRECT grid_resolution
         for area in self.permanent_obstacles:
@@ -181,6 +186,19 @@ class HybridAStarPathfinder:
             area['grid_y_start'] = grid_y_start
             area['grid_x_end'] = grid_x_end
             area['grid_y_end'] = grid_y_end
+
+            self.collision_sources.append({
+                'kind': 'permanent_area',
+                'id': str(area.get('id', f"permanent_{len(self.collision_sources)}")),
+                'x': (float(area['x_min']) + float(area['x_max'])) / 2.0,
+                'y': (float(area['y_min']) + float(area['y_max'])) / 2.0,
+                'width': float(area['x_max']) - float(area['x_min']),
+                'height': float(area['y_max']) - float(area['y_min']),
+                'grid_x_start': grid_x_start,
+                'grid_y_start': grid_y_start,
+                'grid_x_end': grid_x_end,
+                'grid_y_end': grid_y_end,
+            })
         
         # Add static walls if provided
         # Note: In ROS2 node mode, static walls are loaded from JSON file
@@ -189,7 +207,7 @@ class HybridAStarPathfinder:
             static_walls = []
         
         # Mark static walls first (x/y are CENTER positions)
-        for wall in static_walls:
+        for wall_idx, wall in enumerate(static_walls):
             x_world = wall['x']  # center X
             y_world = wall['y']  # center Y
             width = wall['width']
@@ -202,10 +220,25 @@ class HybridAStarPathfinder:
             
             grid_x_start = max(0, min(grid_x_start, self.grid_width - 1))
             grid_x_end = max(0, min(grid_x_end, self.grid_width))
+            grid_y_start = max(0, min(grid_y_start, self.grid_height - 1))
+            grid_y_end = max(0, min(grid_y_end, self.grid_height))
             self.grid[grid_y_start:grid_y_end, grid_x_start:grid_x_end] = True
+
+            self.collision_sources.append({
+                'kind': 'static_wall',
+                'id': str(wall.get('id', f"static_wall_{wall_idx}")),
+                'x': float(x_world),
+                'y': float(y_world),
+                'width': float(width),
+                'height': float(height),
+                'grid_x_start': grid_x_start,
+                'grid_y_start': grid_y_start,
+                'grid_x_end': grid_x_end,
+                'grid_y_end': grid_y_end,
+            })
         
         # Mark dynamic obstacles (x/y are CENTER positions)
-        for obstacle in obstacles:
+        for obstacle_idx, obstacle in enumerate(obstacles):
             x_world = obstacle['x']  # center X
             y_world = obstacle['y']  # center Y
             width = obstacle['width']
@@ -225,10 +258,98 @@ class HybridAStarPathfinder:
             
             # Mark as occupied
             self.grid[grid_y_start:grid_y_end, grid_x_start:grid_x_end] = True
+
+            self.collision_sources.append({
+                'kind': 'dynamic',
+                'id': str(obstacle.get('id', f"dynamic_{obstacle_idx}")),
+                'x': float(x_world),
+                'y': float(y_world),
+                'width': float(width),
+                'height': float(height),
+                'color': str(obstacle.get('color', 'unknown')),
+                'grid_x_start': grid_x_start,
+                'grid_y_start': grid_y_start,
+                'grid_x_end': grid_x_end,
+                'grid_y_end': grid_y_end,
+            })
         
         num_static = len(static_walls) if static_walls else 0
         num_permanent = len(self.permanent_obstacles)
         self._vprint(f"✓ Set {len(obstacles)} dynamic obstacles + {num_static} static walls + {num_permanent} permanent areas")
+
+    def get_collision_debug_info(
+        self,
+        x: float,
+        y: float,
+        theta: float,
+        grid_resolution: float,
+        max_items: int = 5,
+    ) -> List[Dict[str, object]]:
+        """Return a compact list of obstacles that collide with robot footprint at pose."""
+        theta_idx = int((theta + math.pi) / self.orientation_step) % self.num_orientations
+        footprint = self.footprints[theta_idx]
+        if len(footprint) == 0:
+            return []
+
+        center_gx = int(x / grid_resolution)
+        center_gy = int(y / grid_resolution)
+
+        results: List[Dict[str, object]] = []
+        seen_keys = set()
+
+        for dx_cell, dy_cell in footprint:
+            gx = center_gx + dx_cell
+            gy = center_gy + dy_cell
+
+            if gx < 0 or gx >= self.grid_width or gy < 0 or gy >= self.grid_height:
+                key = ('boundary', gx, gy)
+                if key not in seen_keys:
+                    seen_keys.add(key)
+                    results.append({'kind': 'boundary', 'id': 'map_boundary', 'grid_cell': [gx, gy]})
+                if len(results) >= max_items:
+                    break
+                continue
+
+            if not self.grid[gy, gx]:
+                continue
+
+            matched = False
+            for src in self.collision_sources:
+                if (
+                    int(src.get('grid_x_start', 0)) <= gx < int(src.get('grid_x_end', 0))
+                    and int(src.get('grid_y_start', 0)) <= gy < int(src.get('grid_y_end', 0))
+                ):
+                    key = (src.get('kind', 'unknown'), src.get('id', 'unknown'))
+                    if key in seen_keys:
+                        continue
+                    seen_keys.add(key)
+                    entry = {
+                        'kind': src.get('kind', 'unknown'),
+                        'id': src.get('id', 'unknown'),
+                        'x': src.get('x', None),
+                        'y': src.get('y', None),
+                        'width': src.get('width', None),
+                        'height': src.get('height', None),
+                        'grid_cell': [gx, gy],
+                    }
+                    if 'color' in src:
+                        entry['color'] = src.get('color')
+                    results.append(entry)
+                    matched = True
+                    if len(results) >= max_items:
+                        break
+            if len(results) >= max_items:
+                break
+
+            if not matched:
+                key = ('occupied_cell', gx, gy)
+                if key not in seen_keys:
+                    seen_keys.add(key)
+                    results.append({'kind': 'occupied_cell', 'id': 'unknown_obstacle', 'grid_cell': [gx, gy]})
+                if len(results) >= max_items:
+                    break
+
+        return results
     
     def get_robot_corners(self, x: float, y: float, theta: float) -> List[Tuple[float, float]]:
         """
@@ -422,6 +543,8 @@ class HybridAStarPathfinder:
             self._vprint(f"   Grid cell: ({gx}, {gy})")
             if 0 <= gx < self.grid_width and 0 <= gy < self.grid_height:
                 self._vprint(f"   Grid occupied: {self.grid[gy, gx]}")
+            for idx, info in enumerate(self.get_collision_debug_info(start_x, start_y, start_theta, grid_resolution), start=1):
+                self._vprint(f"   Collision[{idx}]: {info}")
             return None
         
         goal_collision = self.is_collision(goal_x, goal_y, goal_theta, grid_resolution)
@@ -433,6 +556,8 @@ class HybridAStarPathfinder:
             self._vprint(f"   Grid cell: ({gx}, {gy})")
             if 0 <= gx < self.grid_width and 0 <= gy < self.grid_height:
                 self._vprint(f"   Grid occupied: {self.grid[gy, gx]}")
+            for idx, info in enumerate(self.get_collision_debug_info(goal_x, goal_y, goal_theta, grid_resolution), start=1):
+                self._vprint(f"   Collision[{idx}]: {info}")
             return None
         elif goal_collision and allow_goal_collision:
             self._vprint(f"⚠ Goal position ({goal_x:.1f}, {goal_y:.1f}) is in collision, but proceeding (batch pickup mode)")
