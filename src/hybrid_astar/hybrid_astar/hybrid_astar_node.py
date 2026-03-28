@@ -1117,6 +1117,13 @@ class HybridAStarNode(Node):
                 start_collision = self.pathfinder.is_collision(start_x, start_y, start_theta, grid_resolution)
                 goal_collision = self.pathfinder.is_collision(goal_x, goal_y, goal_theta, grid_resolution)
 
+                self.get_logger().warn(
+                    "   Failure diagnostics: "
+                    f"start_collision={start_collision}, "
+                    f"goal_collision={goal_collision}, "
+                    f"allow_goal_collision={allow_goal_collision}"
+                )
+
                 if start_collision:
                     self.get_logger().warn(
                         f"   Start pose in collision: ({start_x:.1f}, {start_y:.1f}, {math.degrees(start_theta):.1f}°)"
@@ -1136,6 +1143,17 @@ class HybridAStarNode(Node):
                     )
                     for idx, hit in enumerate(goal_hits, start=1):
                         self.get_logger().warn(f"      goal_collision[{idx}]: {hit}")
+
+                if goal_collision and allow_goal_collision:
+                    self.get_logger().warn(
+                        "   Goal is in collision but overlap is allowed for this request (goal on batch)."
+                    )
+
+                if (not start_collision) and ((not goal_collision) or allow_goal_collision):
+                    self.get_logger().warn(
+                        "   Start/goal are collision-free under current rules; failure is likely blocked connectivity "
+                        "(obstacle layout, corridor width, or search limits)."
+                    )
 
                 self.get_logger().warn("Possible issues:")
                 self.get_logger().warn("  - Start or goal in collision with obstacles")
