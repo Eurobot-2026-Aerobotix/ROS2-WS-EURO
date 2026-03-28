@@ -32,6 +32,7 @@ class TaskScheduler:
     drop_off_distance = 400.0
     retreat_distance = 250.0
     distance_from_wall = 200.0
+    dropoff_min_clearance_to_sx = 420.0
     switch_distance=550.0
     retreat_distance=175.0
     coeffs = {
@@ -331,6 +332,14 @@ class TaskScheduler:
 
             best_pos: Optional[Pose2D] = None
             best_dist = float("inf")
+            best_fallback_pos: Optional[Pose2D] = None
+            best_fallback_clearance = -1.0
+
+            sx_positions = [
+                (float(b.x), float(b.y), str(bid))
+                for bid, b in self.map.batches.items()
+                if str(bid).startswith("s")
+            ]
 
             for i in range(sample_count):
                 angle = (2.0 * math.pi * float(i)) / float(sample_count)
@@ -348,6 +357,28 @@ class TaskScheduler:
                     continue
 
                 if self.map.check_collision(candidate, ignore_batch_id=task.target_id):
+                    continue
+
+                # Keep dropoff point away from SX batches so the robot footprint
+                # does not start too close to storage crates after put_down.
+                min_clearance_to_sx = float("inf")
+                nearest_sx_id = None
+                for sx_x, sx_y, sx_id in sx_positions:
+                    d = math.hypot(float(candidate.x) - sx_x, float(candidate.y) - sx_y)
+                    if d < min_clearance_to_sx:
+                        min_clearance_to_sx = d
+                        nearest_sx_id = sx_id
+
+                if sx_positions and min_clearance_to_sx < float(self.dropoff_min_clearance_to_sx):
+                    # Save best fallback in case no candidate can satisfy the clearance.
+                    if min_clearance_to_sx > best_fallback_clearance:
+                        best_fallback_clearance = min_clearance_to_sx
+                        best_fallback_pos = candidate
+                    if self.ros_node is not None:
+                        self.ros_node.get_logger().debug(
+                            f"⏭️ Skip dropoff point ({candidate.x:.1f},{candidate.y:.1f}) for {task.target_id}: "
+                            f"too close to {nearest_sx_id} ({min_clearance_to_sx:.1f}mm < {self.dropoff_min_clearance_to_sx:.1f}mm)"
+                        )
                     continue
 
                 # Also validate a point projected toward the drop-off center.
@@ -370,7 +401,14 @@ class TaskScheduler:
                     best_pos = candidate
 
             if best_pos is None:
-                return False
+                if best_fallback_pos is None:
+                    return False
+                best_pos = best_fallback_pos
+                if self.ros_node is not None:
+                    self.ros_node.get_logger().warn(
+                        f"⚠️ No dropoff point met SX clearance for {task.target_id}; "
+                        f"using best fallback with clearance {best_fallback_clearance:.1f}mm"
+                    )
 
             task.options["x"] = best_pos.x
             task.options["y"] = best_pos.y
