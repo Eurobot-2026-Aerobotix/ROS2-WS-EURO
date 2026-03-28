@@ -718,8 +718,8 @@ def main(args=None):
         
         if os.path.exists(pami_folder):
             from euro.pami_controller import PamiController
-            pami_ctrl = PamiController(strategy.strategy_name, pami_folder, 'pami_controller_internal')
-            # pami_ctrl = None
+            #pami_ctrl = PamiController(strategy.strategy_name, pami_folder, 'pami_controller_internal')
+            pami_ctrl = None
         else:
             pami_ctrl = None
         
