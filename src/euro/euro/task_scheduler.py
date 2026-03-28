@@ -302,6 +302,10 @@ class TaskScheduler:
     
     def choose_side(self, task: Task) -> bool:
         if task.type == "pickup":
+            # Safety check: batch may have disappeared due to concurrent updates
+            if task.target_id not in self.map.batches:
+                return False
+            
             pickup_pos = []
             if task.target_id in ["s1", "f1", "s2"]:
                 pickup_pos.append(Pose2D(x=self.map.batches[task.target_id].x, y=self.map.batches[task.target_id].y + 175.0))
