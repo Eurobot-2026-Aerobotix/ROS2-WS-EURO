@@ -1070,6 +1070,45 @@ def back_task(strategy, back_controller=None,pneumatic_controller=None):
                 strategy.queues['ESP_back'].popleft()
         
         time.sleep(0.1)  # 100ms
+
+
+def pami_task(strategy, pami_controller=None):
+    """Runs every 20ms to process PAMI queue without blocking other executors."""
+    global SHUTDOWN_REQUESTED
+
+    while rclpy.ok() and not SHUTDOWN_REQUESTED:
+        if len(strategy.queues['PAMI']) > 0:
+            cmd = strategy.queues['PAMI'][0]  # Peek
+            command = cmd.get('command')
+
+            if not pami_controller:
+                strategy.get_logger().warning("PAMI controller not available - dropping PAMI command")
+            elif command == 'publish_strategies':
+                try:
+                    strategy.get_logger().info("📤 Publishing PAMI strategies in background task...")
+                    pami_controller.load_and_publish_pami_strategies()
+                    strategy.get_logger().info("✅ PAMI strategies published")
+                except Exception as e:
+                    strategy.get_logger().error(f"❌ Error publishing PAMI strategies: {e}")
+            elif command == 'start_pamis':
+                try:
+                    strategy.get_logger().info("🤖 Starting PAMIs in background task...")
+                    pami_controller.start_pamis()
+                    strategy.get_logger().info("✅ PAMIs started")
+                except Exception as e:
+                    strategy.get_logger().error(f"❌ Error starting PAMIs: {e}")
+            else:
+                strategy.get_logger().warning(f"Unknown PAMI command: {command}")
+
+            if len(strategy.queues['PAMI']) > 0:
+                strategy.queues['PAMI'].popleft()
+
+            if len(strategy.queues['PAMI']) > 0:
+                continue
+
+        time.sleep(0.02)
+
+
 def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=None, front_controller=None, back_controller=None, pneumatic_controller=None, pami_controller=None):
     """Runs every 100ms to process RASP_PI queue"""
     global SHUTDOWN_REQUESTED
@@ -1117,19 +1156,10 @@ def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=No
                     #strategy.get_logger().info("🗺️  Updating map...")
                     #strategy.pathfinder.update_map()
                     
-                    # Start PAMIs in background thread (non-blocking)
+                    # Enqueue PAMI start command to dedicated PAMI task
                     if pami_controller:
-                        def start_pamis_background():
-                            try:
-                                strategy.get_logger().info("🤖 Starting PAMIs in background...")
-                                pami_controller.start_pamis()
-                                strategy.get_logger().info("✅ PAMIs started successfully")
-                            except Exception as e:
-                                strategy.get_logger().error(f"❌ Error starting PAMIs: {e}")
-                        
-                        pami_thread = threading.Thread(target=start_pamis_background, daemon=True)
-                        pami_thread.start()
-                        strategy.get_logger().info("🚀 Robot ready - PAMIs starting in background")
+                        strategy.queues['PAMI'].append({'command': 'start_pamis'})
+                        strategy.get_logger().info("🚀 Robot ready - queued PAMI start")
                 else:
                     strategy.get_logger().warning("RPI controller not available - skipping wait_start")
             elif command == 'RESET':

@@ -17,13 +17,14 @@ class PamiController(Node):
     Controller that loads PAMI strategies and publishes them to appropriate topics
     """
     
-    def __init__(self, strategy_name: str, pami_folder_path: str, node_name='pami_controller', team_color: str = None, target_order: int = 1):
+    def __init__(self, strategy_name: str, pami_folder_path: str, node_name='pami_controller', team_color: str = None, target_order: int = 1, auto_publish: bool = True):
         super().__init__(node_name)
         
         self.strategy_name = strategy_name
         self.pami_folder_path = pami_folder_path
         self.team_color = str(team_color).lower() if team_color else None
         self.target_order = int(target_order)
+        self.auto_publish = bool(auto_publish)
         
         # Dictionary to store publishers for each pami
         self.pami_publishers = {}
@@ -34,11 +35,12 @@ class PamiController(Node):
         # Dictionary to store service clients for status checking
         self.pami_status_clients = {}
         
-        # Load and publish PAMI strategies
-        self.load_and_publish_pami_strategies()
+        # Optionally load and publish PAMI strategies on init
+        if self.auto_publish:
+            self.load_and_publish_pami_strategies()
         
         self.get_logger().info(
-            f'PAMI Controller initialized (strategy={strategy_name}, team_color={self.team_color}, target_order={self.target_order})'
+            f'PAMI Controller initialized (strategy={strategy_name}, team_color={self.team_color}, target_order={self.target_order}, auto_publish={self.auto_publish})'
         )
     
     def load_pami_yaml(self, yaml_file: str) -> Dict[str, Any]:
