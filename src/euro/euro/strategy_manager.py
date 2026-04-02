@@ -794,7 +794,13 @@ def main(args=None):
         
         if publish_pami and os.path.exists(pami_folder):
             from euro.pami_controller import PamiController
-            pami_ctrl = PamiController(strategy.strategy_name, pami_folder, 'pami_controller_internal')
+            pami_ctrl = PamiController(
+                strategy.strategy_name,
+                pami_folder,
+                'pami_controller_internal',
+                team_color=strategy.color,
+                target_order=1,
+            )
         elif publish_pami and not os.path.exists(pami_folder):
             strategy.get_logger().warning(f"PAMI folder not found, disabling PAMI publish: {pami_folder}")
             pami_ctrl = None

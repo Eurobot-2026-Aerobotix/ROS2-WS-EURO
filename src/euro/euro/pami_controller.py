@@ -17,11 +17,13 @@ class PamiController(Node):
     Controller that loads PAMI strategies and publishes them to appropriate topics
     """
     
-    def __init__(self, strategy_name: str, pami_folder_path: str, node_name='pami_controller'):
+    def __init__(self, strategy_name: str, pami_folder_path: str, node_name='pami_controller', team_color: str = None, target_order: int = 1):
         super().__init__(node_name)
         
         self.strategy_name = strategy_name
         self.pami_folder_path = pami_folder_path
+        self.team_color = str(team_color).lower() if team_color else None
+        self.target_order = int(target_order)
         
         # Dictionary to store publishers for each pami
         self.pami_publishers = {}
@@ -35,7 +37,9 @@ class PamiController(Node):
         # Load and publish PAMI strategies
         self.load_and_publish_pami_strategies()
         
-        self.get_logger().info(f'PAMI Controller initialized for strategy: {strategy_name}')
+        self.get_logger().info(
+            f'PAMI Controller initialized (strategy={strategy_name}, team_color={self.team_color}, target_order={self.target_order})'
+        )
     
     def load_pami_yaml(self, yaml_file: str) -> Dict[str, Any]:
         """
@@ -162,52 +166,108 @@ class PamiController(Node):
     
     def load_and_publish_pami_strategies(self):
         """
-        Load all PAMI YAML files from the folder and publish matching strategies
+        Load all PAMI YAML files from the folder and publish matching strategies.
+        Matching logic:
+          - order == target_order
+          - if team_color is provided, color must match team_color
         """
         if not os.path.exists(self.pami_folder_path):
             self.get_logger().error(f"PAMI folder not found: {self.pami_folder_path}")
             return
         
         self.get_logger().info(f"Loading PAMI strategies from: {self.pami_folder_path}")
-        self.get_logger().info(f"Filtering by strategy name: {self.strategy_name}")
+        self.get_logger().info(
+            f"Filtering by order={self.target_order}" +
+            (f", color={self.team_color}" if self.team_color else "")
+        )
         
         # Get all YAML files in the pami_strategies folder
         pami_files = list(Path(self.pami_folder_path).glob('*.yaml'))
         self.get_logger().info(f"Found {len(pami_files)} YAML files")
         
-        matched_count = 0
-        
+        matched_by_pami = {}
+
         for yaml_file in pami_files:
-            # Load the YAML file
             data = self.load_pami_yaml(str(yaml_file))
-            
             if data is None:
                 continue
-            
-            # Check if strategy_name matches
+
             file_strategy_name = data.get('strategy_name')
-            pami_number = data.get('pami_number')
             sequence = data.get('sequence', [])
-            
-            if file_strategy_name != self.strategy_name:
+
+            try:
+                pami_number = int(data.get('pami_number'))
+            except (ValueError, TypeError):
+                self.get_logger().warn(f"Invalid pami_number in {yaml_file.name}, skipping")
                 continue
-            
-            if pami_number is None:
-                self.get_logger().warn(f"No pami_number found in {yaml_file.name}, skipping")
+
+            if pami_number < 1 or pami_number > 7:
+                self.get_logger().warn(f"pami_number out of range in {yaml_file.name}: {pami_number}")
                 continue
-            
+
+            try:
+                file_order = int(data.get('order', 0))
+            except (ValueError, TypeError):
+                file_order = 0
+
+            file_color = str(data.get('color', '') or '').lower()
+            if not file_color:
+                name_low = str(file_strategy_name or '').lower()
+                if 'yellow' in name_low or 'jaune' in name_low or 'asfer' in name_low:
+                    file_color = 'yellow'
+                elif 'blue' in name_low or 'azreg' in name_low:
+                    file_color = 'blue'
+
+            # Keep only requested order
+            if file_order != self.target_order:
+                continue
+
+            # Optional color filtering
+            if self.team_color and file_color and file_color != self.team_color:
+                continue
+
+            # If duplicates exist, keep first one and warn
+            if pami_number in matched_by_pami:
+                prev_name = matched_by_pami[pami_number]['file']
+                self.get_logger().warn(
+                    f"Duplicate match for PAMI {pami_number}: keeping {prev_name}, skipping {yaml_file.name}"
+                )
+                continue
+
+            matched_by_pami[pami_number] = {
+                'file': yaml_file.name,
+                'strategy_name': file_strategy_name,
+                'color': file_color,
+                'order': file_order,
+                'sequence': sequence,
+            }
+
+        matched_count = 0
+
+        # Publish in strict numeric order from 1 to 7
+        for pami_number in range(1, 8):
+            if pami_number not in matched_by_pami:
+                self.get_logger().warn(
+                    f"No matching PAMI strategy found for pami_number={pami_number} "
+                    f"(order={self.target_order}{', color=' + self.team_color if self.team_color else ''})"
+                )
+                continue
+
+            entry = matched_by_pami[pami_number]
+            sequence = entry['sequence']
             matched_count += 1
+
             self.get_logger().info(f"\n{'='*60}")
-            self.get_logger().info(f"✓ Matched: {yaml_file.name}")
-            self.get_logger().info(f"  Strategy: {file_strategy_name}")
+            self.get_logger().info(f"✓ Matched: {entry['file']}")
+            self.get_logger().info(f"  Strategy: {entry['strategy_name']}")
             self.get_logger().info(f"  PAMI Number: {pami_number}")
+            self.get_logger().info(f"  Color: {entry['color'] or 'unknown'}")
+            self.get_logger().info(f"  Order: {entry['order']}")
             self.get_logger().info(f"  Sequence Length: {len(sequence)} commands")
-            
-            # Create strategy topic name
+
             strategy_topic = f'/pami{pami_number}/strategy'
             start_topic = f'/pami{pami_number}/start'
-            
-            # Create strategy publisher if it doesn't exist
+
             if pami_number not in self.pami_publishers:
                 self.pami_publishers[pami_number] = self.create_publisher(
                     Float32MultiArray,
@@ -215,8 +275,7 @@ class PamiController(Node):
                     10
                 )
                 self.get_logger().info(f"  Created publisher for topic: {strategy_topic}")
-            
-            # Create start publisher immediately (so topic exists from the beginning)
+
             if pami_number not in self.pami_start_publishers:
                 self.pami_start_publishers[pami_number] = self.create_publisher(
                     Int32,
@@ -224,17 +283,16 @@ class PamiController(Node):
                     10
                 )
                 self.get_logger().info(f"  Created publisher for topic: {start_topic}")
-            
-            # Convert sequence to float array
+
             float_array = self.sequence_to_float_array(sequence, pami_number)
-            
-            # Create and publish message
+
             msg = Float32MultiArray()
             msg.data = float_array
-            self.get_logger().info(f"  Strategy: {len(float_array)} floats ({len(sequence)} commands, raw encoding)")  
-            # Publish the strategy with retry logic
+            self.get_logger().info(
+                f"  Strategy: {len(float_array)} floats ({len(sequence)} commands, raw encoding)"
+            )
             self.publish_strategy_with_retry(pami_number, msg)
-        
+
         self.get_logger().info(f"\n{'='*60}")
         self.get_logger().info(f"✓ Loaded and published {matched_count} matching PAMI strategies")
         self.get_logger().info(f"{'='*60}\n")
@@ -322,10 +380,14 @@ def main(args=None):
     # Declare parameters
     temp_node.declare_parameter('strategy_name', '')
     temp_node.declare_parameter('pami_folder', '')
+    temp_node.declare_parameter('team_color', '')
+    temp_node.declare_parameter('target_order', 1)
     
     # Get parameter values
     strategy_name = temp_node.get_parameter('strategy_name').value
     pami_folder = temp_node.get_parameter('pami_folder').value
+    team_color = temp_node.get_parameter('team_color').value
+    target_order = temp_node.get_parameter('target_order').value
     
     # Destroy temp node
     temp_node.destroy_node()
@@ -343,7 +405,12 @@ def main(args=None):
         return
     
     # Create PAMI controller
-    pami_controller = PamiController(strategy_name, pami_folder)
+    pami_controller = PamiController(
+        strategy_name,
+        pami_folder,
+        team_color=team_color,
+        target_order=target_order
+    )
     
     # Keep node alive for a bit to ensure messages are sent
     rclpy.spin_once(pami_controller, timeout_sec=1.0)

@@ -22,6 +22,7 @@ class PamiTestManager(Node):
         
         # Strategy name from YAML
         self.strategy_name = None
+        self.strategy_color = None
         
         # PAMI controller instance
         self.pami_controller = None
@@ -45,6 +46,7 @@ class PamiTestManager(Node):
                 
                 # Get strategy name (try both 'name' and 'strategy_name' fields)
                 self.strategy_name = data.get('name') or data.get('strategy_name')
+                self.strategy_color = data.get('color')
                 
                 if not self.strategy_name:
                     self.get_logger().error("No 'name' or 'strategy_name' found in YAML file")
@@ -78,7 +80,9 @@ class PamiTestManager(Node):
         self.pami_controller = PamiController(
             self.strategy_name, 
             pami_folder, 
-            'pami_controller_test'
+            'pami_controller_test',
+            team_color=self.strategy_color,
+            target_order=1,
         )
         
         return True
