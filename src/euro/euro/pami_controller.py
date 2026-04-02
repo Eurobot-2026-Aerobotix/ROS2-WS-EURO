@@ -17,7 +17,7 @@ class PamiController(Node):
     Controller that loads PAMI strategies and publishes them to appropriate topics
     """
     
-    def __init__(self, strategy_name: str, pami_folder_path: str, node_name='pami_controller', team_color: str = None, target_order: int = 1, auto_publish: bool = True):
+    def __init__(self, strategy_name: str, pami_folder_path: str, node_name='pami_controller', team_color: str = None, target_order: int = 1, auto_publish: bool = True, selected_pamis: List[int] = None):
         super().__init__(node_name)
         
         self.strategy_name = strategy_name
@@ -25,6 +25,7 @@ class PamiController(Node):
         self.team_color = str(team_color).lower() if team_color else None
         self.target_order = int(target_order)
         self.auto_publish = bool(auto_publish)
+        self.selected_pamis = self._normalize_pami_numbers(selected_pamis)
         
         # Dictionary to store publishers for each pami
         self.pami_publishers = {}
@@ -40,8 +41,26 @@ class PamiController(Node):
             self.load_and_publish_pami_strategies()
         
         self.get_logger().info(
-            f'PAMI Controller initialized (strategy={strategy_name}, team_color={self.team_color}, target_order={self.target_order}, auto_publish={self.auto_publish})'
+            f'PAMI Controller initialized (strategy={strategy_name}, team_color={self.team_color}, target_order={self.target_order}, auto_publish={self.auto_publish}, selected_pamis={self.selected_pamis or "all"})'
         )
+
+    def _normalize_pami_numbers(self, numbers: List[int]):
+        """
+        Normalize requested PAMI numbers into a sorted unique list in range [1..7].
+        """
+        if not numbers:
+            return []
+
+        normalized = set()
+        for n in numbers:
+            try:
+                value = int(n)
+            except (ValueError, TypeError):
+                continue
+            if 1 <= value <= 7:
+                normalized.add(value)
+
+        return sorted(normalized)
     
     def load_pami_yaml(self, yaml_file: str) -> Dict[str, Any]:
         """
@@ -245,9 +264,10 @@ class PamiController(Node):
             }
 
         matched_count = 0
+        target_pamis = self.selected_pamis if self.selected_pamis else list(range(1, 8))
 
-        # Publish in strict numeric order from 1 to 7
-        for pami_number in range(1, 8):
+        # Publish in strict numeric order
+        for pami_number in target_pamis:
             if pami_number not in matched_by_pami:
                 self.get_logger().warn(
                     f"No matching PAMI strategy found for pami_number={pami_number} "
@@ -343,14 +363,19 @@ class PamiController(Node):
         self.get_logger().error(f"❌ Failed to confirm start for PAMI {number} after {max_retries} attempts")
         return False
     
-    def start_pamis(self):
+    def start_pamis(self, pami_numbers: List[int] = None):
         """
-        Send start signal to all PAMI robots (PAMI 1 through 6) in parallel threads
+        Send start signal to selected PAMIs in parallel threads.
+        If no list is provided, uses controller selection; otherwise all 1..7.
         """
-        self.get_logger().info("🚀 Starting all PAMIs in parallel...")
+        selected = self._normalize_pami_numbers(pami_numbers)
+        if not selected:
+            selected = self.selected_pamis if self.selected_pamis else list(range(1, 8))
+
+        self.get_logger().info(f"🚀 Starting PAMIs in parallel: {selected}")
         
         threads = []
-        for pami_number in range(1, 8):  # PAMIs 1 to 6
+        for pami_number in selected:
             thread = threading.Thread(
                 target=self.start_pami,
                 args=(pami_number,),
