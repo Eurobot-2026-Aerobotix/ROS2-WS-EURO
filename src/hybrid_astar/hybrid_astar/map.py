@@ -133,6 +133,9 @@ class MapManager:
         self.retry_client = None
         self.retry_service_name = ""
 
+        # Automatic source handover guard (web -> aruco)
+        self.source_switch_in_progress = False
+
         # Short-pattern retry: re-check batches whose locked pattern has < 4 elements
         self.short_pattern_ids: set = set()
         self.short_pattern_retry_timer = None
@@ -1043,6 +1046,15 @@ class MapManager:
 
     def _trigger_update_map_async(self, can_lock_baseline: bool = True) -> tuple[bool, str, str]:
         """Trigger the same asynchronous GetStableBatches flow as /update_map."""
+        # If we are currently using simulation batches and ArUco service becomes available,
+        # migrate source by running: clear_map -> reset(rrr) -> update_map.
+        if self.retry_service_name == "/aruco_mapper/get_stable_batches_web" and self.get_stable_batches_client.service_is_ready():
+            if self.source_switch_in_progress:
+                return True, "Source switch web->aruco already in progress", "/aruco_mapper/get_stable_batches"
+
+            if self._switch_from_web_to_aruco_async():
+                return True, "Switching source web->aruco (clear_map -> reset(rrr) -> update_map)", "/aruco_mapper/get_stable_batches"
+
         client_to_use = None
         service_name = ""
 
@@ -1079,6 +1091,69 @@ class MapManager:
         message_type = "First" if self.first_update_map else "Incremental"
         return True, f"{message_type} map update triggered from {service_name} (processing asynchronously)", service_name
         return response
+
+    def _switch_from_web_to_aruco_async(self) -> bool:
+        """Switch active batch source from web simulation to ArUco when ArUco becomes available.
+
+        Flow: clear_map -> reset_map with 'rrr' filter (on ArUco) -> normal update_map flow.
+        """
+        if self.source_switch_in_progress:
+            return False
+
+        if not self.get_stable_batches_client.service_is_ready():
+            return False
+
+        self.source_switch_in_progress = True
+        self.node.get_logger().info(
+            "🔁 ArUco service is now available while using WEB source - switching source: clear_map -> reset(rrr) -> update_map"
+        )
+
+        # 1) Clear current map/state first
+        clear_req = Trigger.Request()
+        clear_resp = Trigger.Response()
+        clear_resp = self.handle_clear_map(clear_req, clear_resp)
+        if not clear_resp.success:
+            self.node.get_logger().error("❌ Source switch aborted: clear_map failed")
+            self.source_switch_in_progress = False
+            return False
+
+        # 2) Reset with rrr filter on ArUco service
+        self.retry_client = self.get_stable_batches_client
+        self.retry_service_name = "/aruco_mapper/get_stable_batches"
+
+        stable_request = GetStableBatches.Request()
+        stable_request.batch_types_filter = "rrr"
+        stable_request.specific_known_id = ""
+        stable_request.only_locked_baselines = False
+
+        future = self.retry_client.call_async(stable_request)
+        future.add_done_callback(self._handle_source_switch_reset_done)
+        return True
+
+    def _handle_source_switch_reset_done(self, future):
+        """Finalize web->aruco source switch after reset(rrr), then trigger normal update_map."""
+        try:
+            # Process reset response through normal map-update processing pipeline
+            self._handle_get_stable_batches_response(
+                future,
+                None,
+                self.retry_client,
+                self.retry_service_name,
+                None,
+                False,
+                False,
+            )
+
+            # 3) Continue with the usual update_map flow
+            success, message, _service_name = self._trigger_update_map_async(can_lock_baseline=True)
+            if success:
+                self.node.get_logger().info(f"✅ Source switch completed: {message}")
+            else:
+                self.node.get_logger().warn(f"⚠️ Source switch follow-up update_map failed: {message}")
+        except Exception as e:
+            self.node.get_logger().error(f"❌ Source switch reset callback failed: {e}")
+        finally:
+            self.source_switch_in_progress = False
 
     def handle_reset_map(self, request: Trigger.Request, response: Trigger.Response) -> Trigger.Response:
         """

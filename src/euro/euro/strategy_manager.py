@@ -18,7 +18,7 @@ import math
 from euro.pathfinder_controller import PathfinderClient
 from euro.simple_map import Map
 from euro.task_scheduler import TaskScheduler, Task
-from euro.strategy_executor import robot_status, lidar_status, stm32_task, front_task, back_task,rasp_pi_task, path_planning_task, IDLE, EMERGENCY_STOP
+from euro.strategy_executor import robot_status, lidar_status, stm32_task, front_task, back_task,rasp_pi_task, pami_task, path_planning_task, IDLE, EMERGENCY_STOP
 import euro.strategy_executor as executor_module  # Import module to access SHUTDOWN_REQUESTED and other globals
 
 # Global variable to store team color
@@ -47,7 +47,8 @@ class StrategyManager(Node):
             'STM': deque(),
             'ESP_front': deque(),
             'ESP_back': deque(),
-            'RASP_PI': deque()
+            'RASP_PI': deque(),
+            'PAMI': deque()
         }
         
         # Flag to pause task loading during pathfinding
@@ -641,6 +642,12 @@ def reset_systems(pneumatic_controller,front_controller,back_controller,stm32_co
     
 def main(args=None):
     import sys
+
+    def parse_bool(value):
+        if value is None:
+            return False
+        return str(value).strip().lower() in ("1", "true", "yes", "y", "on")
+
     rclpy.init(args=args)
     
     # Import controllers
@@ -744,7 +751,13 @@ def main(args=None):
     )
     back_thread.start()
     
-    # Get tasks file path and load PAMI controller before starting rasp_pi_thread
+    # Get tasks file path and optional PAMI publish toggle before starting rasp_pi_thread
+    # Usage:
+    #   ros2 run euro strategy_manager <tasks_file> <publish_pami>
+    # Example:
+    #   ros2 run euro strategy_manager /path/to/strategy.yaml true
+    publish_pami = False
+
     # Check if a YAML file path was provided as argument
     if len(sys.argv) > 1:
         tasks_file = sys.argv[1]
@@ -757,6 +770,12 @@ def main(args=None):
         except:
             package_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             tasks_file = os.path.join(package_dir, 'config', 'tasks.yaml')
+
+    # Optional second positional argument: publish PAMI strategies or not
+    if len(sys.argv) > 2:
+        publish_pami = parse_bool(sys.argv[2])
+
+    strategy.get_logger().info(f"PAMI publish mode: {'ENABLED' if publish_pami else 'DISABLED'}")
     
     # Load tasks
     try:
@@ -774,9 +793,18 @@ def main(args=None):
         pami_folder = os.path.join(os.path.dirname(tasks_file), '..', 'pami_strategies')
         pami_folder = os.path.abspath(pami_folder)
         
-        if os.path.exists(pami_folder):
+        if publish_pami and os.path.exists(pami_folder):
             from euro.pami_controller import PamiController
-            #pami_ctrl = PamiController(strategy.strategy_name, pami_folder, 'pami_controller_internal')
+            pami_ctrl = PamiController(
+                strategy.strategy_name,
+                pami_folder,
+                'pami_controller_internal',
+                team_color=strategy.color,
+                target_order=1,
+                auto_publish=False,
+            )
+        elif publish_pami and not os.path.exists(pami_folder):
+            strategy.get_logger().warning(f"PAMI folder not found, disabling PAMI publish: {pami_folder}")
             pami_ctrl = None
         else:
             pami_ctrl = None
@@ -788,7 +816,19 @@ def main(args=None):
             daemon=True
         )
         rasp_pi_thread.start()
-        #pami_ctrl.load_and_publish_pami_strategies()
+
+        # Start dedicated PAMI thread so publish/start do not block strategy flow
+        pami_thread = threading.Thread(
+            target=pami_task,
+            args=(strategy, pami_ctrl),
+            daemon=True
+        )
+        pami_thread.start()
+
+        # Queue PAMI strategy publish at startup (non-blocking from main flow)
+        if pami_ctrl:
+            strategy.queues['PAMI'].append({'command': 'publish_strategies'})
+            strategy.get_logger().info("📤 Queued PAMI strategy publish at startup")
         
         # Spin executor briefly to initialize publishers before sending reset
         for _ in range(5):
@@ -926,6 +966,7 @@ def main(args=None):
             ('Front Task', front_thread),
             ('Back Task', back_thread),
             ('RaspPi Task', rasp_pi_thread),
+            ('PAMI Task', pami_thread),
             ('Task Executor', task_executor_thread)
         ]
         
