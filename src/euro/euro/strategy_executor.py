@@ -917,7 +917,7 @@ def pick_up(controller,pneumatic,strategy,front):
     if SHUTDOWN_REQUESTED:
         return
     controller.kabech(0)
-def put_down(controller,pneumatic,strategy,front):
+def put_down(controller,pneumatic,strategy,front,params=None):
     global ESP_FRONT_IDLE
     global ESP_BACK_IDLE
     global color_pt_front
@@ -927,6 +927,9 @@ def put_down(controller,pneumatic,strategy,front):
     if SHUTDOWN_REQUESTED:
         return
     
+    params = params if isinstance(params, dict) else {}
+    insert_offset_mm = float(params.get('putdown_insert_distance_mm', 0.0) or 0.0)
+
     color_pattern = color_pt_front if front else color_pt_back
     strategy.get_logger().info(f"color_pattern {color_pattern}")
     color_to_N20=int(str(color_pattern).replace('1', '4').replace('0','1'))
@@ -972,6 +975,7 @@ def put_down(controller,pneumatic,strategy,front):
             x_mm=x_mm,
             y_mm=y_mm,
             theta_deg=theta_deg,
+            insert_offset_mm=insert_offset_mm,
         )
 
         if success:
@@ -1028,7 +1032,7 @@ def front_task(strategy, front_controller=None,pneumatic_controller=None):
                     front_controller.dawer(1)
                     front_controller.n20(cmd_to_n20)
             elif command =='put_down':
-                put_down(front_controller,pneumatic_controller,strategy,True)
+                put_down(front_controller,pneumatic_controller,strategy,True,params)
             elif command =='pick_up':
                 pick_up(front_controller,pneumatic_controller,strategy,True)
             # Check if queue not empty before popping (race condition with queue.clear())
@@ -1062,7 +1066,7 @@ def back_task(strategy, back_controller=None,pneumatic_controller=None):
                     back_controller.dawer(1)
                     back_controller.n20(cmd_to_n20)
             elif command =='put_down':
-                put_down(back_controller,pneumatic_controller,strategy,False)
+                put_down(back_controller,pneumatic_controller,strategy,False,params)
             elif command =='pick_up':
                 pick_up(back_controller,pneumatic_controller,strategy,False)
             # Check if queue not empty before popping (race condition with queue.clear())

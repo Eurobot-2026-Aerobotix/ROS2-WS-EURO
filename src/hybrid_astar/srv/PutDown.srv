@@ -5,6 +5,7 @@ bool use_pose     # true: use provided pose fields below; false: use TF/latest p
 float64 x_mm      # robot x in mm (used when use_pose=true)
 float64 y_mm      # robot y in mm (used when use_pose=true)
 float64 theta_deg # robot heading in degrees (used when use_pose=true)
+float64 insert_offset_mm # extra offset applied toward robot heading for dynamic put_down flows
 ---
 # Response
 bool success

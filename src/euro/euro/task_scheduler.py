@@ -936,7 +936,10 @@ class TaskScheduler:
         task_sequence.append({
             'device': esp_device,
             'command': 'put_down',
-            'params': {},
+            'params': {
+                'from_task_scheduler': True,
+                'putdown_insert_distance_mm': float(insert_distance_mm) if zone_type == 'B' else 0.0,
+            },
             'wait': True
         })
 

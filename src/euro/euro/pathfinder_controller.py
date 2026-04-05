@@ -733,6 +733,7 @@ class PathfinderClient(Node):
         x_mm: float = 0.0,
         y_mm: float = 0.0,
         theta_deg: float = 0.0,
+        insert_offset_mm: float = 0.0,
     ):
         """
         Request /put_down to add a 4-member placed batch near robot pose.
@@ -767,6 +768,7 @@ class PathfinderClient(Node):
         request.x_mm = float(x_mm)
         request.y_mm = float(y_mm)
         request.theta_deg = float(theta_deg)
+        request.insert_offset_mm = float(insert_offset_mm)
 
         future = self.put_down_client.call_async(request)
         rclpy.spin_until_future_complete(self, future, timeout_sec=5.0)
