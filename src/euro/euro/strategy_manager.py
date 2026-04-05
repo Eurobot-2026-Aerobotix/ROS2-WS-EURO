@@ -309,7 +309,7 @@ class StrategyManager(Node):
                 #remove tracked task if no longer relevant
                 if hasattr(self, 'task_scheduler') and self.task_scheduler is not None:
                     self.task_scheduler.untrack_task()
-            if tracked_type is not None:
+            if tracked_type is not None and tracked_target_id:
                 tracked_task = Task(
                     target_id=tracked_target_id,
                     type=tracked_type,
@@ -319,6 +319,10 @@ class StrategyManager(Node):
                 self.task_scheduler.track_task(tracked_task)
                 self.get_logger().info(
                     f"🧭 task_scheduler.track_task -> type={tracked_type}, target_id={tracked_target_id or 'unknown'}"
+                )
+            elif tracked_type is not None:
+                self.get_logger().warning(
+                    f"⚠️ Skipping task tracking update: no batch id resolved for last_task_command={self.last_task_command}"
                 )
         
         if success and self.last_task_command =='pick_up' :
