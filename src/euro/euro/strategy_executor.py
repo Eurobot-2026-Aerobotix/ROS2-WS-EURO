@@ -50,6 +50,9 @@ PREPARING_PATH = False  # Flag indicating path preparation is in progress
 return_home_triggered = False  # Flag to ensure return home logic only triggers once
 known_id_front=None
 known_id_back=None
+STEAL_LOOP_ACTIVE = False
+STEAL_LOOP_RUNNING = False
+STEAL_REPEAT_COUNT = 1
 
 def path_planning_task(strategy, lidar, round_timer, pneumatic_controller=None, front_controller=None, back_controller=None,stm32_controller=None):
     """Dedicated thread for handling return home at 90s"""
@@ -60,6 +63,9 @@ def path_planning_task(strategy, lidar, round_timer, pneumatic_controller=None, 
     global SYSTEMS_IDLE_COUNT
     global replanning
     global return_home_triggered
+    global STEAL_LOOP_ACTIVE
+    global STEAL_LOOP_RUNNING
+    global STEAL_REPEAT_COUNT
     strategy.get_logger().info("🏠 Return home monitor thread started")
     return_home_triggered = False
     reset_stm_triggered=False
@@ -125,6 +131,48 @@ def path_planning_task(strategy, lidar, round_timer, pneumatic_controller=None, 
                 else:
                     strategy.get_logger().warning(f"⚠️ Return home path attempt #{attempt_count} failed - retrying...")
                     time.sleep(0.5)
+
+        if STEAL_LOOP_ACTIVE and not STEAL_LOOP_RUNNING:
+            STEAL_LOOP_RUNNING = True
+            try:
+                repeat_count = max(1, int(STEAL_REPEAT_COUNT))
+            except (TypeError, ValueError):
+                repeat_count = 1
+
+            try:
+                strategy.get_logger().info(
+                    f"🏴‍☠️ Path-planning steal loop started ({repeat_count} time(s))"
+                )
+                for attempt in range(1, repeat_count + 1):
+                    if not rclpy.ok() or SHUTDOWN_REQUESTED or strategy.end_game or return_home_triggered or not STEAL_LOOP_ACTIVE:
+                        strategy.get_logger().warning(
+                            "⚠️ Stopping path-planning steal loop due to shutdown/end-game"
+                        )
+                        break
+
+                    strategy.get_logger().info(
+                        f"🏴‍☠️ Path-planning steal attempt {attempt}/{repeat_count}"
+                    )
+                    success = strategy.handle_steal_command(params=[repeat_count, 0], wait=True)
+                    if not success:
+                        strategy.get_logger().warning(
+                            f"⚠️ Path-planning steal attempt {attempt}/{repeat_count} failed"
+                        )
+                        break
+
+                    if strategy.end_game:
+                        strategy.get_logger().info(
+                            f"🏁 End-game reached during path-planning steal loop at attempt {attempt}/{repeat_count}"
+                        )
+                        break
+
+                strategy.get_logger().info(
+                    f"✅ Path-planning steal loop finished ({repeat_count} time(s))"
+                )
+            finally:
+                STEAL_LOOP_ACTIVE = False
+                STEAL_LOOP_RUNNING = False
+                STEAL_REPEAT_COUNT = 1
         
         time.sleep(0.05)  # 50ms for quicker IDLE updates
 
@@ -1122,6 +1170,8 @@ def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=No
     global IDLE
     global IDLE_FOR_SYSTEMS
     global return_home_triggered
+    global STEAL_LOOP_ACTIVE
+    global STEAL_REPEAT_COUNT
     while rclpy.ok() and not SHUTDOWN_REQUESTED:
         # Check if there are commands in the queue
         if len(strategy.queues['RASP_PI']) > 0:
@@ -1229,39 +1279,11 @@ def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=No
                             f"⚠️ Steal repeat count is {repeat_count}; skipping steal execution"
                         )
                     else:
+                        STEAL_REPEAT_COUNT = repeat_count
+                        STEAL_LOOP_ACTIVE = True
                         strategy.get_logger().info(
-                            f"🏴‍☠️ Executing steal {repeat_count} time(s) from params={params}"
+                            f"🏴‍☠️ Queued steal loop for path-planning task ({repeat_count} time(s))"
                         )
-
-                        all_success = True
-                        for attempt in range(1, repeat_count + 1):
-                            if not rclpy.ok() or SHUTDOWN_REQUESTED or strategy.end_game:
-                                strategy.get_logger().warning(
-                                    "⚠️ Stopping repeated steal execution due to shutdown/end-game"
-                                )
-                                all_success = False
-                                break
-
-                            strategy.get_logger().info(
-                                f"🏴‍☠️ Steal attempt {attempt}/{repeat_count}"
-                            )
-                            success = strategy.handle_steal_command(params=params, wait=True)
-                            if not success:
-                                strategy.get_logger().warning(
-                                    f"⚠️ Steal attempt {attempt}/{repeat_count} did not generate executable tasks"
-                                )
-                                all_success = False
-                                break
-                            if strategy.end_game:
-                                strategy.get_logger().info(
-                                    f"🏁 End-game reached after steal attempt {attempt}/{repeat_count}; stopping loop"
-                                )
-                                break
-
-                        if all_success:
-                            strategy.get_logger().info(
-                                f"✅ RASP_PI steal command completed {repeat_count} time(s)"
-                            )
                 except Exception as e:
                     strategy.get_logger().error(f"❌ Error handling RASP_PI steal command: {e}")
 

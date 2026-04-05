@@ -549,6 +549,14 @@ class StrategyManager(Node):
                     if not success:
                         self.get_logger().error(f"❌ Failed loading generated steal task: {generated_task['name']}")
                         return False
+
+                    # Enforce task-by-task ordering for generated flows (especially return-home):
+                    # do not enqueue the next generated task until the current one is fully done.
+                    self.wait_for_all_queues_empty(ignore_rasp_pi=False)
+
+                    if executor_module.SHUTDOWN_REQUESTED or self.end_game:
+                        self.get_logger().warning("⚠️ Stopping generated steal flow (shutdown/end-game)")
+                        return False
                 finally:
                     if generated_task in self.tasks:
                         self.tasks.remove(generated_task)
@@ -558,7 +566,7 @@ class StrategyManager(Node):
         generation_attempt = 0
 
         while generated_tasks is None:
-            if executor_module.SHUTDOWN_REQUESTED or self.end_game:
+            if executor_module.SHUTDOWN_REQUESTED or self.end_game or getattr(executor_module, 'return_home_triggered', False):
                 self.get_logger().warning("⚠️ Steal generation aborted (shutdown/end-game)")
                 return False
 
@@ -593,12 +601,9 @@ class StrategyManager(Node):
         if not _enqueue_generated_tasks(generated_tasks, 1):
             return False
 
-        # Execute generated steal tasks before returning.
-        self.wait_for_all_queues_empty(ignore_rasp_pi=True)
-
         # keep compatibility with caller's wait flag
         if wait:
-            self.wait_for_all_queues_empty(ignore_rasp_pi=True)
+            self.wait_for_all_queues_empty(ignore_rasp_pi=False)
 
         if contains_return_home_final:
             self.end_game = True
