@@ -953,25 +953,29 @@ class TaskScheduler:
             }
         }
 
-        # Final retreat task (always appended as the last task).
-        # Retreat direction is away from zone center.
-        away_dx = target_x - center_x
-        away_dy = target_y - center_y
-        away_norm = math.hypot(away_dx, away_dy)
-        if away_norm <= 1e-6:
-            # Fallback when target ~= center: retreat opposite to facing direction.
-            away_dx = -math.cos(theta_to_center_rad)
-            away_dy = -math.sin(theta_to_center_rad)
-            away_norm = 1.0
-        away_ux = away_dx / away_norm
-        away_uy = away_dy / away_norm
+        # Build geometric direction vectors from dropoff center so movement direction
+        # remains correct for both front and back devices.
+        to_center_dx = center_x - target_x
+        to_center_dy = center_y - target_y
+        to_center_norm = math.hypot(to_center_dx, to_center_dy)
+        if to_center_norm <= 1e-6:
+            # Fallback when target ~= center: use facing direction.
+            to_center_dx = math.cos(theta_to_center_rad)
+            to_center_dy = math.sin(theta_to_center_rad)
+            to_center_norm = 1.0
+        to_center_ux = to_center_dx / to_center_norm
+        to_center_uy = to_center_dy / to_center_norm
 
-        # If type B inserts toward center first, retreat starts from insert end-point.
+        # Retreat direction is always away from zone center.
+        away_ux = -to_center_ux
+        away_uy = -to_center_uy
+
+        # If type B inserts toward center first, retreat starts from insertion endpoint.
         retreat_start_x = target_x
         retreat_start_y = target_y
         if zone_type == 'B':
-            retreat_start_x = target_x + max(0.0, float(insert_distance_mm)) * math.cos(theta_to_center_rad)
-            retreat_start_y = target_y + max(0.0, float(insert_distance_mm)) * math.sin(theta_to_center_rad)
+            retreat_start_x = target_x + max(0.0, float(insert_distance_mm)) * to_center_ux
+            retreat_start_y = target_y + max(0.0, float(insert_distance_mm)) * to_center_uy
 
         retreat_dist = max(0.0, float(retreat_distance_mm))
         retreat_x = retreat_start_x + retreat_dist * away_ux
@@ -1005,8 +1009,8 @@ class TaskScheduler:
 
         dist = max(0.0, float(insert_distance_mm))
         # Always insert toward the center, regardless of front/back device.
-        insert_x = target_x + dist * math.cos(theta_to_center_rad)
-        insert_y = target_y + dist * math.sin(theta_to_center_rad)
+        insert_x = target_x + dist * to_center_ux
+        insert_y = target_y + dist * to_center_uy
 
         putdown_insert_task = {
             'name': f'putdown_insert_{normalized_id}_{esp_device.split("_")[1]}',
