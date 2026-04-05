@@ -27,7 +27,7 @@ class TaskScheduler:
     # Keep these thresholds in seconds as well.
     allow_fx = False
     must_dropoff_time = 5.0
-    must_go_home_time = 6.0  # travel budget at 1m distance from nest (seconds)
+    must_go_home_time = 25.0  # travel budget at 1m distance from nest (seconds)
     max_distance_for_predict_enemy_goal = 1500.0 # in meters
     drop_off_distance = 400.0
     retreat_distance = 250.0
@@ -1085,6 +1085,12 @@ class TaskScheduler:
         """
         tasks: List[Dict[str, Any]] = []
         robot_color = str(self.map.robot_color or "").lower()
+        if robot_color not in ("yellow", "blue"):
+            if self.ros_node is not None:
+                self.ros_node.get_logger().warning(
+                    f"⚠️ Return home: unknown robot color '{robot_color}', defaulting to yellow flow"
+                )
+            robot_color = "yellow"
 
         # Blue return-home: path to staging point, wait end-game, then bezier to blue home.
         if robot_color == "blue":
@@ -1151,7 +1157,7 @@ class TaskScheduler:
                         'device': 'RASP_PI',
                         'command': 'wait_end_game',
                         'params': [13],
-                        'wait': False
+                        'wait': True
                     }
                 ],
                 'global_goal': {
@@ -1252,14 +1258,14 @@ class TaskScheduler:
                 {
                     'device': 'RASP_PI',
                     'command': 'wait_end_game',
-                    'params': [12],
-                    'wait': False
+                    'params': [13],
+                    'wait': True
                 }
             ],
             'global_goal': {
-                'x': float(self.map.robot_position.x),
-                'y': float(self.map.robot_position.y),
-                'theta': float(self.map.robot_position.theta)
+                'x': 803.0,
+                'y': 879.0,
+                'theta': 0.0
             }
         }
         tasks.append(wait_task)
@@ -1292,7 +1298,6 @@ class TaskScheduler:
             }
         }
         tasks.append(home_task)
-        
         return tasks
 
     def get_optimal_task(self, start_pose: Optional[Dict[str, float]] = None) -> Optional[List[Dict[str, Any]]]:

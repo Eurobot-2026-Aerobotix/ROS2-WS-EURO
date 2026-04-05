@@ -585,6 +585,11 @@ class StrategyManager(Node):
 
         self.get_logger().info(f"✅ Generated {len(generated_tasks)} task(s) for steal command")
 
+        contains_return_home_final = any(
+            str(task.get('name', '')).startswith('return_home_bezier')
+            for task in generated_tasks
+        )
+
         if not _enqueue_generated_tasks(generated_tasks, 1):
             return False
 
@@ -594,6 +599,12 @@ class StrategyManager(Node):
         # keep compatibility with caller's wait flag
         if wait:
             self.wait_for_all_queues_empty(ignore_rasp_pi=True)
+
+        if contains_return_home_final:
+            self.end_game = True
+            self.get_logger().info(
+                "🏁 Final return-home bezier completed; stopping further task execution loop"
+            )
 
         return True
     

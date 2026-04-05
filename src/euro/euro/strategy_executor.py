@@ -69,7 +69,8 @@ def path_planning_task(strategy, lidar, round_timer, pneumatic_controller=None, 
             strategy.get_logger().info("⏰ Game time reached 100s -    resetting stm")
             stm32_controller.reset()
             reset_stm_triggered=True
-        if round_timer.time() >= 90.0 and round_timer.time() <= 100.0 and not return_home_triggered:
+            strategy.end_game = True
+        if round_timer.time() >= 190.0 and round_timer.time() <= 100.0 and not return_home_triggered:
             return_home_triggered = True
             strategy.end_game = True
             strategy.get_logger().warning("⏰ Only 10 seconds left! Returning home to (250, 225)...")
@@ -1234,9 +1235,9 @@ def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=No
 
                         all_success = True
                         for attempt in range(1, repeat_count + 1):
-                            if not rclpy.ok() or SHUTDOWN_REQUESTED:
+                            if not rclpy.ok() or SHUTDOWN_REQUESTED or strategy.end_game:
                                 strategy.get_logger().warning(
-                                    "⚠️ Stopping repeated steal execution due to shutdown"
+                                    "⚠️ Stopping repeated steal execution due to shutdown/end-game"
                                 )
                                 all_success = False
                                 break
@@ -1250,6 +1251,11 @@ def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=No
                                     f"⚠️ Steal attempt {attempt}/{repeat_count} did not generate executable tasks"
                                 )
                                 all_success = False
+                                break
+                            if strategy.end_game:
+                                strategy.get_logger().info(
+                                    f"🏁 End-game reached after steal attempt {attempt}/{repeat_count}; stopping loop"
+                                )
                                 break
 
                         if all_success:
