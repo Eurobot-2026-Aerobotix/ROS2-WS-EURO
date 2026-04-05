@@ -1245,7 +1245,7 @@ class HybridAStarNode(Node):
         insert_offset_mm = float(getattr(request, 'insert_offset_mm', 0.0) or 0.0)
 
         # Forward offset: 150mm + 50mm, then center by +half crate length
-        robot_to_batch_face_mm = 150.0 + 100.0 + insert_offset_mm
+        robot_to_batch_face_mm = 150.0 + 50.0 + insert_offset_mm
         center_forward_offset_mm = robot_to_batch_face_mm + (crate_length_mm / 2.0)
         if direction == 0:
             center_forward_offset_mm *= -1.0
