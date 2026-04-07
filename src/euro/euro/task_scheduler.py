@@ -28,7 +28,8 @@ class TaskScheduler:
     allow_fx = False
     must_dropoff_time = 5.0
     must_go_home_time = 25.0  # travel budget at 1m distance from nest (seconds)
-    max_distance_for_predict_enemy_goal = 1500.0 # in meters
+    must_leave_pamiyeet_alone_time = 20.0
+    max_distance_for_predict_enemy_goal = 1500.0 # in mm
     drop_off_distance = 400.0
     retreat_distance = 250.0
     distance_from_wall = 200.0
@@ -576,41 +577,75 @@ class TaskScheduler:
         enemy_speed = self.map.enemy_speed
 
         speed_mag = math.hypot(enemy_speed.x, enemy_speed.y)
-        if speed_mag < 1e-3:
-            return
-
         angle_tolerance_deg = 30.0
 
-        # Prefer currently tracked pickups when available, otherwise fallback to predefined pickups.
-        pickup_targets: Dict[str, Dict[str, float]] = {}
-        for batch_id, batch in self.map.predefined_batch_positions.items():
-            pickup_targets[batch_id] = {"x": float(batch["x"]), "y": float(batch["y"])}
+        # Build coherent target set:
+        # 1) Prefer live batch positions when available.
+        # 2) Fallback to predefined pickup positions when live detections are missing.
+        # 3) Add dropoffs only for IDs not already represented to avoid duplicate-ID ambiguity.
+        target_map: Dict[str, Tuple[float, float]] = {}
 
-        # Build candidate list: all pickups + all drop-offs.
-        candidates: List[Dict[str, float]] = []
-        for target_id, target in pickup_targets.items():
-            candidates.append({"id": target_id, "x": target["x"], "y": target["y"]})
-        for target_id, target in self.map.drop_offs.items():
-            candidates.append({"id": target_id, "x": float(target["x"]), "y": float(target["y"])})
+        if getattr(self.map, 'batches', None):
+            for batch_id, batch in self.map.batches.items():
+                target_map[str(batch_id)] = (float(batch.x), float(batch.y))
+        else:
+            for batch_id, batch in self.map.predefined_batch_positions.items():
+                target_map[str(batch_id)] = (float(batch['x']), float(batch['y']))
+
+        for dropoff_id, dropoff in self.map.drop_offs.items():
+            dropoff_key = str(dropoff_id)
+            if dropoff_key not in target_map:
+                target_map[dropoff_key] = (float(dropoff['x']), float(dropoff['y']))
+
+        if not target_map:
+            return
+
+        candidates: List[Dict[str, float]] = [
+            {'id': target_id, 'x': target_xy[0], 'y': target_xy[1]}
+            for target_id, target_xy in target_map.items()
+        ]
+
+        # If enemy is almost stationary, predict nearest plausible target.
+        if speed_mag < 1e-3:
+            nearest_id = "unknown"
+            nearest_distance = float("inf")
+            for target in candidates:
+                distance = math.hypot(target['x'] - enemy_pos.x, target['y'] - enemy_pos.y)
+                if distance < nearest_distance and distance < float(self.max_distance_for_predict_enemy_goal):
+                    nearest_distance = distance
+                    nearest_id = str(target['id'])
+            self.predicted_enemy_goal = nearest_id
+            return
 
         best_id = "unknown"
-        best_distance = float("inf")
+        best_angle = float('inf')
+        best_distance = float('inf')
 
         for target in candidates:
-            to_target_x = target["x"] - enemy_pos.x
-            to_target_y = target["y"] - enemy_pos.y
+            to_target_x = target['x'] - enemy_pos.x
+            to_target_y = target['y'] - enemy_pos.y
             distance = math.hypot(to_target_x, to_target_y)
-            if distance < 1e-3:
+            if distance < 1e-3 or distance >= float(self.max_distance_for_predict_enemy_goal):
                 continue
 
             dot = (enemy_speed.x * to_target_x) + (enemy_speed.y * to_target_y)
             cos_angle = dot / (speed_mag * distance)
             cos_angle = max(-1.0, min(1.0, cos_angle))
-            angle_deg = math.degrees(math.acos(cos_angle))
+            angle_deg = abs(math.degrees(math.acos(cos_angle)))
 
-            if abs(angle_deg) <= angle_tolerance_deg and distance < best_distance and distance < self.max_distance_for_predict_enemy_goal:
-                best_distance = distance
-                best_id = str(target["id"])
+            if angle_deg <= angle_tolerance_deg:
+                if (angle_deg < best_angle) or (abs(angle_deg - best_angle) <= 1e-6 and distance < best_distance):
+                    best_angle = angle_deg
+                    best_distance = distance
+                    best_id = str(target['id'])
+
+        # Fallback: if no angle-consistent candidate was found, use nearest plausible target.
+        if best_id == "unknown":
+            for target in candidates:
+                distance = math.hypot(target['x'] - enemy_pos.x, target['y'] - enemy_pos.y)
+                if distance < best_distance and distance < float(self.max_distance_for_predict_enemy_goal):
+                    best_distance = distance
+                    best_id = str(target['id'])
 
         self.predicted_enemy_goal = best_id
 
@@ -667,6 +702,12 @@ class TaskScheduler:
                                 f"⏭️ Skip pickup {batch_id}: phi mismatch current={batch.phi_degrees} expected={possible_pickup_phi}"
                             )
                         continue
+                if (self.map.time_left < self.must_leave_pamiyeet_alone_time) and (((self.map.robot_color[0] == "y") and (batch_id in ["s1", "s2", "s3", "s4", "f1", "f2", "f6"])) or ((self.map.robot_color[0] == "b") and (batch_id in ["s5", "s6", "s7", "s8", "f9", "f10", "f6"]))):
+                    if self.ros_node is not None:
+                        self.ros_node.get_logger().debug(
+                            f"⏭️ Skip pickup {batch_id}: time left {self.map.time_left:.1f}s < must_leave_pamiyeet_alone_time {self.must_leave_pamiyeet_alone_time:.1f}s"
+                        )
+                    continue
                 
                 task = Task(target_id=batch_id, type="pickup")
                 task.score, contributions = self._calculate_score_with_breakdown(task)
@@ -700,6 +741,12 @@ class TaskScheduler:
         if not self.map.robot_front_empty or not self.map.robot_back_empty:
             for dropoff_id, dropoff in self.map.drop_offs.items():
                 if (( not (dropoff_id in ["f3", "f5", "f8"]) or dropoff["status"] != "empty" ) or (batch.color is not None and batch.color.count(self.map.robot_color[0]) == len(batch.color) )):
+                    continue
+                if (self.map.time_left < self.must_leave_pamiyeet_alone_time) and (((self.map.robot_color[0] == "y") and (batch_id in ["f1", "f2", "f3", "f4", "f6"])) or ((self.map.robot_color[0] == "b") and (batch_id in ["f7", "f8", "f9", "f10", "f6"]))):
+                    if self.ros_node is not None:
+                        self.ros_node.get_logger().debug(
+                            f"⏭️ Skip pickup {batch_id}: time left {self.map.time_left:.1f}s < must_leave_pamiyeet_alone_time {self.must_leave_pamiyeet_alone_time:.1f}s"
+                        )
                     continue
                 task = Task(target_id=dropoff_id, type="dropoff")
                 task.score, contributions = self._calculate_score_with_breakdown(task)
