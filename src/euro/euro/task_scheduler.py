@@ -45,6 +45,8 @@ class TaskScheduler:
         "distance_to_enemy": 0.001,
         "number_of_opposite_crates": 1,
         "distance_to_goal_close":0.008,
+        "pickup_facing_available_face": 0.75,
+        "dropoff_facing_loaded_face": 0.75,
     }
     log_score_breakdown = True
     log_task_queue_snapshot = True
@@ -216,6 +218,8 @@ class TaskScheduler:
             "number_of_obstacles_between": 0.0,
             "distance_to_enemy": 0.0,
             "number_of_opposite_crates": 0.0,
+            "pickup_facing_available_face": 0.0,
+            "dropoff_facing_loaded_face": 0.0,
         }
 
         if self.predicted_enemy_goal != "unknown" and task.target_id == self.predicted_enemy_goal:
@@ -246,6 +250,17 @@ class TaskScheduler:
             contributions["distance_to_enemy"] = self.coeffs["distance_to_enemy"] * 1000.0  # If enemy not detected, assume far away
 
         if task.type == "pickup":
+            preferred_face = self._preferred_face_toward_target(target_pos)
+            front_available = bool(getattr(self.map, 'robot_front_empty', False))
+            back_available = bool(getattr(self.map, 'robot_back_empty', False))
+            facing_with_available_face = (
+                (preferred_face == 'front' and front_available)
+                or (preferred_face == 'back' and back_available)
+            )
+            contributions["pickup_facing_available_face"] = (
+                self.coeffs["pickup_facing_available_face"] if facing_with_available_face else 0.0
+            )
+
             if task.target_id[0] == "f":
                 batch = self.map.batches.get(task.target_id)
                 if batch is not None:
@@ -256,6 +271,18 @@ class TaskScheduler:
                     )
             else:
                 contributions["number_of_opposite_crates"] = self.coeffs["number_of_opposite_crates"] * 4.0  # Assume all 4 crates are opposite color for storage pickups
+        elif task.type == "dropoff":
+            preferred_face = self._preferred_face_toward_target(target_pos)
+            front_loaded = not bool(getattr(self.map, 'robot_front_empty', True))
+            back_loaded = not bool(getattr(self.map, 'robot_back_empty', True))
+
+            facing_with_loaded_face = (
+                (preferred_face == 'front' and front_loaded)
+                or (preferred_face == 'back' and back_loaded)
+            )
+            contributions["dropoff_facing_loaded_face"] = (
+                self.coeffs["dropoff_facing_loaded_face"] if facing_with_loaded_face else 0.0
+            )
 
         score = sum(contributions.values())
         return score, contributions
@@ -296,6 +323,82 @@ class TaskScheduler:
         else:
             print(f"[TaskScheduler] {message}")
         self._last_task_queue_signature = queue_signature
+
+    @staticmethod
+    def _normalize_angle_deg(angle_deg: float) -> float:
+        """Normalize angle to [-180, 180)."""
+        normalized = float(angle_deg)
+        while normalized >= 180.0:
+            normalized -= 360.0
+        while normalized < -180.0:
+            normalized += 360.0
+        return normalized
+
+    def _choose_pickup_face_by_heading(self, target: Pose2D) -> Optional[str]:
+        """Pick front/back based on availability and which side faces target best."""
+        front_available = bool(getattr(self.map, 'robot_front_empty', False))
+        back_available = bool(getattr(self.map, 'robot_back_empty', False))
+
+        if front_available and not back_available:
+            return 'front'
+        if back_available and not front_available:
+            return 'back'
+        if not front_available and not back_available:
+            return None
+
+        return self._preferred_face_toward_target(target)
+
+    def _preferred_face_toward_target(self, target: Pose2D) -> str:
+        """Return which robot face (front/back) is better aligned with target."""
+        robot_pose = self.map.robot_position
+        robot_theta = float(getattr(robot_pose, 'theta', 0.0) or 0.0)
+        bearing_to_target = math.degrees(
+            math.atan2(float(target.y) - float(robot_pose.y), float(target.x) - float(robot_pose.x))
+        )
+
+        front_diff = abs(self._normalize_angle_deg(bearing_to_target - robot_theta))
+        back_diff = abs(self._normalize_angle_deg(bearing_to_target - (robot_theta + 180.0)))
+        return 'front' if front_diff <= back_diff else 'back'
+
+    def _choose_putdown_face_by_heading(self, target: Pose2D) -> Optional[str]:
+        """Pick front/back for dropoff based on loaded side(s) and heading."""
+        front_loaded = not bool(getattr(self.map, 'robot_front_empty', True))
+        back_loaded = not bool(getattr(self.map, 'robot_back_empty', True))
+
+        if front_loaded and not back_loaded:
+            return 'front'
+        if back_loaded and not front_loaded:
+            return 'back'
+        if not front_loaded and not back_loaded:
+            return None
+
+        return self._preferred_face_toward_target(target)
+
+    def _task_target_pose(self, task: Task) -> Optional[Pose2D]:
+        """Return best-known target pose for scoring/ordering distance checks."""
+        if 'x' in task.options and 'y' in task.options:
+            return Pose2D(x=float(task.options['x']), y=float(task.options['y']))
+
+        if task.type == 'pickup':
+            batch = self.map.batches.get(task.target_id)
+            if batch is None:
+                return None
+            return Pose2D(x=float(batch.x), y=float(batch.y))
+
+        if task.type == 'dropoff':
+            dropoff = self.map.drop_offs.get(task.target_id)
+            if dropoff is None:
+                return None
+            return Pose2D(x=float(dropoff['x']), y=float(dropoff['y']))
+
+        return None
+
+    def _distance_to_task_target_mm(self, task: Task) -> float:
+        """Distance in mm from robot to task target pose."""
+        target_pose = self._task_target_pose(task)
+        if target_pose is None:
+            return float('inf')
+        return float(self.map.distance_from(self.map.robot_position, target_pose))
     
     def choose_side(self, task: Task) -> bool:
         if task.type == "pickup":
@@ -323,6 +426,17 @@ class TaskScheduler:
                 return False
             task.options["x"] = pickup_pos[0].x
             task.options["y"] = pickup_pos[0].y
+
+            target_batch = self.map.batches.get(task.target_id)
+            if target_batch is None:
+                return False
+
+            pickup_face = self._choose_pickup_face_by_heading(
+                Pose2D(x=float(target_batch.x), y=float(target_batch.y))
+            )
+            if pickup_face is None:
+                return False
+            task.options["pickup_face"] = pickup_face
         elif task.type == "dropoff":
             dropoff = self.map.drop_offs.get(task.target_id)
             if dropoff is None:
@@ -442,6 +556,13 @@ class TaskScheduler:
 
             task.options["x"] = best_pos.x
             task.options["y"] = best_pos.y
+
+            putdown_face = self._choose_putdown_face_by_heading(
+                Pose2D(x=center_x, y=center_y)
+            )
+            if putdown_face is None:
+                return False
+            task.options["drop"] = putdown_face
         return True
     
     def predict_enemy_goal(self) -> None:
@@ -529,6 +650,7 @@ class TaskScheduler:
                     if self.ros_node is not None:
                         self.ros_node.get_logger().debug(f"⏭️ Skip pickup {batch_id}: reserved center drop-off zone")
                     continue
+                # ken mafihouch 4 walla deja m3abbi b mte3na 
                 if (len(batch.color) != 4) or (batch.color.count(self.map.robot_color[0]) == 4):
                     if self.ros_node is not None:
                         self.ros_node.get_logger().debug(
@@ -545,6 +667,7 @@ class TaskScheduler:
                                 f"⏭️ Skip pickup {batch_id}: phi mismatch current={batch.phi_degrees} expected={possible_pickup_phi}"
                             )
                         continue
+                
                 task = Task(target_id=batch_id, type="pickup")
                 task.score, contributions = self._calculate_score_with_breakdown(task)
                 self._log_score_breakdown(task, contributions)
@@ -576,7 +699,7 @@ class TaskScheduler:
         # generate dropoff tasks if we have crates in the robot
         if not self.map.robot_front_empty or not self.map.robot_back_empty:
             for dropoff_id, dropoff in self.map.drop_offs.items():
-                if ( not (dropoff_id in ["f3", "f5", "f8"]) or dropoff["status"] != "empty" ):
+                if (( not (dropoff_id in ["f3", "f5", "f8"]) or dropoff["status"] != "empty" ) or (batch.color is not None and batch.color.count(self.map.robot_color[0]) == len(batch.color) )):
                     continue
                 task = Task(target_id=dropoff_id, type="dropoff")
                 task.score, contributions = self._calculate_score_with_breakdown(task)
@@ -595,6 +718,21 @@ class TaskScheduler:
         queue.sort(key=lambda t: t.score, reverse=True)
 
         queue = [t for t in queue if t.target_id[0] == "s"] + [t for t in queue if t.target_id[0] == "f"]
+
+        # If exactly one holder is empty and closest dropoff is closer than closest pickup,
+        # prioritize dropoff tasks over pickup tasks.
+        exactly_one_side_empty = bool(self.map.robot_front_empty) != bool(self.map.robot_back_empty)
+        if exactly_one_side_empty:
+            pickup_tasks = [t for t in queue if t.type == 'pickup']
+            dropoff_tasks = [t for t in queue if t.type == 'dropoff']
+            if pickup_tasks and dropoff_tasks:
+                nearest_pickup_mm = min(self._distance_to_task_target_mm(t) for t in pickup_tasks)
+                nearest_dropoff_mm = min(self._distance_to_task_target_mm(t) for t in dropoff_tasks)
+                if nearest_dropoff_mm < nearest_pickup_mm:
+                    queue = dropoff_tasks + pickup_tasks + [
+                        t for t in queue if t.type not in ('dropoff', 'pickup')
+                    ]
+
         go_home_time=max(self.must_go_home_time * self.map.distance_from(self.map.robot_position, self.map.nest_position)/1000.0, 5)
 
         if self.map.get_time_left() < max(go_home_time, self.must_dropoff_time):
@@ -1031,12 +1169,35 @@ class TaskScheduler:
 
         return [putdown_task, putdown_insert_task, putdown_retreat_task]
 
+    def _select_pickup_face_for_task(self, task: Task) -> Optional[str]:
+        """Choose pickup face using task hint first, then heading-aware fallback."""
+        preferred_face = str(task.options.get('pickup_face', '')).lower()
+        if preferred_face == 'front' and self.map.robot_front_empty:
+            return 'front'
+        if preferred_face == 'back' and self.map.robot_back_empty:
+            return 'back'
+
+        # Fallback to heading-based side using selected pickup point when available.
+        if 'x' in task.options and 'y' in task.options:
+            return self._choose_pickup_face_by_heading(
+                Pose2D(x=float(task.options['x']), y=float(task.options['y']))
+            )
+
+        if task.target_id in self.map.batches:
+            batch = self.map.batches[task.target_id]
+            return self._choose_pickup_face_by_heading(Pose2D(x=float(batch.x), y=float(batch.y)))
+
+        return self._select_pickup_face()
+
     def _select_pickup_face(self) -> Optional[str]:
         """Choose pickup face based on current holder availability."""
-        if self.map.robot_front_empty:
+        # Default fallback when no target-specific context is available.
+        if self.map.robot_front_empty and not self.map.robot_back_empty:
             return 'front'
-        if self.map.robot_back_empty:
+        if self.map.robot_back_empty and not self.map.robot_front_empty:
             return 'back'
+        if self.map.robot_front_empty and self.map.robot_back_empty:
+            return 'front'
         return None
 
     def _select_pickup_pose_selector(self, task: Task) -> int:
@@ -1065,10 +1226,20 @@ class TaskScheduler:
     def _select_putdown_device(self, task: Task) -> Optional[str]:
         """Choose putdown device based on holder occupancy (front/back)."""
         drop_pref = str(task.options.get('drop', '')).lower()
-        if drop_pref in ('front', 'back'):
-            return drop_pref
+        if drop_pref == 'front' and (not self.map.robot_front_empty):
+            return 'front'
+        if drop_pref == 'back' and (not self.map.robot_back_empty):
+            return 'back'
 
-        # Prefer dropping what is currently held.
+        zone = self.map.drop_offs.get(str(task.target_id).lower())
+        if zone is not None:
+            selected = self._choose_putdown_face_by_heading(
+                Pose2D(x=float(zone['x']), y=float(zone['y']))
+            )
+            if selected is not None:
+                return selected
+
+        # Last fallback: drop whatever is currently held.
         if not self.map.robot_front_empty:
             return 'front'
         if not self.map.robot_back_empty:
@@ -1335,7 +1506,7 @@ class TaskScheduler:
         generated_tasks: Optional[List[Dict[str, Any]]] = None
 
         if task.type == 'pickup':
-            pickup_face = self._select_pickup_face()
+            pickup_face = self._select_pickup_face_for_task(task)
             if pickup_face is None:
                 self.tracked_task_invalid = True
                 return None
