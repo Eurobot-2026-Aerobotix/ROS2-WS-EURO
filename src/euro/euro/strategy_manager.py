@@ -370,7 +370,7 @@ class StrategyManager(Node):
         quat.w = math.cos(yaw / 2.0)
         return quat
     
-    def load_task_to_queues(self, task_name: str):
+    def load_task_to_queues(self, task_name: str, allow_during_emergency: bool = False):
         """Load a task's commands into device queues"""
         # Find the task
         global n
@@ -422,6 +422,18 @@ class StrategyManager(Node):
                             prepare_added = False
                             
                             while executor_module.SYSTEMS_IDLE_COUNT <n and len((self.queues["STM"]))>0 :
+                                # Static flow safety: if emergency/steal starts while waiting,
+                                # abort this task loading so ESP commands are not queued from stale flow.
+                                if (not allow_during_emergency) and (
+                                    executor_module.EMERGENCY_STOP
+                                    or executor_module.STEAL_LOOP_ACTIVE
+                                    or executor_module.STEAL_LOOP_RUNNING
+                                ):
+                                    self.get_logger().warning(
+                                        f"⛔ Aborting static task load during emergency/steal: task={task_name}, device={device}, command={command}"
+                                    )
+                                    return False
+
                                 # Add prepare command when on second-to-last STM command
                                 if not prepare_added and executor_module.SYSTEMS_IDLE_COUNT == n-1:
                                     prepare_cmd = {
@@ -435,6 +447,19 @@ class StrategyManager(Node):
                                 
                                 self.get_logger().debug(f"Waiting for STM commands to be sent... STM queue size: {n}, SYSTEMS_IDLE_COUNT: {executor_module.SYSTEMS_IDLE_COUNT}")
                                 time.sleep(0.1)
+
+                    # Static flow safety: do not append stale static commands once
+                    # emergency/steal has started.
+                    if (not allow_during_emergency) and (
+                        executor_module.EMERGENCY_STOP
+                        or executor_module.STEAL_LOOP_ACTIVE
+                        or executor_module.STEAL_LOOP_RUNNING
+                    ):
+                        self.get_logger().warning(
+                            f"⛔ Skipping static command enqueue during emergency/steal: task={task_name}, device={device}, command={command}"
+                        )
+                        return False
+
                     if device =="SSTM" and command =="set_position":
                         self.queues["RASP_PI"].append(cmd)
                     else:
@@ -549,7 +574,7 @@ class StrategyManager(Node):
 
                 self.tasks.append(generated_task)
                 try:
-                    success = self.load_task_to_queues(generated_task['name'])
+                    success = self.load_task_to_queues(generated_task['name'], allow_during_emergency=True)
                     if not success:
                         self.get_logger().error(f"❌ Failed loading generated steal task: {generated_task['name']}")
                         return False
@@ -929,7 +954,12 @@ def main(args=None):
                 
                 # Load task into queues
                 strategy.get_logger().warning(f"  loading  tasks {task['name']} into queues...")
-                strategy.load_task_to_queues(task['name'])
+                loaded = strategy.load_task_to_queues(task['name'], allow_during_emergency=False)
+                if not loaded:
+                    strategy.get_logger().warning(
+                        f"⏭️ Skipping static task '{task['name']}' enqueue (interrupted by emergency/steal)"
+                    )
+                    continue
                 
                 # Wait for all commands to complete
                 strategy.wait_for_all_queues_empty()
