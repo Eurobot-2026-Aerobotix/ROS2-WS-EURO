@@ -45,8 +45,6 @@ SHUTDOWN_REQUESTED = False  # Global shutdown flag
 WAITING_TIRETTE=False
 replanning=False
 last_stm_command=""
-PATH_PREPARED = False  # Flag indicating path is prepared in background
-PREPARING_PATH = False  # Flag indicating path preparation is in progress
 return_home_triggered = False  # Flag to ensure return home logic only triggers once
 known_id_front=None
 known_id_back=None
@@ -177,118 +175,14 @@ def path_planning_task(strategy, lidar, round_timer, pneumatic_controller=None, 
         time.sleep(0.05)  # 50ms for quicker IDLE updates
 
 def prepare_path(strategy, lidar):
-    """Prepare path in background while waiting for obstacle to clear.
-    Calls strategy.path(prepare=True) which generates path but doesn't load to queue."""
-    global EMERGENCY_STOP
-    global SHUTDOWN_REQUESTED
-    global PATH_PREPARED
-    global PREPARING_PATH
-    global replanning
-    
-    PREPARING_PATH = True
-    PATH_PREPARED = False
-    
-    strategy.get_logger().info("🔄 Starting background path preparation...")
-    
-    path_found = False
-    attempt_count = 0
-    
-    # Keep trying while emergency is active
-    while not path_found and EMERGENCY_STOP and not SHUTDOWN_REQUESTED:
-        attempt_count += 1
-        
-        # Re-set goal before trying (global_pos_x/y are already in meters after task load)
-        if strategy.global_pos_x is not None and strategy.global_pos_y is not None and strategy.global_pos_angle is not None:
-            strategy.handle_global_goal(float(strategy.global_pos_x), float(strategy.global_pos_y), float(strategy.global_pos_angle))
-            strategy.get_logger().info(f"🗺️  Background path prep attempt #{attempt_count}")
-            
-            # Use prepare=True to generate path without loading to queue
-            path_found = strategy.path(prepare=True)
-            
-            if path_found:
-                strategy.get_logger().info(f"✅ Path prepared in background (attempt #{attempt_count})")
-                PATH_PREPARED = True
-                PREPARING_PATH = False
-                return True
-        
-        time.sleep(0.2)  # Check every 200ms
-    
-    # Emergency cleared before path found
-    if not EMERGENCY_STOP:
-        strategy.get_logger().info("✅ Emergency cleared during preparation - canceling background path prep")
-    
-    PREPARING_PATH = False
-    return path_found
+    """Deprecated: prepared-path flow disabled. Emergency handling is steal-only."""
+    strategy.get_logger().info("ℹ️ prepare_path() skipped (steal-only mode enabled)")
+    return False
 
 def execute_prepared_path(strategy, lidar):
-    """Load the prepared path to queue for execution.
-    Calls strategy.path(prepare=False) which loads the prepared commands to queue."""
-    global replanning
-    global last_stm_command
-    global IDLE
-    global IDLE_FOR_SYSTEMS
-    global SYSTEMS_IDLE_COUNT
-    global PATH_PREPARED
-    global PREPARING_PATH
-    global SHUTDOWN_REQUESTED
-    
-    strategy.get_logger().info("🚀 Loading prepared path to queue...")
-    
-    # Wait for path preparation to complete if still in progress
-    wait_count = 0
-    while PREPARING_PATH and not SHUTDOWN_REQUESTED:
-        wait_count += 1
-        if wait_count % 10 == 0:
-            strategy.get_logger().info(f"⏳ Waiting for background path preparation to finish... ({wait_count * 0.1:.1f}s)")
-        time.sleep(0.1)
-    
-    if PATH_PREPARED:
-        # Load prepared path to queue using prepare=False
-        path_loaded = strategy.path(prepare=False)
-        
-        if path_loaded:
-            # Set execution flags - but DON'T clear lidar targets yet
-            # The new command will set its own target when executed
-            # NOTE: Don't set replanning=False here - let main loop handle it after command completes
-            last_stm_command = "replanned"
-            #SYSTEMS_IDLE_COUNT = 0
-            #IDLE = True
-            #IDLE_FOR_SYSTEMS = True
-            PATH_PREPARED = False
-            
-            # Clear lidar's replanning request flag to prevent double-trigger
-            lidar.generate_path = 0
-            
-            strategy.get_logger().info(f"✓ Prepared path loaded to queue - {len(strategy.queues['STM'])} commands ready (lidar target will update when new command executes)")
-        else:
-            strategy.get_logger().error("❌ Failed to load prepared path!")
-    else:
-        # Emergency cleared before path was found, or preparation failed
-        # Generate and load path synchronously as fallback
-        strategy.get_logger().warning("⚠️ No prepared path available - generating synchronously as fallback...")
-        
-        if strategy.global_pos_x is not None and strategy.global_pos_y is not None and strategy.global_pos_angle is not None:
-            strategy.handle_global_goal(float(strategy.global_pos_x), float(strategy.global_pos_y), float(strategy.global_pos_angle))
-            # Call path() without prepare (default False) - generates and loads immediately
-            path_found = strategy.path()
-            
-            if path_found:
-                # NOTE: Don't clear lidar target - let new command set its own target
-                # Don't set replanning=False here - let main loop handle it
-                last_stm_command = "replanned"
-                #SYSTEMS_IDLE_COUNT = 0
-                #IDLE = True
-                #IDLE_FOR_SYSTEMS = True
-                PATH_PREPARED = False
-                
-                # Clear lidar's replanning request flag
-                lidar.generate_path = 0
-                
-                strategy.get_logger().info(f"✓ Fallback path loaded to queue - {len(strategy.queues['STM'])} commands")
-            else:
-                strategy.get_logger().error("❌ Fallback path generation failed!")
-        else:
-            strategy.get_logger().error("❌ Cannot generate path - no global goal stored!")
+    """Deprecated: prepared-path flow disabled. Emergency handling is steal-only."""
+    strategy.get_logger().info("ℹ️ execute_prepared_path() skipped (steal-only mode enabled)")
+    return False
 
 def robot_status(strategy, stm32, lidar):
     """Runs every 100ms to check STM32 movement status and lidar obstacles"""
@@ -551,8 +445,9 @@ def stm32_task(strategy, stm32,lidar):
         if main_loop_count % 50 == 0:
             strategy.get_logger().info(f"🔁 STM32 main loop #{main_loop_count}: queue_size={len(strategy.queues['STM'])}, IDLE={IDLE}, EMERGENCY_STOP={EMERGENCY_STOP}")
         
-        # Check if there are commands in the queue and robot is idle
-        if len(strategy.queues['STM']) > 0 and IDLE:
+        # Check if there are commands in the queue and robot is idle.
+        # In steal-only emergency flow, do not dispatch commands while emergency is active.
+        if len(strategy.queues['STM']) > 0 and IDLE and not EMERGENCY_STOP:
             cmd = strategy.queues['STM'][0]  # Peek at first command
             command = cmd.get('command')
             params = cmd.get('params', {})
@@ -585,7 +480,6 @@ def stm32_task(strategy, stm32,lidar):
             
             # Wait for command completion with emergency handling
             loop_iteration = 0
-            emergency_stuck_iterations = 0  # Track how long stuck in EMERGENCY+IDLE
             while ((not IDLE and not SHUTDOWN_REQUESTED) or (EMERGENCY_STOP) or last_stm_command=="emergency") and last_stm_command != "replanned":
                 loop_iteration += 1
                 
@@ -595,22 +489,6 @@ def stm32_task(strategy, stm32,lidar):
                     strategy.stm32_task_wait_ended = True
                     break
                 
-                # Detect if stuck in emergency state (IDLE + EMERGENCY + was_in_emergency for too long)
-                if IDLE and EMERGENCY_STOP and was_in_emergency:
-                    emergency_stuck_iterations += 1
-                    if emergency_stuck_iterations >= 10:  # 1 second stuck
-                        if not replanning:
-                            strategy.get_logger().error(f"🚨 STUCK in emergency for 1s! Robot IDLE but emergency won't clear. Executing prepared path...")
-                            replanning = True
-                            # Use the optimized prepared path directly
-                            execute_prepared_path(strategy, lidar)
-                            strategy.get_logger().info("✅ Forced replanning executed via prepared path")
-                            emergency_stuck_iterations = 0  # Reset counter
-                        elif emergency_stuck_iterations >= 30:  # 3 seconds total (1s + another 2s)
-                            strategy.get_logger().warning(f"💀 CRITICAL: Still stuck after replanning! May need escape maneuver.")
-                            emergency_stuck_iterations = 20  # Keep logging but don't spam
-                else:
-                    emergency_stuck_iterations = 0  # Reset if not stuck
                 # Log state every 20 iterations (2 seconds)
                 if loop_iteration % 20 == 0:
                     strategy.get_logger().info(f"🔄 Wait loop iteration {loop_iteration}: IDLE={IDLE}, EMERGENCY_STOP={EMERGENCY_STOP}, was_in_emergency={was_in_emergency}, replanning={replanning}, last_stm_command={last_stm_command}")
@@ -622,6 +500,22 @@ def stm32_task(strategy, stm32,lidar):
                     last_stm_command="emergency"
                     IDLE=False
                     IDLE_FOR_SYSTEMS=True
+                    replanning = True
+
+                    # Emergency mode is steal-only: drop static queued motion/actuator work.
+                    strategy.queues['STM'].clear()
+                    strategy.queues['ESP_front'].clear()
+                    strategy.queues['ESP_back'].clear()
+                    strategy.get_logger().warning("🧹 Cleared STM/ESP queues for steal-only emergency recovery")
+
+                    # Arm steal loop immediately from emergency stop.
+                    if not STEAL_LOOP_ACTIVE and not STEAL_LOOP_RUNNING:
+                        STEAL_REPEAT_COUNT = 30
+                        STEAL_LOOP_ACTIVE = True
+                        strategy.get_logger().warning(
+                            "🏴‍☠️ Emergency-triggered steal loop armed (STEAL_LOOP_ACTIVE=True, STEAL_REPEAT_COUNT=30)"
+                        )
+
                     was_in_emergency = True
                     strategy.get_logger().info("⏸️  Waiting for STM32 to report IDLE after emergency stop...")
                     
@@ -634,52 +528,16 @@ def stm32_task(strategy, stm32,lidar):
                     
                     strategy.get_logger().info(f"✓ STM32 now IDLE after emergency stop (waited {idle_wait_count * 0.05:.2f}s)")
                     
-                    # Start path preparation in background immediately
-                    strategy.get_logger().info("⚡ Starting background path preparation in parallel with collision check...")
-                    # prepare_thread = threading.Thread(
-                    #     target=prepare_path,
-                    #     args=(strategy, lidar),
-                    #     daemon=True
-                    # )
-                    #prepare_thread.start()
-                    
+                    # Keep lidar collision watch active until path is clear.
                     lidar.start_enemy_collision_check()  # Start waiting period before rechecking obstacle
                     strategy.get_logger().info("🔍 Started enemy collision check - waiting for obstacle to clear")
-                    #strategy.pathfinder.update_map()
-                    #IDLE = True  # Mark as idle to prevent status checks
                 
                 # Check if emergency cleared
                 elif not EMERGENCY_STOP and was_in_emergency  :
-                    # Check if replanning occurred - if so, don't resume old command
-                    if replanning:
-                        strategy.get_logger().info(f"✅ Emergency cleared after replanning - will execute new path from queue")
-                        was_in_emergency = False
-                        # Don't resume old command - break out to let main loop process new queue
-                        # Mark as replanned so we exit the wait loop
-                        last_stm_command = "replanned"
-                    else:
-                        # No replanning - obstacle cleared, resume old command
-                        strategy.get_logger().info(f"✅ Emergency cleared - resuming command: {last_command}")
-                        strategy.get_logger().info(f"📊 State before resume: IDLE={IDLE}, IDLE_FOR_SYSTEMS={IDLE_FOR_SYSTEMS}")
-                        # Resend the last command using handler function
-                        if IDLE_FOR_SYSTEMS:
-                            SYSTEMS_IDLE_COUNT-=1
-                        handle_stm32_command(last_command, last_params, stm32, lidar, strategy)
-                        last_stm_command="navigation"
-                        was_in_emergency = False
-                        
-                        strategy.get_logger().info(f"🚀 Command resumed - IDLE={IDLE}, IDLE_FOR_SYSTEMS={IDLE_FOR_SYSTEMS}, last_stm_command={last_stm_command}")
-                    
-                elif lidar.get_path_status() and replanning==False :
-                    strategy.get_logger().warning(f"⚠️ Lidar requesting replanning - executing prepared path")
-                    # Trigger dynamic steal loop handling in path_planning_task
-                    # when lidar-induced emergency stop is detected.
-                    if not STEAL_LOOP_ACTIVE and not STEAL_LOOP_RUNNING:
-                        STEAL_REPEAT_COUNT = 30
-                        STEAL_LOOP_ACTIVE = True
-                        strategy.get_logger().warning(
-                            "🏴‍☠️ Emergency-triggered steal loop armed (STEAL_LOOP_ACTIVE=True, STEAL_REPEAT_COUNT=30)"
-                        )
+                    strategy.get_logger().info("✅ Emergency cleared - switching to steal-generated execution")
+                    was_in_emergency = False
+                    # Never resume pre-emergency static command in steal-only mode.
+                    last_stm_command = "replanned"
                 
                 time.sleep(0.1)
             
