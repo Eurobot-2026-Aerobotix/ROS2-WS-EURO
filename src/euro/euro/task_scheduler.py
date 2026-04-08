@@ -43,6 +43,7 @@ class TaskScheduler:
         "is_enemy_goal": 0.0,
         "distance_to_goal_far": 0.001,
         "number_of_obstacles_between": -0.5,
+        "enemy_is_obstacle_between": -0.5,
         "distance_to_enemy": 0.001,
         "number_of_opposite_crates": 1,
         "distance_to_goal_close":0.008,
@@ -217,6 +218,7 @@ class TaskScheduler:
             "is_enemy_goal": 0.0,
             "distance_to_goal": 0.0,
             "number_of_obstacles_between": 0.0,
+            "enemy_is_obstacle_between": 0.0,
             "distance_to_enemy": 0.0,
             "number_of_opposite_crates": 0.0,
             "pickup_facing_available_face": 0.0,
@@ -241,6 +243,9 @@ class TaskScheduler:
             )
         contributions["number_of_obstacles_between"] = (
             self.map.calculate_number_of_obstacles_to(target_pos) * self.coeffs["number_of_obstacles_between"]
+        )
+        contributions["enemy_is_obstacle_between"] = (
+            self.coeffs["enemy_is_obstacle_between"] if self.map.is_enemy_obstacle_to(target_pos) else 0.0
         )
 
         if self.map.enemy_relative.detected:

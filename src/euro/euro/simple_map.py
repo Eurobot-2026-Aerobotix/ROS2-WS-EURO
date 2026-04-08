@@ -439,9 +439,8 @@ class Map:
 
         return False
 
-    def calculate_number_of_obstacles_to(self, target_pos: Pose2D) -> int:
-        """Calculate the number of obstacles between the robot and a target position."""
-
+    def _distance_point_to_segment(self, px: float, py: float, target_pos: Pose2D) -> float:
+        """Return distance from point to segment [robot_position -> target_pos]."""
         start_x = float(self.robot_position.x)
         start_y = float(self.robot_position.y)
         end_x = float(target_pos.x)
@@ -451,14 +450,31 @@ class Map:
         dy = end_y - start_y
         seg_len_sq = dx * dx + dy * dy
 
-        def _distance_point_to_segment(px: float, py: float) -> float:
-            if seg_len_sq <= 1e-9:
-                return math.hypot(px - start_x, py - start_y)
-            t = ((px - start_x) * dx + (py - start_y) * dy) / seg_len_sq
-            t = max(0.0, min(1.0, t))
-            closest_x = start_x + t * dx
-            closest_y = start_y + t * dy
-            return math.hypot(px - closest_x, py - closest_y)
+        if seg_len_sq <= 1e-9:
+            return math.hypot(px - start_x, py - start_y)
+
+        t = ((px - start_x) * dx + (py - start_y) * dy) / seg_len_sq
+        t = max(0.0, min(1.0, t))
+        closest_x = start_x + t * dx
+        closest_y = start_y + t * dy
+        return math.hypot(px - closest_x, py - closest_y)
+
+    def is_enemy_obstacle_to(self, target_pos: Pose2D) -> bool:
+        """Return True when enemy blocks the segment [robot_position -> target_pos]."""
+        if not self.enemy_relative.detected:
+            return False
+
+        return self._distance_point_to_segment(
+            float(self.enemy_absolute.x),
+            float(self.enemy_absolute.y),
+            target_pos,
+        ) <= (self.robot_radius + self.enemy_radius)
+
+    def calculate_number_of_obstacles_to(self, target_pos: Pose2D) -> int:
+        """Calculate normal (batch) obstacles between the robot and target position."""
+
+        end_x = float(target_pos.x)
+        end_y = float(target_pos.y)
 
         obstacle_count = 0
 
@@ -466,11 +482,7 @@ class Map:
             # Skip the destination batch itself when targeting a pickup point.
             if math.hypot(batch.x - end_x, batch.y - end_y) <= 1e-6:
                 continue
-            if _distance_point_to_segment(float(batch.x), float(batch.y)) <= (self.robot_radius + self.batch_radius):
-                obstacle_count += 1
-
-        if self.enemy_relative.detected:
-            if _distance_point_to_segment(float(self.enemy_absolute.x), float(self.enemy_absolute.y)) <= (self.robot_radius + self.enemy_radius):
+            if self._distance_point_to_segment(float(batch.x), float(batch.y), target_pos) <= (self.robot_radius + self.batch_radius):
                 obstacle_count += 1
 
         return obstacle_count
