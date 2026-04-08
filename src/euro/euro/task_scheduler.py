@@ -320,9 +320,10 @@ class TaskScheduler:
             return
 
         if self.ros_node is not None:
-            self.ros_node.get_logger().info(message)
+            self.ros_node.get_logger().debug(message)
         else:
-            print(f"[TaskScheduler] {message}")
+            # Keep fallback output quiet unless explicitly running with debug logs.
+            pass
         self._last_task_queue_signature = queue_signature
 
     @staticmethod
@@ -795,7 +796,7 @@ class TaskScheduler:
                 task.options["drop"] = "back"
             queue.insert(0, task)  # Prioritize return home task
 
-        self._log_task_queue_snapshot(queue)
+        #self._log_task_queue_snapshot(queue)
         self.task_queue = queue
     
     def check_tracked_task_validity(self) -> Optional[str]:
