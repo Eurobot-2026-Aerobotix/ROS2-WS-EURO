@@ -148,6 +148,44 @@ def path_planning_task(strategy, lidar, round_timer, pneumatic_controller=None, 
                         )
                         break
 
+                    # Gate steal attempts until robot is idle and either:
+                    # - emergency is cleared, or
+                    # - lidar requested a replan (generate_path=1).
+                    # This avoids deadlocks when emergency stays latched for the
+                    # previous blocked target.
+                    wait_gate_count = 0
+                    while rclpy.ok() and not SHUTDOWN_REQUESTED and not strategy.end_game and STEAL_LOOP_ACTIVE:
+                        path_replan_requested = bool(getattr(lidar, 'generate_path', 0) == 1)
+                        ready_for_steal = bool(IDLE) and (not EMERGENCY_STOP or path_replan_requested)
+                        if ready_for_steal:
+                            break
+
+                        wait_gate_count += 1
+                        if wait_gate_count == 1 or wait_gate_count % 20 == 0:
+                            strategy.get_logger().info(
+                                f"⏳ Steal loop waiting (EMERGENCY_STOP={int(bool(EMERGENCY_STOP))}, IDLE={IDLE}, generate_path={int(path_replan_requested)})"
+                            )
+                        time.sleep(0.05)
+
+                    # If lidar explicitly asks for replanning while emergency is still
+                    # active, clear stale target so emergency can be reevaluated against
+                    # the new generated steal path.
+                    if bool(IDLE) and EMERGENCY_STOP and bool(getattr(lidar, 'generate_path', 0) == 1):
+                        strategy.get_logger().warning(
+                            "🧭 Steal loop proceeding on generate_path=1 while emergency active; clearing stale go-to target"
+                        )
+                        lidar.clear_goto_target()
+                        lidar.generate_path = 0
+
+                    if not rclpy.ok() or SHUTDOWN_REQUESTED or strategy.end_game or return_home_triggered or not STEAL_LOOP_ACTIVE:
+                        strategy.get_logger().warning(
+                            "⚠️ Stopping path-planning steal loop before attempt due to shutdown/end-game"
+                        )
+                        break
+
+                    # Ensure emergency-replanning flag does not block generated-flow waits.
+                    replanning = False
+
                     strategy.get_logger().info(
                         f"🏴‍☠️ Path-planning steal attempt {attempt}/{repeat_count}"
                     )
@@ -797,6 +835,9 @@ def pick_up(controller,pneumatic,strategy,front):
     if SHUTDOWN_REQUESTED:
         strategy.get_logger().warning("⚠️ pick_up() aborted - SHUTDOWN_REQUESTED")
         return
+    if EMERGENCY_STOP:
+        strategy.get_logger().warning("⚠️ pick_up() deferred - EMERGENCY_STOP is active")
+        return
     #stana(controller)
     if SHUTDOWN_REQUESTED:
         return
@@ -933,6 +974,18 @@ def front_task(strategy, front_controller=None,pneumatic_controller=None):
             command = cmd.get('command')
             params = cmd.get('params', {})
             wait = cmd.get('wait', False)
+
+            # Never run actuator actions while emergency is active.
+            # Keep the command queued and retry when emergency clears.
+            if EMERGENCY_STOP and command in ('pick_up', 'put_down'):
+                time.sleep(0.1)
+                continue
+
+            # Safety ordering guard: actuator actions must only run after
+            # STM commands are fully dispatched/executed for the current step.
+            if command in ('pick_up', 'put_down') and (len(strategy.queues['STM']) > 0 or not IDLE_FOR_SYSTEMS):
+                time.sleep(0.05)
+                continue
             
             if command == 'prepare':
                 action = params.get('action')
@@ -967,6 +1020,18 @@ def back_task(strategy, back_controller=None,pneumatic_controller=None):
             command = cmd.get('command')
             params = cmd.get('params', {})
             wait = cmd.get('wait', False)
+
+            # Never run actuator actions while emergency is active.
+            # Keep the command queued and retry when emergency clears.
+            if EMERGENCY_STOP and command in ('pick_up', 'put_down'):
+                time.sleep(0.1)
+                continue
+
+            # Safety ordering guard: actuator actions must only run after
+            # STM commands are fully dispatched/executed for the current step.
+            if command in ('pick_up', 'put_down') and (len(strategy.queues['STM']) > 0 or not IDLE_FOR_SYSTEMS):
+                time.sleep(0.05)
+                continue
             
             if command == 'prepare':
                 action = params.get('action')
