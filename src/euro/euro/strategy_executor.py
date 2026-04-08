@@ -986,6 +986,13 @@ def front_task(strategy, front_controller=None,pneumatic_controller=None):
             if command in ('pick_up', 'put_down') and (len(strategy.queues['STM']) > 0 or not IDLE_FOR_SYSTEMS):
                 time.sleep(0.05)
                 continue
+
+            # Concurrency safety: queue may be cleared/replaced by another thread
+            # (e.g., emergency handling) after we captured `cmd`.
+            # Never execute if this command is no longer at queue head.
+            if len(strategy.queues['ESP_front']) == 0 or strategy.queues['ESP_front'][0] is not cmd:
+                time.sleep(0.01)
+                continue
             
             if command == 'prepare':
                 action = params.get('action')
@@ -1001,8 +1008,8 @@ def front_task(strategy, front_controller=None,pneumatic_controller=None):
                 put_down(front_controller,pneumatic_controller,strategy,True,params)
             elif command =='pick_up':
                 pick_up(front_controller,pneumatic_controller,strategy,True)
-            # Check if queue not empty before popping (race condition with queue.clear())
-            if len(strategy.queues['ESP_front']) > 0:
+            # Pop only if the same command is still at queue head
+            if len(strategy.queues['ESP_front']) > 0 and strategy.queues['ESP_front'][0] is cmd:
                 strategy.queues['ESP_front'].popleft()
         
         time.sleep(0.1)  # 100ms
@@ -1032,6 +1039,13 @@ def back_task(strategy, back_controller=None,pneumatic_controller=None):
             if command in ('pick_up', 'put_down') and (len(strategy.queues['STM']) > 0 or not IDLE_FOR_SYSTEMS):
                 time.sleep(0.05)
                 continue
+
+            # Concurrency safety: queue may be cleared/replaced by another thread
+            # (e.g., emergency handling) after we captured `cmd`.
+            # Never execute if this command is no longer at queue head.
+            if len(strategy.queues['ESP_back']) == 0 or strategy.queues['ESP_back'][0] is not cmd:
+                time.sleep(0.01)
+                continue
             
             if command == 'prepare':
                 action = params.get('action')
@@ -1047,8 +1061,8 @@ def back_task(strategy, back_controller=None,pneumatic_controller=None):
                 put_down(back_controller,pneumatic_controller,strategy,False,params)
             elif command =='pick_up':
                 pick_up(back_controller,pneumatic_controller,strategy,False)
-            # Check if queue not empty before popping (race condition with queue.clear())
-            if len(strategy.queues['ESP_back']) > 0:
+            # Pop only if the same command is still at queue head
+            if len(strategy.queues['ESP_back']) > 0 and strategy.queues['ESP_back'][0] is cmd:
                 strategy.queues['ESP_back'].popleft()
         
         time.sleep(0.1)  # 100ms
