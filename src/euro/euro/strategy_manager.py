@@ -910,6 +910,22 @@ def main(args=None):
                         #strategy.pathfinder.set_goal(float(strategy.global_pos_x)/1000, float(strategy.global_pos_y)/1000,float(strategy.global_pos_angle))
                 else:
                     strategy.get_logger().warning(f"⚠️  No global goal found for task: {task['name']}")
+
+                # Do not enqueue static YAML tasks while steal loop is active/running.
+                # This keeps queue ownership with dynamically generated TaskScheduler tasks.
+                while (
+                    (executor_module.STEAL_LOOP_ACTIVE or executor_module.STEAL_LOOP_RUNNING)
+                    and not executor_module.SHUTDOWN_REQUESTED
+                    and not strategy.end_game
+                ):
+                    strategy.get_logger().warning(
+                        f"⏸️ Static task enqueue paused for '{task['name']}' (steal loop active/running)"
+                    )
+                    time.sleep(0.05)
+
+                if executor_module.SHUTDOWN_REQUESTED or strategy.end_game:
+                    strategy.get_logger().info("Stopping static task execution loop (shutdown/end-game)")
+                    return
                 
                 # Load task into queues
                 strategy.get_logger().warning(f"  loading  tasks {task['name']} into queues...")

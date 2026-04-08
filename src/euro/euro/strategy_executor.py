@@ -52,7 +52,7 @@ known_id_front=None
 known_id_back=None
 STEAL_LOOP_ACTIVE = False
 STEAL_LOOP_RUNNING = False
-STEAL_REPEAT_COUNT = 1
+STEAL_REPEAT_COUNT = 30
 
 def path_planning_task(strategy, lidar, round_timer, pneumatic_controller=None, front_controller=None, back_controller=None,stm32_controller=None):
     """Dedicated thread for handling return home at 90s"""
@@ -172,7 +172,7 @@ def path_planning_task(strategy, lidar, round_timer, pneumatic_controller=None, 
             finally:
                 STEAL_LOOP_ACTIVE = False
                 STEAL_LOOP_RUNNING = False
-                STEAL_REPEAT_COUNT = 1
+                STEAL_REPEAT_COUNT = 30
         
         time.sleep(0.05)  # 50ms for quicker IDLE updates
 
@@ -529,6 +529,9 @@ def stm32_task(strategy, stm32,lidar):
     global EMERGENCY_STOP
     global last_stm_command
     global replanning
+    global STEAL_LOOP_ACTIVE
+    global STEAL_LOOP_RUNNING
+    global STEAL_REPEAT_COUNT
     # Import Vector3 for publishing target position
     from geometry_msgs.msg import Vector3
     
@@ -633,12 +636,12 @@ def stm32_task(strategy, stm32,lidar):
                     
                     # Start path preparation in background immediately
                     strategy.get_logger().info("⚡ Starting background path preparation in parallel with collision check...")
-                    prepare_thread = threading.Thread(
-                        target=prepare_path,
-                        args=(strategy, lidar),
-                        daemon=True
-                    )
-                    prepare_thread.start()
+                    # prepare_thread = threading.Thread(
+                    #     target=prepare_path,
+                    #     args=(strategy, lidar),
+                    #     daemon=True
+                    # )
+                    #prepare_thread.start()
                     
                     lidar.start_enemy_collision_check()  # Start waiting period before rechecking obstacle
                     strategy.get_logger().info("🔍 Started enemy collision check - waiting for obstacle to clear")
@@ -669,12 +672,14 @@ def stm32_task(strategy, stm32,lidar):
                     
                 elif lidar.get_path_status() and replanning==False :
                     strategy.get_logger().warning(f"⚠️ Lidar requesting replanning - executing prepared path")
-                    replanning = True
-                    
-                    # Execute the path that was prepared in background
-                    execute_prepared_path(strategy, lidar)
-                    
-                    strategy.get_logger().info("✅ Prepared path executed successfully")
+                    # Trigger dynamic steal loop handling in path_planning_task
+                    # when lidar-induced emergency stop is detected.
+                    if not STEAL_LOOP_ACTIVE and not STEAL_LOOP_RUNNING:
+                        STEAL_REPEAT_COUNT = 30
+                        STEAL_LOOP_ACTIVE = True
+                        strategy.get_logger().warning(
+                            "🏴‍☠️ Emergency-triggered steal loop armed (STEAL_LOOP_ACTIVE=True, STEAL_REPEAT_COUNT=30)"
+                        )
                 
                 time.sleep(0.1)
             
