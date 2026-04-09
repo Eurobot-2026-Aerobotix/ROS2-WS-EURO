@@ -27,7 +27,7 @@ class TaskScheduler:
     # Keep these thresholds in seconds as well.
     allow_fx = False
     must_dropoff_time = 5.0
-    must_go_home_time = 25.0  # travel budget at 1m distance from nest (seconds)
+    must_go_home_time = 8.5  # travel budget at 1m distance from nest (seconds)
     must_leave_pamiyeet_alone_time = 20.0
     max_distance_for_predict_enemy_goal = 1500.0 # in mm
     drop_off_distance = 400.0
@@ -42,8 +42,8 @@ class TaskScheduler:
     coeffs = {
         "is_enemy_goal": 0.0,
         "distance_to_goal_far": 0.001,
-        "number_of_obstacles_between": -0.5,
-        "enemy_is_obstacle_between": -0.5,
+        "number_of_obstacles_between": -1.0,
+        "enemy_is_obstacle_between": -3,
         "distance_to_enemy": 0.001,
         "number_of_opposite_crates": 1,
         "distance_to_goal_close":0.008,
@@ -298,12 +298,13 @@ class TaskScheduler:
         if not self.log_score_breakdown:
             return
 
-        # message = f"🧮 Score {task.type}:{task.target_id} total={task.score:.3f}"
+        contributions_str = ", ".join(f"{key}={value:.3f}" for key, value in contributions.items())
+        message = f"🧮 Score {task.type}:{task.target_id} total={task.score:.3f} | {contributions_str}"
 
-        # if self.ros_node is not None:
-        #     self.ros_node.get_logger().info(message)
-        # else:
-        #     print(f"[TaskScheduler] {message}")
+        if self.ros_node is not None:
+            self.ros_node.get_logger().info(message)
+        else:
+            print(f"[TaskScheduler] {message}")
 
     def _log_task_queue_snapshot(self, queue: List[Task]) -> None:
         """Log final ordered queue so all candidate tasks are visible."""
@@ -786,13 +787,17 @@ class TaskScheduler:
                         t for t in queue if t.type not in ('dropoff', 'pickup')
                     ]
 
-        go_home_time=max(self.must_go_home_time * self.map.distance_from(self.map.robot_position, self.map.nest_position)/1000.0, 5)
+        go_home_time = max(
+            self.must_go_home_time * self.map.distance_from(self.map.robot_position, self.map.nest_position) / 1000.0,
+            5,
+        )
+        time_left_s = self.map.get_time_left()
 
-        if self.map.get_time_left() < max(go_home_time, self.must_dropoff_time):
+        if time_left_s < max(go_home_time, self.must_dropoff_time):
             # If time is running out, prioritize dropoff tasks
             queue = [t for t in queue if t.type == "dropoff"] + [t for t in queue if t.type != "dropoff"]
         
-        if (self.map.get_time_left() < max(go_home_time, self.must_dropoff_time)) and len([t for t in queue if t.type == "dropoff"]) == 0:
+        if time_left_s < go_home_time and len([t for t in queue if t.type == "dropoff"]) == 0:
             task = Task(target_id="nest", type="return_home")
             task.options["drop"] = "none"
             if not self.map.robot_front_empty:
@@ -801,7 +806,7 @@ class TaskScheduler:
                 task.options["drop"] = "back"
             queue.insert(0, task)  # Prioritize return home task
 
-        #self._log_task_queue_snapshot(queue)
+        self._log_task_queue_snapshot(queue)
         self.task_queue = queue
     
     def check_tracked_task_validity(self) -> Optional[str]:

@@ -118,8 +118,8 @@ class Map:
     - Enemy relative obstacle
     """
 
-    robot_radius = 150.0  # Robot width is 300.
-    batch_radius = 100.0
+    robot_radius = 140.0  # Robot width is 300.
+    batch_radius = 70.0
     enemy_radius = 170.0
 
     def __init__(self, round_timer: Optional[Any] = None, game_duration_s: float = 100.0):
