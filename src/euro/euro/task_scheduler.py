@@ -752,7 +752,7 @@ class TaskScheduler:
         # generate dropoff tasks if we have crates in the robot
         if not self.map.robot_front_empty or not self.map.robot_back_empty:
             for dropoff_id, dropoff in dropoffs_snapshot:
-                if (dropoff_id not in ["f3", "f5", "f8"]) or (dropoff["status"] != "empty"):
+                if (dropoff_id not in ["f3", "f5", "f8"]) and (dropoff["status"] != "empty"):
                     continue
                 if (self.map.time_left < self.must_leave_pamiyeet_alone_time) and (((self.map.robot_color[0] == "y") and (dropoff_id in ["f1", "f2", "f3", "f4", "f6"])) or ((self.map.robot_color[0] == "b") and (dropoff_id in ["f7", "f8", "f9", "f10", "f6"]))):
                     if self.ros_node is not None:
