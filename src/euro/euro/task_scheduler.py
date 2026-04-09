@@ -27,7 +27,7 @@ class TaskScheduler:
     # Keep these thresholds in seconds as well.
     allow_fx = False
     must_dropoff_time = 5.0
-    must_go_home_time = 8.5  # travel budget at 1m distance from nest (seconds)
+    must_go_home_time = 5  # travel budget at 1m distance from nest (seconds)
     must_leave_pamiyeet_alone_time = 20.0
     max_distance_for_predict_enemy_goal = 1500.0 # in mm
     drop_off_distance = 400.0
@@ -50,7 +50,7 @@ class TaskScheduler:
         "pickup_facing_available_face": 0.75,
         "dropoff_facing_loaded_face": 0.75,
     }
-    log_score_breakdown = True
+    log_score_breakdown = False
     log_task_queue_snapshot = True
     def __init__(self, map: Map, pathfinder_client=None, ros_node=None, loop_period_s: float = 0.05):
         self.map = map
@@ -592,14 +592,15 @@ class TaskScheduler:
         # 3) Add dropoffs only for IDs not already represented to avoid duplicate-ID ambiguity.
         target_map: Dict[str, Tuple[float, float]] = {}
 
-        if getattr(self.map, 'batches', None):
-            for batch_id, batch in self.map.batches.items():
+        batches_snapshot = list(getattr(self.map, 'batches', {}).items())
+        if batches_snapshot:
+            for batch_id, batch in batches_snapshot:
                 target_map[str(batch_id)] = (float(batch.x), float(batch.y))
         else:
             for batch_id, batch in self.map.predefined_batch_positions.items():
                 target_map[str(batch_id)] = (float(batch['x']), float(batch['y']))
 
-        for dropoff_id, dropoff in self.map.drop_offs.items():
+        for dropoff_id, dropoff in list(self.map.drop_offs.items()):
             dropoff_key = str(dropoff_id)
             if dropoff_key not in target_map:
                 target_map[dropoff_key] = (float(dropoff['x']), float(dropoff['y']))
@@ -660,11 +661,15 @@ class TaskScheduler:
         """Generate tasks based on the current map state."""
         self.predict_enemy_goal()
 
+        # Snapshot mutable maps to avoid concurrent-size-change crashes while iterating.
+        batches_snapshot = list(self.map.batches.items())
+        dropoffs_snapshot = list(self.map.drop_offs.items())
+
         # Log available batches only when snapshot changes.
-        if self.map.batches:
+        if batches_snapshot:
             batch_dump = [
                 f"{bid}(color={b.color},phi={b.phi_degrees:.1f},x={b.x:.3f},y={b.y:.3f})"
-                for bid, b in sorted(self.map.batches.items(), key=lambda item: item[0])
+                for bid, b in sorted(batches_snapshot, key=lambda item: item[0])
             ]
             message = f"📦 Available batches: {', '.join(batch_dump)}"
             available_signature = tuple(batch_dump)
@@ -683,7 +688,7 @@ class TaskScheduler:
         queued_pickup_debug_rows = []
         # generate pickup tasks if we have space in the robot
         if self.map.robot_front_empty or self.map.robot_back_empty:
-            for batch_id, batch in self.map.batches.items():
+            for batch_id, batch in batches_snapshot:
                 if (self.allow_fx == False) and (batch_id[0] == "f"):
                     if self.ros_node is not None:
                         self.ros_node.get_logger().debug(f"⏭️ Skip pickup {batch_id}: fx pickups disabled")
@@ -746,13 +751,13 @@ class TaskScheduler:
         
         # generate dropoff tasks if we have crates in the robot
         if not self.map.robot_front_empty or not self.map.robot_back_empty:
-            for dropoff_id, dropoff in self.map.drop_offs.items():
-                if (( not (dropoff_id in ["f3", "f5", "f8"]) or dropoff["status"] != "empty" ) or (batch.color is not None and batch.color.count(self.map.robot_color[0]) == len(batch.color) )):
+            for dropoff_id, dropoff in dropoffs_snapshot:
+                if (dropoff_id not in ["f3", "f5", "f8"]) or (dropoff["status"] != "empty"):
                     continue
-                if (self.map.time_left < self.must_leave_pamiyeet_alone_time) and (((self.map.robot_color[0] == "y") and (batch_id in ["f1", "f2", "f3", "f4", "f6"])) or ((self.map.robot_color[0] == "b") and (batch_id in ["f7", "f8", "f9", "f10", "f6"]))):
+                if (self.map.time_left < self.must_leave_pamiyeet_alone_time) and (((self.map.robot_color[0] == "y") and (dropoff_id in ["f1", "f2", "f3", "f4", "f6"])) or ((self.map.robot_color[0] == "b") and (dropoff_id in ["f7", "f8", "f9", "f10", "f6"]))):
                     if self.ros_node is not None:
                         self.ros_node.get_logger().debug(
-                            f"⏭️ Skip pickup {batch_id}: time left {self.map.time_left:.1f}s < must_leave_pamiyeet_alone_time {self.must_leave_pamiyeet_alone_time:.1f}s"
+                            f"⏭️ Skip dropoff {dropoff_id}: time left {self.map.time_left:.1f}s < must_leave_pamiyeet_alone_time {self.must_leave_pamiyeet_alone_time:.1f}s"
                         )
                     continue
                 task = Task(target_id=dropoff_id, type="dropoff")
