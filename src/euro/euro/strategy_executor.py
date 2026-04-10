@@ -981,18 +981,7 @@ def front_task(strategy, front_controller=None,pneumatic_controller=None):
                 time.sleep(0.1)
                 continue
 
-            # Safety ordering guard: actuator actions must only run after
-            # STM commands are fully dispatched/executed for the current step.
-            if command in ('pick_up', 'put_down') and (len(strategy.queues['STM']) > 0 or not IDLE_FOR_SYSTEMS):
-                time.sleep(0.05)
-                continue
-
-            # Concurrency safety: queue may be cleared/replaced by another thread
-            # (e.g., emergency handling) after we captured `cmd`.
-            # Never execute if this command is no longer at queue head.
-            if len(strategy.queues['ESP_front']) == 0 or strategy.queues['ESP_front'][0] is not cmd:
-                time.sleep(0.01)
-                continue
+            
             
             if command == 'prepare':
                 action = params.get('action')
@@ -1027,25 +1016,6 @@ def back_task(strategy, back_controller=None,pneumatic_controller=None):
             command = cmd.get('command')
             params = cmd.get('params', {})
             wait = cmd.get('wait', False)
-
-            # Never run actuator actions while emergency is active.
-            # Keep the command queued and retry when emergency clears.
-            if EMERGENCY_STOP and command in ('pick_up', 'put_down'):
-                time.sleep(0.1)
-                continue
-
-            # Safety ordering guard: actuator actions must only run after
-            # STM commands are fully dispatched/executed for the current step.
-            if command in ('pick_up', 'put_down') and (len(strategy.queues['STM']) > 0 or not IDLE_FOR_SYSTEMS):
-                time.sleep(0.05)
-                continue
-
-            # Concurrency safety: queue may be cleared/replaced by another thread
-            # (e.g., emergency handling) after we captured `cmd`.
-            # Never execute if this command is no longer at queue head.
-            if len(strategy.queues['ESP_back']) == 0 or strategy.queues['ESP_back'][0] is not cmd:
-                time.sleep(0.01)
-                continue
             
             if command == 'prepare':
                 action = params.get('action')
