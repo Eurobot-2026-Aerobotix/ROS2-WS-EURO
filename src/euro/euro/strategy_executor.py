@@ -466,7 +466,6 @@ def stm32_task(strategy, stm32,lidar):
     global STEAL_REPEAT_COUNT
     # Import Vector3 for publishing target position
     from geometry_msgs.msg import Vector3
-    
     # Variables to save last command for resuming after emergency
     last_command = None
     last_params = None
@@ -533,6 +532,7 @@ def stm32_task(strategy, stm32,lidar):
                 # Check for emergency stop
                 if EMERGENCY_STOP and not was_in_emergency and not replanning :
                     strategy.get_logger().warning(f"🚨 Emergency detected during movement - stopping STM32 (IDLE={IDLE}, IDLE_FOR_SYSTEMS={IDLE_FOR_SYSTEMS})")
+                    strategy.remove_esp_waiting=True
                     stm32.stop()
                     last_stm_command="emergency"
                     IDLE=False
@@ -556,7 +556,6 @@ def stm32_task(strategy, stm32,lidar):
                         if idle_wait_count % 10 == 0:  # Log every 0.5 seconds
                             strategy.get_logger().info(f"⏸️  Still waiting for IDLE... (count={idle_wait_count}, IDLE={IDLE})")
                         time.sleep(0.05)  # Wait until STM32 reports idle after stop
-                    strategy.remove_esp_waiting=True
                     strategy.get_logger().info(f"✓ STM32 now IDLE after emergency stop (waited {idle_wait_count * 0.05:.2f}s)")
                     # Arm steal loop immediately from emergency stop.
                     if not STEAL_LOOP_ACTIVE and not STEAL_LOOP_RUNNING:
@@ -974,15 +973,6 @@ def front_task(strategy, front_controller=None,pneumatic_controller=None):
             command = cmd.get('command')
             params = cmd.get('params', {})
             wait = cmd.get('wait', False)
-
-            # Never run actuator actions while emergency is active.
-            # Keep the command queued and retry when emergency clears.
-            if EMERGENCY_STOP and command in ('pick_up', 'put_down'):
-                time.sleep(0.1)
-                continue
-
-            
-            
             if command == 'prepare':
                 action = params.get('action')
                 if action == 'pick_up':

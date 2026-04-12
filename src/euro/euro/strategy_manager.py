@@ -424,9 +424,19 @@ class StrategyManager(Node):
                                 # Static flow safety: if emergency/steal starts while waiting,
                                 # abort this task loading so ESP commands are not queued from stale flow.
                                 if(self.remove_esp_waiting):
-                                    self.get_logger().warning("🛑 ESP32 command wait interrupted due to emergency/steal - stopping task load to prevent stale ESP commands")
-                                    self.remove_esp_waiting = False
-                                    return False
+                                    emergency_active = bool(getattr(executor_module, 'EMERGENCY_STOP', False))
+                                    if allow_during_emergency and not emergency_active:
+                                        # Generated flow may inherit a stale interrupt flag after emergency clears.
+                                        self.get_logger().info(
+                                            "🔄 Consuming stale ESP wait interrupt after emergency clear; continuing generated enqueue"
+                                        )
+                                        self.remove_esp_waiting = False
+                                    else:
+                                        self.get_logger().warning(
+                                            f"🛑 ESP32 command wait interrupted (allow_during_emergency={allow_during_emergency}, emergency_active={int(emergency_active)})"
+                                        )
+                                        self.remove_esp_waiting = False
+                                        return False
 
                                 # Add prepare command when on second-to-last STM command
                                 if not prepare_added and executor_module.SYSTEMS_IDLE_COUNT == n-1:
@@ -441,18 +451,6 @@ class StrategyManager(Node):
                                 
                                 self.get_logger().debug(f"Waiting for STM commands to be sent... STM queue size: {n}, SYSTEMS_IDLE_COUNT: {executor_module.SYSTEMS_IDLE_COUNT}")
                                 time.sleep(0.1)
-
-                    # Static flow safety: do not append stale static commands once
-                    # emergency/steal has started.
-                    if (not allow_during_emergency) and (
-                        executor_module.EMERGENCY_STOP
-                        or executor_module.STEAL_LOOP_ACTIVE
-                        or executor_module.STEAL_LOOP_RUNNING
-                    ):
-                        self.get_logger().warning(
-                            f"⛔ Skipping static command enqueue during emergency/steal: task={task_name}, device={device}, command={command}"
-                        )
-                        return False
 
                     if device =="SSTM" and command =="set_position":
                         self.queues["RASP_PI"].append(cmd)
