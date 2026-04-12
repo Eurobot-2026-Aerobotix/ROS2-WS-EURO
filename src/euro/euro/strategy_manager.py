@@ -406,6 +406,7 @@ class StrategyManager(Node):
                         self.get_logger().info(f"      ⏳ Waiting for dependencies...")
                         if(device == "STM"):
                             while not executor_module.ESP_FRONT_IDLE or not executor_module.ESP_BACK_IDLE:
+                                self.get_logger().info(f"Waiting for ESP systems to be idle... ESP_FRONT_IDLE={executor_module.ESP_FRONT_IDLE}, ESP_BACK_IDLE={executor_module.ESP_BACK_IDLE}")
                                 if self.interrupt_wait:
                                     self.get_logger().warning("🛑 ESP wait interrupted")
                                     self.load_task_to_queues_ended = True
@@ -421,6 +422,7 @@ class StrategyManager(Node):
                             prepare_added = False
                             
                             while executor_module.SYSTEMS_IDLE_COUNT <n and len((self.queues["STM"]))>0 :
+                                self.get_logger().debug(f"Waiting for STM commands to be done in load tasks to queues... STM queue size: {n}, SYSTEMS_IDLE_COUNT: {executor_module.SYSTEMS_IDLE_COUNT}")
                                 # Static flow safety: if emergency/steal starts while waiting,
                                 # abort this task loading so ESP commands are not queued from stale flow.
                                 if(self.remove_esp_waiting):
@@ -449,7 +451,7 @@ class StrategyManager(Node):
                                     self.get_logger().info(f"      🔧 Adding prepare command for {device} with action: {command} (STM at {n-1}/{n})")
                                     prepare_added = True
                                 
-                                self.get_logger().debug(f"Waiting for STM commands to be sent... STM queue size: {n}, SYSTEMS_IDLE_COUNT: {executor_module.SYSTEMS_IDLE_COUNT}")
+                                self.get_logger().info(f"Waiting for STM commands to be sent... STM queue size: {n}, SYSTEMS_IDLE_COUNT: {executor_module.SYSTEMS_IDLE_COUNT}")
                                 time.sleep(0.1)
 
                     if device =="SSTM" and command =="set_position":
@@ -487,7 +489,6 @@ class StrategyManager(Node):
             or executor_module.WAITING_TIRETTE
             or len(self.queues["STM"]) != 0
             or ((not ignore_rasp_pi) and len(self.queues["RASP_PI"]) != 0)
-            or executor_module.replanning
             or self.end_game is True
         ):
             # Check if shutdown is requested
@@ -586,6 +587,10 @@ class StrategyManager(Node):
         generated_tasks = None
         generation_attempt = 0
 
+        # First, wait for any ongoing actions to complete fully.
+        # This ensures we start from a clean, idle state, mimicking the static task flow.
+        self.wait_for_all_queues_empty(ignore_rasp_pi=True)
+
         while generated_tasks is None:
             if executor_module.SHUTDOWN_REQUESTED or self.end_game or getattr(executor_module, 'return_home_triggered', False):
                 self.get_logger().warning("⚠️ Steal generation aborted (shutdown/end-game)")
@@ -613,6 +618,11 @@ class StrategyManager(Node):
                 continue
 
         self.get_logger().info(f"✅ Generated {len(generated_tasks)} task(s) for steal command")
+
+        # Wait for all previous commands to finish BEFORE enqueuing the new task.
+        # This prevents race conditions where the steal loop tries to run a new
+        # task before the previous one (e.g., put_down) has completed.
+        self.wait_for_all_queues_empty(ignore_rasp_pi=False)
 
         contains_return_home_final = any(
             str(task.get('name', '')).startswith('return_home_bezier')

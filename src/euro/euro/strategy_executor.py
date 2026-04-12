@@ -130,8 +130,9 @@ def path_planning_task(strategy, lidar, round_timer, pneumatic_controller=None, 
                     strategy.get_logger().warning(f"⚠️ Return home path attempt #{attempt_count} failed - retrying...")
                     time.sleep(0.5)
 
-        if STEAL_LOOP_ACTIVE and not STEAL_LOOP_RUNNING:
-            STEAL_LOOP_RUNNING = True
+        # If emergency stop is active, arm the steal loop
+        if EMERGENCY_STOP and not STEAL_LOOP_ACTIVE:
+            STEAL_LOOP_ACTIVE = True
             try:
                 repeat_count = max(1, int(STEAL_REPEAT_COUNT))
             except (TypeError, ValueError):
@@ -190,6 +191,8 @@ def path_planning_task(strategy, lidar, round_timer, pneumatic_controller=None, 
                         f"🏴‍☠️ Path-planning steal attempt {attempt}/{repeat_count}"
                     )
                     success = strategy.handle_steal_command(params=[repeat_count, 0], wait=True)
+                    # Add a small delay to allow other threads to update their state
+                    time.sleep(0.2)
                     if not success:
                         strategy.get_logger().warning(
                             f"⚠️ Path-planning steal attempt {attempt}/{repeat_count} failed"
@@ -941,9 +944,12 @@ def put_down(controller,pneumatic,strategy,front,params=None):
                 f"⚠️ Pathfinder put_down failed ({'front' if front else 'back'}, color={put_down_color}): {message}"
             )
     if front:
+        strategy.get_logger().info("Setting ESP_FRONT_IDLE to True in put_down")
         ESP_FRONT_IDLE=True
         _update_robot_holder_status(strategy, front=True, empty=True)
-    else: ESP_BACK_IDLE=True
+    else: 
+        strategy.get_logger().info("Setting ESP_BACK_IDLE to True in put_down")
+        ESP_BACK_IDLE=True
     if not front:
         _update_robot_holder_status(strategy, front=False, empty=True)
     
