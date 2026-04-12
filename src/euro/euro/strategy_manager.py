@@ -947,9 +947,9 @@ def main(args=None):
                     and not state.SHUTDOWN_REQUESTED
                     and not strategy.end_game
                 ):
-                    strategy.get_logger().warning(
-                        f"⏸️ Static task enqueue paused for '{task['name']}' (steal loop active/running)"
-                    )
+                    # strategy.get_logger().warning(
+                    #     f"⏸️ Static task enqueue paused for '{task['name']}' (steal loop active/running)"
+                    # )
                     time.sleep(0.05)
 
                 if state.SHUTDOWN_REQUESTED or strategy.end_game:
