@@ -65,9 +65,12 @@ def path_planning_task(strategy, lidar, round_timer, pneumatic_controller=None, 
             # Clear all device queues
             strategy.queues['ESP_front'].clear()
             strategy.queues['ESP_back'].clear()
+            state.ESP_DISPATCH_EPOCH = int(getattr(state, 'ESP_DISPATCH_EPOCH', 0)) + 1
             strategy.queues['RASP_PI'].clear()
             strategy.queues['STM'].clear()
-            strategy.get_logger().info("🗑️  Cleared all task queues for return home")
+            strategy.get_logger().info(
+                f"🗑️  Cleared all task queues for return home (epoch={state.ESP_DISPATCH_EPOCH})"
+            )
             
             # Set goal to home position (250mm, 225mm)
             strategy.pathfinder.set_goal(0.25, 0.225, 0.0)  # Convert mm to meters
@@ -167,6 +170,11 @@ def path_planning_task(strategy, lidar, round_timer, pneumatic_controller=None, 
                         strategy.get_logger().warning(
                             f"⚠️ Path-planning steal attempt {attempt}/{repeat_count} failed"
                         )
+                        if state.EMERGENCY_STOP or state.replanning:
+                            strategy.get_logger().warning(
+                                "🔁 Keeping steal loop active after transient emergency enqueue failure"
+                            )
+                            continue
                         break
 
                     if strategy.end_game:
@@ -493,9 +501,12 @@ def stm32_task(strategy, stm32,lidar):
                     strategy.queues['STM'].clear()
                     strategy.queues['ESP_front'].clear()
                     strategy.queues['ESP_back'].clear()
+                    state.ESP_DISPATCH_EPOCH = int(getattr(state, 'ESP_DISPATCH_EPOCH', 0)) + 1
                     state.ESP_FRONT_IDLE = True
                     state.ESP_BACK_IDLE = True
-                    strategy.get_logger().warning("🧹 Cleared STM/ESP queues for steal-only emergency recovery")
+                    strategy.get_logger().warning(
+                        f"🧹 Cleared STM/ESP queues for steal-only emergency recovery (epoch={state.ESP_DISPATCH_EPOCH})"
+                    )
 
                     
 
@@ -770,43 +781,68 @@ def _update_robot_color_in_map(strategy) -> None:
     map_obj.set_robot_color(str(color).strip().lower())
 
 
+def _should_abort_esp_action(strategy, front: bool, action_name: str) -> bool:
+    """Abort ESP action immediately on shutdown or emergency and restore idle flags."""
+    if not state.SHUTDOWN_REQUESTED and not state.EMERGENCY_STOP:
+        return False
+
+    if front:
+        state.ESP_FRONT_IDLE = True
+    else:
+        state.ESP_BACK_IDLE = True
+
+    strategy.get_logger().warning(
+        f"⚠️ {action_name} aborted - SHUTDOWN_REQUESTED={int(bool(state.SHUTDOWN_REQUESTED))}, "
+        f"EMERGENCY_STOP={int(bool(state.EMERGENCY_STOP))}"
+    )
+    return True
+
+
+def _is_stale_esp_command(cmd) -> bool:
+    if not isinstance(cmd, dict):
+        return False
+    cmd_epoch = int(cmd.get('_dispatch_epoch', getattr(state, 'ESP_DISPATCH_EPOCH', 0)))
+    current_epoch = int(getattr(state, 'ESP_DISPATCH_EPOCH', 0))
+    return cmd_epoch != current_epoch
+
+
 def pick_up(controller,pneumatic,strategy,front):
     
     strategy.get_logger().info(f"🚀 pick_up() called for {'FRONT' if front else 'BACK'}")
     
-    if state.SHUTDOWN_REQUESTED:
-        if front:
-            state.ESP_FRONT_IDLE = True
-        else:
-            state.ESP_BACK_IDLE = True
-        strategy.get_logger().warning("⚠️ pick_up() aborted - SHUTDOWN_REQUESTED")
-        return
-    if state.EMERGENCY_STOP:
-        if front:
-            state.ESP_FRONT_IDLE = True
-        else:
-            state.ESP_BACK_IDLE = True
-        strategy.get_logger().warning("⚠️ pick_up() deferred - EMERGENCY_STOP is active")
+    if _should_abort_esp_action(strategy, front, "pick_up()"):
         return
     #stana(controller)
-    if state.SHUTDOWN_REQUESTED:
+    if _should_abort_esp_action(strategy, front, "pick_up()"):
         return
     
     if front:
         pneumatic.front(0)
     else: pneumatic.back(0)
+    if _should_abort_esp_action(strategy, front, "pick_up()"):
+        return
+
     controller.kabech(1)
     time.sleep(0.8)
+    if _should_abort_esp_action(strategy, front, "pick_up()"):
+        return
+
     controller.n20(1111)
     stana(controller)
+    if _should_abort_esp_action(strategy, front, "pick_up()"):
+        return
+
     time.sleep(0.2)
-    if state.SHUTDOWN_REQUESTED:
+    if _should_abort_esp_action(strategy, front, "pick_up()"):
         return
     
     
     time.sleep(0.0)
     strategy.get_logger().info(f"🔍 Requesting NEW color pattern for {'FRONT' if front else 'BACK'} at position ({strategy.latest_robot_pose.x:.3f}, {strategy.latest_robot_pose.y:.3f})")
     color_pattern = talaa(strategy, controller,front)
+    if _should_abort_esp_action(strategy, front, "pick_up()"):
+        return
+
     if front:
         state.color_pt_front = color_pattern
         state.ESP_FRONT_IDLE=True
@@ -818,8 +854,9 @@ def pick_up(controller,pneumatic,strategy,front):
         _update_robot_holder_status(strategy, front=False, empty=False)
         strategy.get_logger().info(f"📦 Back picked up - NEW Color pattern: {state.color_pt_back}")
     stana(controller)
-    if state.SHUTDOWN_REQUESTED:
+    if _should_abort_esp_action(strategy, front, "pick_up()"):
         return
+
     controller.kabech(0)
 def put_down(controller,pneumatic,strategy,front,params=None):
     
@@ -916,6 +953,18 @@ def front_task(strategy, front_controller=None,pneumatic_controller=None):
         # Check if there are commands in the queue
         if len(strategy.queues['ESP_front']) > 0:
             cmd = strategy.queues['ESP_front'][0]  # Peek at first command
+
+            if _is_stale_esp_command(cmd):
+                if len(strategy.queues['ESP_front']) > 0 and strategy.queues['ESP_front'][0] is cmd:
+                    strategy.queues['ESP_front'].popleft()
+                state.ESP_FRONT_IDLE = True
+                strategy.get_logger().warning("🗑️ Dropped stale ESP_front command from old epoch")
+                time.sleep(0.05)
+                continue
+
+            if state.EMERGENCY_STOP:
+                time.sleep(0.05)
+                continue
             
             command = cmd.get('command')
             params = cmd.get('params', {})
@@ -947,6 +996,18 @@ def back_task(strategy, back_controller=None,pneumatic_controller=None):
         # Check if there are commands in the queue
         if len(strategy.queues['ESP_back']) > 0:
             cmd = strategy.queues['ESP_back'][0]  # Peek at first command
+
+            if _is_stale_esp_command(cmd):
+                if len(strategy.queues['ESP_back']) > 0 and strategy.queues['ESP_back'][0] is cmd:
+                    strategy.queues['ESP_back'].popleft()
+                state.ESP_BACK_IDLE = True
+                strategy.get_logger().warning("🗑️ Dropped stale ESP_back command from old epoch")
+                time.sleep(0.05)
+                continue
+
+            if state.EMERGENCY_STOP:
+                time.sleep(0.05)
+                continue
             
             command = cmd.get('command')
             params = cmd.get('params', {})

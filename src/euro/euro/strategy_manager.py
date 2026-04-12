@@ -372,7 +372,6 @@ class StrategyManager(Node):
     def load_task_to_queues(self, task_name: str, allow_during_emergency: bool = False):
         """Load a task's commands into device queues"""
         # Find the task
-        global n
         task = None
         for t in self.tasks:
             if t['name'] == task_name:
@@ -389,6 +388,7 @@ class StrategyManager(Node):
             command = cmd.get('command')
             params = cmd.get('params', {})
             wait = cmd.get('wait', False)
+            cmd_enqueue_epoch = int(getattr(state, 'ESP_DISPATCH_EPOCH', 0))
             if not self.end_game:
                 self.get_logger().info(f"⚙️  [{idx+1}/{len(task['sequence'])}] {device} -> {command}")
                 state.SYSTEMS_IDLE_COUNT=0
@@ -407,15 +407,23 @@ class StrategyManager(Node):
                                 time.sleep(0.1)
                         if(device == "ESP_front" or device == "ESP_back"):
                             state.SYSTEMS_IDLE_COUNT=0
-                            n=len((self.queues["STM"]))
+                            expected_stm_count = len(self.queues["STM"])
                             if state.IDLE_FOR_SYSTEMS and not state.IDLE:
                                 state.SYSTEMS_IDLE_COUNT=1
                             
                             # Track if prepare command has been added
                             prepare_added = False
                             
-                            while state.SYSTEMS_IDLE_COUNT <n and len((self.queues["STM"]))>0 :
-                                self.get_logger().debug(f"Waiting for STM commands to be done in load tasks to queues... STM queue size: {n}, SYSTEMS_IDLE_COUNT: {state.SYSTEMS_IDLE_COUNT}")
+                            while state.SYSTEMS_IDLE_COUNT < expected_stm_count and len((self.queues["STM"]))>0 :
+                                if int(getattr(state, 'ESP_DISPATCH_EPOCH', 0)) != cmd_enqueue_epoch:
+                                    self.get_logger().warning(
+                                        f"🛑 ESP32 command wait canceled due to dispatch epoch change ({cmd_enqueue_epoch} -> {state.ESP_DISPATCH_EPOCH})"
+                                    )
+                                    return False
+
+                                self.get_logger().debug(
+                                    f"Waiting for STM commands to be done in load tasks to queues... STM queue size: {expected_stm_count}, SYSTEMS_IDLE_COUNT: {state.SYSTEMS_IDLE_COUNT}"
+                                )
                                 # Static flow safety: if emergency/steal starts while waiting,
                                 # abort this task loading so ESP commands are not queued from stale flow.
                                 if(self.remove_esp_waiting):
@@ -434,18 +442,35 @@ class StrategyManager(Node):
                                         return False
 
                                 # Add prepare command when on second-to-last STM command
-                                if not prepare_added and state.SYSTEMS_IDLE_COUNT == n-1:
+                                if not prepare_added and state.SYSTEMS_IDLE_COUNT == expected_stm_count-1:
                                     prepare_cmd = {
                                         'command': 'prepare',
                                         'params': {'action': command},
-                                        'wait': False
+                                        'wait': False,
+                                        '_dispatch_epoch': state.ESP_DISPATCH_EPOCH,
                                     }
                                     self.queues[device].append(prepare_cmd)
-                                    self.get_logger().info(f"      🔧 Adding prepare command for {device} with action: {command} (STM at {n-1}/{n})")
+                                    self.get_logger().info(
+                                        f"      🔧 Adding prepare command for {device} with action: {command} (STM at {expected_stm_count-1}/{expected_stm_count})"
+                                    )
                                     prepare_added = True
                                 
-                                self.get_logger().info(f"Waiting for STM commands to be sent... STM queue size: {n}, SYSTEMS_IDLE_COUNT: {state.SYSTEMS_IDLE_COUNT}")
+                                self.get_logger().info(
+                                    f"Waiting for STM commands to be sent... STM queue size: {expected_stm_count}, SYSTEMS_IDLE_COUNT: {state.SYSTEMS_IDLE_COUNT}"
+                                )
                                 time.sleep(0.1)
+
+                            if int(getattr(state, 'ESP_DISPATCH_EPOCH', 0)) != cmd_enqueue_epoch:
+                                self.get_logger().warning(
+                                    f"🛑 ESP32 enqueue canceled due to dispatch epoch change ({cmd_enqueue_epoch} -> {state.ESP_DISPATCH_EPOCH})"
+                                )
+                                return False
+
+                            if expected_stm_count > 0 and state.SYSTEMS_IDLE_COUNT < expected_stm_count:
+                                self.get_logger().warning(
+                                    f"🛑 ESP32 dependency wait ended early (STM target={expected_stm_count}, done={state.SYSTEMS_IDLE_COUNT})"
+                                )
+                                return False
 
                     if device =="SSTM" and command =="set_position":
                         self.queues["RASP_PI"].append(cmd)
@@ -462,7 +487,15 @@ class StrategyManager(Node):
                         if device =="RASP_PI" and command=="Wait for manual start":
                             state.WAITING_TIRETTE=True
                         if not self.end_game:
-                            self.queues[device].append(cmd)
+                            cmd_to_enqueue = dict(cmd)
+                            if device in ("ESP_front", "ESP_back"):
+                                if int(getattr(state, 'ESP_DISPATCH_EPOCH', 0)) != cmd_enqueue_epoch:
+                                    self.get_logger().warning(
+                                        f"🛑 Skipping stale {device} enqueue due to epoch mismatch ({cmd_enqueue_epoch} -> {state.ESP_DISPATCH_EPOCH})"
+                                    )
+                                    return False
+                                cmd_to_enqueue['_dispatch_epoch'] = state.ESP_DISPATCH_EPOCH
+                            self.queues[device].append(cmd_to_enqueue)
                     
                 else:
                     self.get_logger().warn(f"      ⚠ Unknown device: {device}")
