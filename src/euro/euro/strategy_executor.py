@@ -30,52 +30,22 @@ class Round:
             return 0.0
         return time.time() - self._start_time
 
-# Global state variables
-IDLE = True
-IDLE_FOR_SYSTEMS=True
-PREVIOUS_IDLE_FOR_SYSTEMS=True
-SYSTEMS_IDLE_COUNT=0
-EMERGENCY_STOP = False
-ESP_FRONT_IDLE=True
-ESP_BACK_IDLE=True
-color_pt_front=None
-color_pt_back=None
-color_pt=None
-SHUTDOWN_REQUESTED = False  # Global shutdown flag
-WAITING_TIRETTE=False
-replanning=False
-last_stm_command=""
-return_home_triggered = False  # Flag to ensure return home logic only triggers once
-known_id_front=None
-known_id_back=None
-STEAL_LOOP_ACTIVE = False
-STEAL_LOOP_RUNNING = False
-STEAL_REPEAT_COUNT = 30
+from euro.shared_state import state
 
 def path_planning_task(strategy, lidar, round_timer, pneumatic_controller=None, front_controller=None, back_controller=None,stm32_controller=None):
     """Dedicated thread for handling return home at 90s"""
-    global SHUTDOWN_REQUESTED
-    global last_stm_command
-    global IDLE
-    global IDLE_FOR_SYSTEMS
-    global SYSTEMS_IDLE_COUNT
-    global replanning
-    global return_home_triggered
-    global STEAL_LOOP_ACTIVE
-    global STEAL_LOOP_RUNNING
-    global STEAL_REPEAT_COUNT
     strategy.get_logger().info("🏠 Return home monitor thread started")
-    return_home_triggered = False
+    state.return_home_triggered = False
     reset_stm_triggered=False
-    while rclpy.ok() and not SHUTDOWN_REQUESTED:
+    while rclpy.ok() and not state.SHUTDOWN_REQUESTED:
         # Check if only 10 seconds remain (90s elapsed out of 100s)
         if round_timer.time()>=100.0 and not reset_stm_triggered:
             strategy.get_logger().info("⏰ Game time reached 100s -    resetting stm")
             stm32_controller.reset()
             reset_stm_triggered=True
             strategy.end_game = True
-        if round_timer.time() >= 190.0 and round_timer.time() <= 100.0 and not return_home_triggered:
-            return_home_triggered = True
+        if round_timer.time() >= 190.0 and round_timer.time() <= 100.0 and not state.return_home_triggered:
+            state.return_home_triggered = True
             strategy.end_game = True
             strategy.get_logger().warning("⏰ Only 10 seconds left! Returning home to (250, 225)...")
             
@@ -107,7 +77,7 @@ def path_planning_task(strategy, lidar, round_timer, pneumatic_controller=None, 
             path_found = False
             attempt_count = 0
             
-            while not path_found and not SHUTDOWN_REQUESTED and (round_timer.time() < 100.0):
+            while not path_found and not state.SHUTDOWN_REQUESTED and (round_timer.time() < 100.0):
                 attempt_count += 1
                 strategy.get_logger().info(f"🏠 Return home path attempt #{attempt_count}")
                 
@@ -118,23 +88,23 @@ def path_planning_task(strategy, lidar, round_timer, pneumatic_controller=None, 
                 if path_found:
                     strategy.get_logger().info(f"✅ Return home path found on attempt #{attempt_count}")
                     # Set flags for execution
-                    last_stm_command = "replanned"
-                    SYSTEMS_IDLE_COUNT = 0
-                    IDLE = True
-                    IDLE_FOR_SYSTEMS = True
+                    state.last_stm_command = "replanned"
+                    state.SYSTEMS_IDLE_COUNT = 0
+                    state.IDLE = True
+                    state.IDLE_FOR_SYSTEMS = True
                     lidar.clear_on = True
                     lidar.clear_goto_target()
                     lidar.generate_path = 0
-                    replanning = False
+                    state.replanning = False
                 else:
                     strategy.get_logger().warning(f"⚠️ Return home path attempt #{attempt_count} failed - retrying...")
                     time.sleep(0.5)
 
         # If emergency stop is active, arm the steal loop
-        if EMERGENCY_STOP and not STEAL_LOOP_ACTIVE:
-            STEAL_LOOP_ACTIVE = True
+        if state.EMERGENCY_STOP and not state.STEAL_LOOP_ACTIVE:
+            state.STEAL_LOOP_ACTIVE = True
             try:
-                repeat_count = max(1, int(STEAL_REPEAT_COUNT))
+                repeat_count = max(1, int(state.STEAL_REPEAT_COUNT))
             except (TypeError, ValueError):
                 repeat_count = 1
 
@@ -143,7 +113,7 @@ def path_planning_task(strategy, lidar, round_timer, pneumatic_controller=None, 
                     f"🏴‍☠️ Path-planning steal loop started ({repeat_count} time(s))"
                 )
                 for attempt in range(1, repeat_count + 1):
-                    if not rclpy.ok() or SHUTDOWN_REQUESTED or strategy.end_game or return_home_triggered or not STEAL_LOOP_ACTIVE:
+                    if not rclpy.ok() or state.SHUTDOWN_REQUESTED or strategy.end_game or state.return_home_triggered or not state.STEAL_LOOP_ACTIVE:
                         strategy.get_logger().warning(
                             "⚠️ Stopping path-planning steal loop due to shutdown/end-game"
                         )
@@ -155,37 +125,37 @@ def path_planning_task(strategy, lidar, round_timer, pneumatic_controller=None, 
                     # This avoids deadlocks when emergency stays latched for the
                     # previous blocked target.
                     wait_gate_count = 0
-                    while rclpy.ok() and not SHUTDOWN_REQUESTED and not strategy.end_game and STEAL_LOOP_ACTIVE:
+                    while rclpy.ok() and not state.SHUTDOWN_REQUESTED and not strategy.end_game and state.STEAL_LOOP_ACTIVE:
                         path_replan_requested = bool(getattr(lidar, 'generate_path', 0) == 1)
-                        ready_for_steal = bool(IDLE) and (not EMERGENCY_STOP or path_replan_requested)
+                        ready_for_steal = bool(state.IDLE) and (not state.EMERGENCY_STOP or path_replan_requested)
                         if ready_for_steal:
                             break
 
                         wait_gate_count += 1
                         if wait_gate_count == 1 or wait_gate_count % 20 == 0:
                             strategy.get_logger().info(
-                                f"⏳ Steal loop waiting (EMERGENCY_STOP={int(bool(EMERGENCY_STOP))}, IDLE={IDLE}, generate_path={int(path_replan_requested)})"
+                                f"⏳ Steal loop waiting (EMERGENCY_STOP={int(bool(state.EMERGENCY_STOP))}, IDLE={state.IDLE}, generate_path={int(path_replan_requested)})"
                             )
                         time.sleep(0.05)
 
                     # If lidar explicitly asks for replanning while emergency is still
                     # active, clear stale target so emergency can be reevaluated against
                     # the new generated steal path.
-                    if bool(IDLE) and EMERGENCY_STOP and bool(getattr(lidar, 'generate_path', 0) == 1):
+                    if bool(state.IDLE) and state.EMERGENCY_STOP and bool(getattr(lidar, 'generate_path', 0) == 1):
                         strategy.get_logger().warning(
                             "🧭 Steal loop proceeding on generate_path=1 while emergency active; clearing stale go-to target"
                         )
                         lidar.clear_goto_target()
                         lidar.generate_path = 0
 
-                    if not rclpy.ok() or SHUTDOWN_REQUESTED or strategy.end_game or return_home_triggered or not STEAL_LOOP_ACTIVE:
+                    if not rclpy.ok() or state.SHUTDOWN_REQUESTED or strategy.end_game or state.return_home_triggered or not state.STEAL_LOOP_ACTIVE:
                         strategy.get_logger().warning(
                             "⚠️ Stopping path-planning steal loop before attempt due to shutdown/end-game"
                         )
                         break
 
                     # Ensure emergency-replanning flag does not block generated-flow waits.
-                    replanning = False
+                    state.replanning = False
 
                     strategy.get_logger().info(
                         f"🏴‍☠️ Path-planning steal attempt {attempt}/{repeat_count}"
@@ -209,9 +179,9 @@ def path_planning_task(strategy, lidar, round_timer, pneumatic_controller=None, 
                     f"✅ Path-planning steal loop finished ({repeat_count} time(s))"
                 )
             finally:
-                STEAL_LOOP_ACTIVE = False
-                STEAL_LOOP_RUNNING = False
-                STEAL_REPEAT_COUNT = 30
+                state.STEAL_LOOP_ACTIVE = False
+                state.STEAL_LOOP_RUNNING = False
+                state.STEAL_REPEAT_COUNT = 30
         
         time.sleep(0.05)  # 50ms for quicker IDLE updates
 
@@ -227,54 +197,47 @@ def execute_prepared_path(strategy, lidar):
 
 def robot_status(strategy, stm32, lidar):
     """Runs every 100ms to check STM32 movement status and lidar obstacles"""
-    global IDLE
-    global EMERGENCY_STOP
-    global SHUTDOWN_REQUESTED
     first_emergency = True
-    global IDLE_FOR_SYSTEMS
-    global PREVIOUS_IDLE_FOR_SYSTEMS
-    global SYSTEMS_IDLE_COUNT
-    global last_stm_command
     
     strategy.get_logger().info("🤖 Robot status monitoring started")
     status_loop_count = 0
     stopped_by_failsafe=False
-    while rclpy.ok() and not SHUTDOWN_REQUESTED:
+    while rclpy.ok() and not state.SHUTDOWN_REQUESTED:
         status_loop_count += 1
         
         # Only check if robot is idle when we think it's busy
-        if not IDLE and not stopped_by_failsafe :
-            if not IDLE_FOR_SYSTEMS and last_stm_command != "emergency":
+        if not state.IDLE and not stopped_by_failsafe :
+            if not state.IDLE_FOR_SYSTEMS and state.last_stm_command != "emergency":
                 success, is_completed, _ = stm32.IDLE_FOR_SYSTEMS(1.0)
                 #strategy.get_logger().info(f"idle for systems  : {is_completed}")
             else:
                 success, is_completed, _ = stm32.IDLE(1.0)
                 #strategy.get_logger().info(f"idle : {is_completed}")
-            if is_completed and last_stm_command == "navigation":
+            if is_completed and state.last_stm_command == "navigation":
                 _ ,stopped_by_failsafe=stm32.fail_safe(1.0)    
                 strategy.get_logger().info(f"failsafe result : {stopped_by_failsafe}")
             if not success:
                 strategy.get_logger().warning("⚠️ Failed to check robot status")
-            elif stopped_by_failsafe and last_stm_command == "navigation":
+            elif stopped_by_failsafe and state.last_stm_command == "navigation":
                 strategy.get_logger().info("✅ Robot stopped by failsafe not updating idle to be stopped ")
             else:
-                if not IDLE_FOR_SYSTEMS and not EMERGENCY_STOP:
-                    PREVIOUS_IDLE_FOR_SYSTEMS=IDLE_FOR_SYSTEMS
-                    IDLE_FOR_SYSTEMS = is_completed
+                if not state.IDLE_FOR_SYSTEMS and not state.EMERGENCY_STOP:
+                    state.PREVIOUS_IDLE_FOR_SYSTEMS=state.IDLE_FOR_SYSTEMS
+                    state.IDLE_FOR_SYSTEMS = is_completed
                     
                     # Log state changes for IDLE_FOR_SYSTEMS
-                    if IDLE_FOR_SYSTEMS != PREVIOUS_IDLE_FOR_SYSTEMS:
-                        strategy.get_logger().info(f"🔄 IDLE_FOR_SYSTEMS changed: {PREVIOUS_IDLE_FOR_SYSTEMS} → {IDLE_FOR_SYSTEMS}")
+                    if state.IDLE_FOR_SYSTEMS != state.PREVIOUS_IDLE_FOR_SYSTEMS:
+                        strategy.get_logger().info(f"🔄 IDLE_FOR_SYSTEMS changed: {state.PREVIOUS_IDLE_FOR_SYSTEMS} → {state.IDLE_FOR_SYSTEMS}")
                 else:
-                    old_idle = IDLE
-                    IDLE = is_completed
+                    old_idle = state.IDLE
+                    state.IDLE = is_completed
                     
                     # Log state changes for IDLE
-                    if IDLE != old_idle:
-                        strategy.get_logger().info(f"🔄 IDLE changed: {old_idle} → {IDLE} (last_stm_command={last_stm_command})")   
-            if  IDLE_FOR_SYSTEMS ==True and PREVIOUS_IDLE_FOR_SYSTEMS==False and last_stm_command!="emergency" :
-                SYSTEMS_IDLE_COUNT+=1
-            PREVIOUS_IDLE_FOR_SYSTEMS=IDLE_FOR_SYSTEMS
+                    if state.IDLE != old_idle:
+                        strategy.get_logger().info(f"🔄 IDLE changed: {old_idle} → {state.IDLE} (last_stm_command={state.last_stm_command})")   
+            if  state.IDLE_FOR_SYSTEMS ==True and state.PREVIOUS_IDLE_FOR_SYSTEMS==False and state.last_stm_command!="emergency" :
+                state.SYSTEMS_IDLE_COUNT+=1
+            state.PREVIOUS_IDLE_FOR_SYSTEMS=state.IDLE_FOR_SYSTEMS
         #else:
             # Log periodically when robot is idle to confirm the thread is running
             # if status_loop_count % 100 == 0:  # Every 10 seconds
@@ -283,14 +246,12 @@ def robot_status(strategy, stm32, lidar):
 
 def lidar_status(strategy, stm32, lidar, round_timer):
     """Runs every 100ms to check lidar status and handle emergency stops"""
-    global EMERGENCY_STOP
-    global SHUTDOWN_REQUESTED
     first_emergency = True
     
     strategy.get_logger().info("🔍 Lidar status monitoring started")
     lidar_loop_count = 0
     
-    while rclpy.ok() and not SHUTDOWN_REQUESTED:
+    while rclpy.ok() and not state.SHUTDOWN_REQUESTED:
         lidar_loop_count += 1
         
         # Update lidar with current round time
@@ -298,24 +259,24 @@ def lidar_status(strategy, stm32, lidar, round_timer):
         lidar.set_round_time(elapsed_s)
         
         # Check emergency stop from lidar
-        old_emergency = EMERGENCY_STOP
-        EMERGENCY_STOP = lidar.getstatus()
+        old_emergency = state.EMERGENCY_STOP
+        state.EMERGENCY_STOP = lidar.getstatus()
         
         # Log when emergency state changes
-        if EMERGENCY_STOP != old_emergency:
-            if EMERGENCY_STOP:
+        if state.EMERGENCY_STOP != old_emergency:
+            if state.EMERGENCY_STOP:
                 strategy.get_logger().warning(f"🚨 EMERGENCY_STOP activated by lidar! (first_emergency={first_emergency})")
             else:
                 strategy.get_logger().info(f"✅ EMERGENCY_STOP cleared by lidar (first_emergency={first_emergency})")
         
         # Handle emergency stop
-        if EMERGENCY_STOP and first_emergency:
+        if state.EMERGENCY_STOP and first_emergency:
             strategy.get_logger().warning("🚨 Emergency stop activated!")
             #success, response = stm32.stop()
             first_emergency = False
         
         # Reset flag when emergency is cleared
-        if not EMERGENCY_STOP:
+        if not state.EMERGENCY_STOP:
             if not first_emergency:
                 strategy.get_logger().info("🔄 Emergency flag reset - ready for next emergency")
             first_emergency = True
@@ -343,8 +304,6 @@ def handle_stm32_command(command, params, stm32, lidar, strategy):
         lidar: Lidar instance
         strategy: Strategy manager instance
     """
-    global IDLE
-    global IDLE_FOR_SYSTEMS
     
     # Check if this is a path-generated command (marked in params)
     from_pathfinding = False
@@ -355,33 +314,33 @@ def handle_stm32_command(command, params, stm32, lidar, strategy):
     
     if command == 'move_forward':
         stm32.move_forward(params[0], params[1], params[2] if len(params) > 2 else 0.0)
-        IDLE = False
-        IDLE_FOR_SYSTEMS = False
+        state.IDLE = False
+        state.IDLE_FOR_SYSTEMS = False
     elif command == 'rotate':
         stm32.rotate(params[0], params[1] if len(params) > 1 else 0.0)
-        IDLE = False
-        IDLE_FOR_SYSTEMS = False
+        state.IDLE = False
+        state.IDLE_FOR_SYSTEMS = False
     elif command == 'go_to':
         lidar.set_goto_target(params[0]/1000, params[1]/1000, from_pathfinding=from_pathfinding)  # Convert mm to meters for lidar
-        IDLE_FOR_SYSTEMS = False
+        state.IDLE_FOR_SYSTEMS = False
         
         if len(params) > 3:
             stm32.go_to(params[0], params[1], params[2], params[3])
         else:
             stm32.go_to(params[0], params[1], params[2])
-        IDLE = False
+        state.IDLE = False
         
     elif command == 'orientate':
         stm32.orientate(params[0], params[1] if len(params) > 1 else 0.0)
-        IDLE = False
-        IDLE_FOR_SYSTEMS = False
+        state.IDLE = False
+        state.IDLE_FOR_SYSTEMS = False
     elif command == 'bezier':
         if len(params) > 9:
             stm32.bezier_curve(params[0], params[1], params[2], params[3], params[4], params[5], params[8], params[9])
         else:
             stm32.bezier_curve(params[0], params[1], params[2], params[3], params[4], params[5], params[8])
-        IDLE = False
-        IDLE_FOR_SYSTEMS = False
+        state.IDLE = False
+        state.IDLE_FOR_SYSTEMS = False
     
     elif command == 'go_to_backwards':
         # Publish target position for collision detection
@@ -391,15 +350,15 @@ def handle_stm32_command(command, params, stm32, lidar, strategy):
             stm32.go_to_backwards(params[0], params[1], params[2], params[3])
         else:
             stm32.go_to_backwards(params[0], params[1], params[2])
-        IDLE = False
-        IDLE_FOR_SYSTEMS = False
+        state.IDLE = False
+        state.IDLE_FOR_SYSTEMS = False
     elif command == 'bezier_backwards':
         if len(params) > 9:
             stm32.bezier_curve_backwards(params[0], params[1], params[2], params[3], params[4], params[5], params[8], params[9])
         else:
             stm32.bezier_curve_backwards(params[0], params[1], params[2], params[3], params[4], params[5], params[8])
-        IDLE = False
-        IDLE_FOR_SYSTEMS = False
+        state.IDLE = False
+        state.IDLE_FOR_SYSTEMS = False
     elif command == 'set_position':
         stm32.set_position(params[0], params[1], params[2])
     else:
@@ -414,11 +373,10 @@ def correct_bezier(strategy, stm32, params):
         stm32: STM32 controller instance
         params: Command parameters with fallback positions at indices 6 and 7
     """
-    global SHUTDOWN_REQUESTED
     
     # Wait for at least 2 position updates from beacon
     available_aruco=False 
-    while strategy.latest_robot_pose_beacon_count <2 or not available_aruco and not SHUTDOWN_REQUESTED:
+    while strategy.latest_robot_pose_beacon_count <2 or not available_aruco and not state.SHUTDOWN_REQUESTED:
         available_aruco=False
         if strategy.latest_robot_pose_beacon and len(strategy.latest_robot_pose_beacon.tracks) > 0:
             for track in strategy.latest_robot_pose_beacon.tracks:
@@ -458,36 +416,25 @@ def correct_bezier(strategy, stm32, params):
 
 def stm32_task(strategy, stm32,lidar):
     """Runs every 100ms to process STM32 queue"""
-    global IDLE
-    global SHUTDOWN_REQUESTED
-    global IDLE_FOR_SYSTEMS
-    global EMERGENCY_STOP
-    global last_stm_command
-    global replanning
-    global STEAL_LOOP_ACTIVE
-    global STEAL_LOOP_RUNNING
-    global STEAL_REPEAT_COUNT
     # Import Vector3 for publishing target position
     from geometry_msgs.msg import Vector3
     # Variables to save last command for resuming after emergency
     last_command = None
     last_params = None
-    global SYSTEMS_IDLE_COUNT
     was_in_emergency = False
-    global WAITING_TIRETTE
     strategy.get_logger().info("🚀 STM32 task started")
     
     main_loop_count = 0
-    while rclpy.ok() and not SHUTDOWN_REQUESTED:
+    while rclpy.ok() and not state.SHUTDOWN_REQUESTED:
         main_loop_count += 1
         
         # Log main loop status every 50 iterations (5 seconds)
         if main_loop_count % 50 == 0:
-            strategy.get_logger().info(f"🔁 STM32 main loop #{main_loop_count}: queue_size={len(strategy.queues['STM'])}, IDLE={IDLE}, EMERGENCY_STOP={EMERGENCY_STOP}")
+            strategy.get_logger().info(f"🔁 STM32 main loop #{main_loop_count}: queue_size={len(strategy.queues['STM'])}, IDLE={state.IDLE}, EMERGENCY_STOP={state.EMERGENCY_STOP}")
         
         # Check if there are commands in the queue and robot is idle.
         # In steal-only emergency flow, do not dispatch commands while emergency is active.
-        if len(strategy.queues['STM']) > 0 and IDLE and not EMERGENCY_STOP:
+        if len(strategy.queues['STM']) > 0 and state.IDLE and not state.EMERGENCY_STOP:
             cmd = strategy.queues['STM'][0]  # Peek at first command
             command = cmd.get('command')
             params = cmd.get('params', {})
@@ -507,19 +454,19 @@ def stm32_task(strategy, stm32,lidar):
             # Save command for potential resume after emergency
             last_command = command
             last_params = params
-            last_stm_command=""
+            state.last_stm_command=""
             
             # Execute command using handler function
             strategy.get_logger().info(f"🎯 Executing STM command: {command} with params: {params[:3] if len(params) > 3 else params}")
-            while(command =="set_position" and WAITING_TIRETTE==True and not SHUTDOWN_REQUESTED):
+            while(command =="set_position" and state.WAITING_TIRETTE==True and not state.SHUTDOWN_REQUESTED):
                 time.sleep(0.01)
             handle_stm32_command(command, params, stm32, lidar, strategy)
-            last_stm_command="navigation"
+            state.last_stm_command="navigation"
             
-            strategy.get_logger().info(f"⏳ Entering wait loop - IDLE={IDLE}, EMERGENCY_STOP={EMERGENCY_STOP}, last_stm_command={last_stm_command}")
+            strategy.get_logger().info(f"⏳ Entering wait loop - IDLE={state.IDLE}, EMERGENCY_STOP={state.EMERGENCY_STOP}, last_stm_command={state.last_stm_command}")
             # Wait for command completion with emergency handling
             loop_iteration = 0
-            while ((not IDLE and not SHUTDOWN_REQUESTED) or (EMERGENCY_STOP) or last_stm_command=="emergency") and last_stm_command != "replanned":
+            while ((not state.IDLE and not state.SHUTDOWN_REQUESTED) or (state.EMERGENCY_STOP) or state.last_stm_command=="emergency") and state.last_stm_command != "replanned":
                 loop_iteration += 1
                 
                 # Check for interrupt from strategy manager
@@ -530,17 +477,17 @@ def stm32_task(strategy, stm32,lidar):
                 
                 # Log state every 20 iterations (2 seconds)
                 if loop_iteration % 20 == 0:
-                    strategy.get_logger().info(f"🔄 Wait loop iteration {loop_iteration}: IDLE={IDLE}, EMERGENCY_STOP={EMERGENCY_STOP}, was_in_emergency={was_in_emergency}, replanning={replanning}, last_stm_command={last_stm_command}")
+                    strategy.get_logger().info(f"🔄 Wait loop iteration {loop_iteration}: IDLE={state.IDLE}, EMERGENCY_STOP={state.EMERGENCY_STOP}, was_in_emergency={was_in_emergency}, replanning={state.replanning}, last_stm_command={state.last_stm_command}")
                 
                 # Check for emergency stop
-                if EMERGENCY_STOP and not was_in_emergency and not replanning :
-                    strategy.get_logger().warning(f"🚨 Emergency detected during movement - stopping STM32 (IDLE={IDLE}, IDLE_FOR_SYSTEMS={IDLE_FOR_SYSTEMS})")
+                if state.EMERGENCY_STOP and not was_in_emergency and not state.replanning :
+                    strategy.get_logger().warning(f"🚨 Emergency detected during movement - stopping STM32 (IDLE={state.IDLE}, IDLE_FOR_SYSTEMS={state.IDLE_FOR_SYSTEMS})")
                     strategy.remove_esp_waiting=True
                     stm32.stop()
-                    last_stm_command="emergency"
-                    IDLE=False
-                    IDLE_FOR_SYSTEMS=True
-                    replanning = True
+                    state.last_stm_command="emergency"
+                    state.IDLE=False
+                    state.IDLE_FOR_SYSTEMS=True
+                    state.replanning = True
 
                     # Emergency mode is steal-only: drop static queued motion/actuator work.
                     strategy.queues['STM'].clear()
@@ -554,16 +501,16 @@ def stm32_task(strategy, stm32,lidar):
                     strategy.get_logger().info("⏸️  Waiting for STM32 to report IDLE after emergency stop...")
                     lidar.start_enemy_collision_check()
                     idle_wait_count = 0
-                    while(not IDLE and not SHUTDOWN_REQUESTED):
+                    while(not state.IDLE and not state.SHUTDOWN_REQUESTED):
                         idle_wait_count += 1
                         if idle_wait_count % 10 == 0:  # Log every 0.5 seconds
-                            strategy.get_logger().info(f"⏸️  Still waiting for IDLE... (count={idle_wait_count}, IDLE={IDLE})")
+                            strategy.get_logger().info(f"⏸️  Still waiting for IDLE... (count={idle_wait_count}, IDLE={state.IDLE})")
                         time.sleep(0.05)  # Wait until STM32 reports idle after stop
                     strategy.get_logger().info(f"✓ STM32 now IDLE after emergency stop (waited {idle_wait_count * 0.05:.2f}s)")
                     # Arm steal loop immediately from emergency stop.
-                    if not STEAL_LOOP_ACTIVE and not STEAL_LOOP_RUNNING:
-                        STEAL_REPEAT_COUNT = 30
-                        STEAL_LOOP_ACTIVE = True
+                    if not state.STEAL_LOOP_ACTIVE and not state.STEAL_LOOP_RUNNING:
+                        state.STEAL_REPEAT_COUNT = 30
+                        state.STEAL_LOOP_ACTIVE = True
                         strategy.get_logger().warning(
                             "🏴‍☠️ Emergency-triggered steal loop armed (STEAL_LOOP_ACTIVE=True, STEAL_REPEAT_COUNT=30)"
                         )
@@ -573,26 +520,26 @@ def stm32_task(strategy, stm32,lidar):
                     # strategy.get_logger().info("🔍 Started enemy collision check - waiting for obstacle to clear")
                 
                 # Check if emergency cleared
-                elif not EMERGENCY_STOP and was_in_emergency  :
+                elif not state.EMERGENCY_STOP and was_in_emergency  :
                     strategy.get_logger().info("✅ Emergency cleared - switching to steal-generated execution")
                     was_in_emergency = False
                     # Never resume pre-emergency static command in steal-only mode.
-                    last_stm_command = "replanned"
+                    state.last_stm_command = "replanned"
                 
                 time.sleep(0.1)
             
             # Exited wait loop
-            strategy.get_logger().info(f"🏁 Exited wait loop - IDLE={IDLE}, EMERGENCY_STOP={EMERGENCY_STOP}, was_in_emergency={was_in_emergency}, last_stm_command={last_stm_command}")
+            strategy.get_logger().info(f"🏁 Exited wait loop - IDLE={state.IDLE}, EMERGENCY_STOP={state.EMERGENCY_STOP}, was_in_emergency={was_in_emergency}, last_stm_command={state.last_stm_command}")
             
-            if  last_stm_command!="navigation": 
-                strategy.get_logger().info(f"⚠️ Command ended with non-navigation state: idle={IDLE}, EMERGENCY_STOP={EMERGENCY_STOP}, last_stm_command='{last_stm_command}'")
+            if  state.last_stm_command!="navigation": 
+                strategy.get_logger().info(f"⚠️ Command ended with non-navigation state: idle={state.IDLE}, EMERGENCY_STOP={state.EMERGENCY_STOP}, last_stm_command='{state.last_stm_command}'")
                 # Reset emergency flag when command completes normally
                 was_in_emergency = False
                 
                 
                 
                 # Remove command from queue after execution
-            if last_stm_command=="navigation":
+            if state.last_stm_command=="navigation":
                 strategy.get_logger().info(f"✓ Navigation completed successfully for command: {command}")
                 # Correct position using beacon after bezier curves
                 if command == 'bezier' or command == 'bezier_backwards':
@@ -606,24 +553,22 @@ def stm32_task(strategy, stm32,lidar):
                 if len(strategy.queues['STM']) > 0:
                     strategy.queues['STM'].popleft()
                     strategy.get_logger().info(f"🗑️  Removed command from queue - {len(strategy.queues['STM'])} commands remaining")
-            elif last_stm_command=="replanned":
+            elif state.last_stm_command=="replanned":
                 # After replanning, don't pop - let outer loop execute new commands
                 strategy.get_logger().info(f"✓ Replanning complete - new commands ready to execute ({len(strategy.queues['STM'])} commands in queue)")
                 # Don't pop from queue - commands were just added and need to be executed
                 # Reset replanning flag now that we're back in main loop
-                replanning = False
+                state.replanning = False
         else:
             # Log why we're not processing commands (every 50 iterations to avoid spam)
             if main_loop_count % 50 == 0:
                 if len(strategy.queues['STM']) == 0:
                     strategy.get_logger().info("⏸️  STM queue empty - waiting for commands")
-                elif not IDLE:
-                    strategy.get_logger().info(f"⏸️  Robot not IDLE - waiting (IDLE={IDLE}, IDLE_FOR_SYSTEMS={IDLE_FOR_SYSTEMS}, EMERGENCY_STOP={EMERGENCY_STOP})")
+                elif not state.IDLE:
+                    strategy.get_logger().info(f"⏸️  Robot not IDLE - waiting (IDLE={state.IDLE}, IDLE_FOR_SYSTEMS={state.IDLE_FOR_SYSTEMS}, EMERGENCY_STOP={state.EMERGENCY_STOP})")
         
         time.sleep(0.1)  # 100ms
 def handle_color_pattner(strategy,front):
-    global known_id_back
-    global known_id_front
     """Handle color pattern retrieval"""
     x = strategy.latest_robot_pose.x
     y = strategy.latest_robot_pose.y
@@ -668,10 +613,10 @@ def handle_color_pattner(strategy,front):
             strategy.get_logger().warning(f"⚠️  Failed to delete batch '{batch_known_id}' from map")
     if success and batch_known_id:
         if front:
-            known_id_front = batch_known_id
+            state.known_id_front = batch_known_id
             known_idd=batch_known_id
         else:
-            known_id_back = batch_known_id
+            state.known_id_back = batch_known_id
             known_idd=batch_known_id
     if success and batch_center:
         theta = math.degrees(z)  # Convert radians to degrees
@@ -735,7 +680,6 @@ def convert_color_pattern(color_pattern, robot_color):
 
 def stana(controller):
     """Wait for controller to be idle, with shutdown check"""
-    global SHUTDOWN_REQUESTED
     waiting_started = False
     # Use shorter timeout to allow quicker shutdown response
 
@@ -745,7 +689,7 @@ def stana(controller):
     if not idle and waiting_started==False:
         waiting_started = True
         controller.get_logger().info("⏳ Waiting for controller to be idle...")
-    while not idle and not SHUTDOWN_REQUESTED:
+    while not idle and not state.SHUTDOWN_REQUESTED:
         idle = controller.IDLE(timeout=5.0)
         if not waiting_started and idle:
             idle=False
@@ -758,7 +702,6 @@ def talaa(strategy, front_controller=None,front=True):
     """Request color pattern from pathfinding service"""
     x = strategy.global_pos_x
     y = strategy.global_pos_y
-    global color_pt
     strategy.get_logger().info(f"📞 talaa() called - about to request color pattern from pathfinder")
     # Create Point for current position
     # pos = Point()
@@ -777,11 +720,11 @@ def talaa(strategy, front_controller=None,front=True):
             robot_color = 'y' if strategy.color.lower() == 'yellow' else 'b'
         else:
             robot_color = 'y'  # Default to 'y' if color not set
-        color_pt = convert_color_pattern(color_pattern, robot_color)
-        color_to_N20=int(str(color_pt).replace('0', '3').replace('1', '4'))
-        print(f"Converted color pattern: {color_pt}, N20 command: {color_to_N20}")
+        state.color_pt = convert_color_pattern(color_pattern, robot_color)
+        color_to_N20=int(str(state.color_pt).replace('0', '3').replace('1', '4'))
+        print(f"Converted color pattern: {state.color_pt}, N20 command: {color_to_N20}")
         front_controller.n20(color_to_N20)
-        return color_pt
+        return state.color_pt
     else:
         strategy.get_logger().warning("⚠️ Failed to get color pattern")
         return None
@@ -826,22 +769,17 @@ def _update_robot_color_in_map(strategy) -> None:
 
 
 def pick_up(controller,pneumatic,strategy,front):
-    global color_pt_front
-    global color_pt_back
-    global ESP_FRONT_IDLE
-    global ESP_BACK_IDLE
-    global SHUTDOWN_REQUESTED
     
     strategy.get_logger().info(f"🚀 pick_up() called for {'FRONT' if front else 'BACK'}")
     
-    if SHUTDOWN_REQUESTED:
+    if state.SHUTDOWN_REQUESTED:
         strategy.get_logger().warning("⚠️ pick_up() aborted - SHUTDOWN_REQUESTED")
         return
-    if EMERGENCY_STOP:
+    if state.EMERGENCY_STOP:
         strategy.get_logger().warning("⚠️ pick_up() deferred - EMERGENCY_STOP is active")
         return
     #stana(controller)
-    if SHUTDOWN_REQUESTED:
+    if state.SHUTDOWN_REQUESTED:
         return
     
     if front:
@@ -852,7 +790,7 @@ def pick_up(controller,pneumatic,strategy,front):
     controller.n20(1111)
     stana(controller)
     time.sleep(0.2)
-    if SHUTDOWN_REQUESTED:
+    if state.SHUTDOWN_REQUESTED:
         return
     
     
@@ -860,40 +798,35 @@ def pick_up(controller,pneumatic,strategy,front):
     strategy.get_logger().info(f"🔍 Requesting NEW color pattern for {'FRONT' if front else 'BACK'} at position ({strategy.latest_robot_pose.x:.3f}, {strategy.latest_robot_pose.y:.3f})")
     color_pattern = talaa(strategy, controller,front)
     if front:
-        color_pt_front = color_pattern
-        ESP_FRONT_IDLE=True
+        state.color_pt_front = color_pattern
+        state.ESP_FRONT_IDLE=True
         _update_robot_holder_status(strategy, front=True, empty=False)
-        strategy.get_logger().info(f"📦 Front picked up - NEW Color pattern: {color_pt_front}")
+        strategy.get_logger().info(f"📦 Front picked up - NEW Color pattern: {state.color_pt_front}")
     else:
-        color_pt_back = color_pattern
-        ESP_BACK_IDLE=True
+        state.color_pt_back = color_pattern
+        state.ESP_BACK_IDLE=True
         _update_robot_holder_status(strategy, front=False, empty=False)
-        strategy.get_logger().info(f"📦 Back picked up - NEW Color pattern: {color_pt_back}")
+        strategy.get_logger().info(f"📦 Back picked up - NEW Color pattern: {state.color_pt_back}")
     stana(controller)
-    if SHUTDOWN_REQUESTED:
+    if state.SHUTDOWN_REQUESTED:
         return
     controller.kabech(0)
 def put_down(controller,pneumatic,strategy,front,params=None):
-    global ESP_FRONT_IDLE
-    global ESP_BACK_IDLE
-    global color_pt_front
-    global color_pt_back
-    global SHUTDOWN_REQUESTED
     
-    if SHUTDOWN_REQUESTED:
+    if state.SHUTDOWN_REQUESTED:
         return
     
     params = params if isinstance(params, dict) else {}
     insert_offset_mm = float(params.get('putdown_insert_distance_mm', 0.0) or 0.0)
 
-    color_pattern = color_pt_front if front else color_pt_back
+    color_pattern = state.color_pt_front if front else state.color_pt_back
     strategy.get_logger().info(f"color_pattern {color_pattern}")
     color_to_N20=int(str(color_pattern).replace('1', '4').replace('0','1'))
     strategy.get_logger().info(f"TO n20 command  {color_to_N20}")
     time.sleep(0.3)
     #controller.n20(color_to_N20)
     #stana(controller)
-    if SHUTDOWN_REQUESTED:
+    if state.SHUTDOWN_REQUESTED:
         return
     
     if front:
@@ -945,21 +878,21 @@ def put_down(controller,pneumatic,strategy,front,params=None):
             )
     if front:
         strategy.get_logger().info("Setting ESP_FRONT_IDLE to True in put_down")
-        ESP_FRONT_IDLE=True
+        state.ESP_FRONT_IDLE=True
         _update_robot_holder_status(strategy, front=True, empty=True)
     else: 
         strategy.get_logger().info("Setting ESP_BACK_IDLE to True in put_down")
-        ESP_BACK_IDLE=True
+        state.ESP_BACK_IDLE=True
     if not front:
         _update_robot_holder_status(strategy, front=False, empty=True)
     
-    if SHUTDOWN_REQUESTED:
+    if state.SHUTDOWN_REQUESTED:
         return
     
     controller.n20(0)
     
     stana(controller)
-    if SHUTDOWN_REQUESTED:
+    if state.SHUTDOWN_REQUESTED:
         return
     time.sleep(0.5)
     if front:
@@ -968,10 +901,8 @@ def put_down(controller,pneumatic,strategy,front,params=None):
 
     
 def front_task(strategy, front_controller=None,pneumatic_controller=None):
-    global color_pt_front
-    global SHUTDOWN_REQUESTED
     """Runs every 100ms to process ESP32_1 queue"""
-    while rclpy.ok() and not SHUTDOWN_REQUESTED:
+    while rclpy.ok() and not state.SHUTDOWN_REQUESTED:
         # Check if there are commands in the queue
         if len(strategy.queues['ESP_front']) > 0:
             cmd = strategy.queues['ESP_front'][0]  # Peek at first command
@@ -986,7 +917,7 @@ def front_task(strategy, front_controller=None,pneumatic_controller=None):
                     front_controller.dawer(0)
                     strategy.get_logger().info(f"🔧 Front prepare for pick_up: n20(2222)")
                 else:
-                    cmd_to_n20=int(str(color_pt_front).replace('0','2').replace('1','4'))
+                    cmd_to_n20=int(str(state.color_pt_front).replace('0','2').replace('1','4'))
                     front_controller.dawer(1)
                     front_controller.n20(cmd_to_n20)
             elif command =='put_down':
@@ -1002,9 +933,7 @@ def front_task(strategy, front_controller=None,pneumatic_controller=None):
 
 def back_task(strategy, back_controller=None,pneumatic_controller=None):
     """Runs every 100ms to process ESP32_1 queue"""
-    global color_pt_back
-    global SHUTDOWN_REQUESTED
-    while rclpy.ok() and not SHUTDOWN_REQUESTED:
+    while rclpy.ok() and not state.SHUTDOWN_REQUESTED:
         # Check if there are commands in the queue
         if len(strategy.queues['ESP_back']) > 0:
             cmd = strategy.queues['ESP_back'][0]  # Peek at first command
@@ -1020,7 +949,7 @@ def back_task(strategy, back_controller=None,pneumatic_controller=None):
                     back_controller.dawer(0)
                     strategy.get_logger().info(f"🔧 Back prepare for pick_up: n20(2222)")
                 else:
-                    cmd_to_n20=int(str(color_pt_back).replace('0','2').replace('1','4'))
+                    cmd_to_n20=int(str(state.color_pt_back).replace('0','2').replace('1','4'))
                     back_controller.dawer(1)
                     back_controller.n20(cmd_to_n20)
             elif command =='put_down':
@@ -1036,9 +965,8 @@ def back_task(strategy, back_controller=None,pneumatic_controller=None):
 
 def pami_task(strategy, pami_controller=None):
     """Runs every 20ms to process PAMI queue without blocking other executors."""
-    global SHUTDOWN_REQUESTED
 
-    while rclpy.ok() and not SHUTDOWN_REQUESTED:
+    while rclpy.ok() and not state.SHUTDOWN_REQUESTED:
         if len(strategy.queues['PAMI']) > 0:
             cmd = strategy.queues['PAMI'][0]  # Peek
             command = cmd.get('command')
@@ -1073,14 +1001,7 @@ def pami_task(strategy, pami_controller=None):
 
 def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=None, front_controller=None, back_controller=None, pneumatic_controller=None, pami_controller=None):
     """Runs every 100ms to process RASP_PI queue"""
-    global SHUTDOWN_REQUESTED
-    global WAITING_TIRETTE
-    global IDLE
-    global IDLE_FOR_SYSTEMS
-    global return_home_triggered
-    global STEAL_LOOP_ACTIVE
-    global STEAL_REPEAT_COUNT
-    while rclpy.ok() and not SHUTDOWN_REQUESTED:
+    while rclpy.ok() and not state.SHUTDOWN_REQUESTED:
         # Check if there are commands in the queue
         if len(strategy.queues['RASP_PI']) > 0:
             cmd = strategy.queues['RASP_PI'][0]  # Peek at first command
@@ -1091,7 +1012,7 @@ def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=No
             
             # Execute RASP_PI commands
             if command == 'Wait for manual start':
-                WAITING_TIRETTE=True
+                state.WAITING_TIRETTE=True
                 if rpi_controller:
                     # Check if tirette is already inserted
                     tirette_status = rpi_controller.read_pin_17()
@@ -1099,7 +1020,7 @@ def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=No
                         strategy.get_logger().warning("⚠️ mafamech tirette ya maaahdi !")
                     result = rpi_controller.wait_start()
                     stm32_controller.reset()
-                    WAITING_TIRETTE=False
+                    state.WAITING_TIRETTE=False
                     strategy.get_logger().info(f"✅ Tirette tjebdet  STRATEGY GOOOOOOOOO !!!!")
                     
                     # Start game timer on pathfinder to begin periodic map updates
@@ -1151,17 +1072,17 @@ def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=No
                 
                 params = to_float_list(params)
                 stm32_controller.set_position(params[0], params[1], params[2])
-                IDLE_FOR_SYSTEMS=True
-                IDLE=True
+                state.IDLE_FOR_SYSTEMS=True
+                state.IDLE=True
 
             elif command == 'wait_end_game':
                 # Wait until game time reaches 1.25s + duration
                 duration = float(params[0]) if params else 0
                 target_time = 85 + duration
-                return_home_triggered=True
+                state.return_home_triggered=True
                 strategy.get_logger().info(f"⏳ Waiting until game time reaches {target_time}s (85s + {duration}s)")
                 
-                while rclpy.ok() and not SHUTDOWN_REQUESTED:
+                while rclpy.ok() and not state.SHUTDOWN_REQUESTED:
                     current_time = round_timer.time()
                     if current_time >= target_time:
                         strategy.get_logger().info(f"✅ Target time {target_time}s reached (current: {current_time}s)")
@@ -1187,8 +1108,8 @@ def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=No
                             f"⚠️ Steal repeat count is {repeat_count}; skipping steal execution"
                         )
                     else:
-                        STEAL_REPEAT_COUNT = repeat_count
-                        STEAL_LOOP_ACTIVE = True
+                        state.STEAL_REPEAT_COUNT = repeat_count
+                        state.STEAL_LOOP_ACTIVE = True
                         strategy.get_logger().info(
                             f"🏴‍☠️ Queued steal loop for path-planning task ({repeat_count} time(s))"
                         )

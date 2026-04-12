@@ -18,8 +18,8 @@ import math
 from euro.pathfinder_controller import PathfinderClient
 from euro.simple_map import Map
 from euro.task_scheduler import TaskScheduler, Task
-from euro.strategy_executor import robot_status, lidar_status, stm32_task, front_task, back_task,rasp_pi_task, pami_task, path_planning_task, IDLE, EMERGENCY_STOP
-import euro.strategy_executor as executor_module  # Import module to access SHUTDOWN_REQUESTED and other globals
+from euro.strategy_executor import robot_status, lidar_status, stm32_task, front_task, back_task,rasp_pi_task, pami_task, path_planning_task
+from euro.shared_state import state  # Import module to access SHUTDOWN_REQUESTED and other globals
 
 # Global variable to store team color
 color = None
@@ -222,7 +222,7 @@ class StrategyManager(Node):
             if success:
                 # Clear the STM32 queue
                 self.queues['STM'].clear()
-                executor_module.SYSTEMS_IDLE_COUNT=0
+                state.SYSTEMS_IDLE_COUNT=0
                 # Process commands and add to queue
                 last_cmd = None
                 for cmd in stm32_commands:
@@ -272,7 +272,7 @@ class StrategyManager(Node):
                 
                 self.get_logger().info(f"✅ Path loaded to queue! {len(self.queues['STM'])} commands ready for execution")
                 # Resume task execution
-                executor_module.replanning = False
+                state.replanning = False
                 self.is_replanning = False
                 
             return success
@@ -301,9 +301,9 @@ class StrategyManager(Node):
             elif self.last_task_command == 'put_down':
                 tracked_type = 'put_down'
                 if self.last_task_device == 'ESP_front':
-                    tracked_target_id = str(getattr(executor_module, 'known_id_front', '') or '').lower()
+                    tracked_target_id = str(getattr(state, 'known_id_front', '') or '').lower()
                 elif self.last_task_device == 'ESP_back':
-                    tracked_target_id = str(getattr(executor_module, 'known_id_back', '') or '').lower()
+                    tracked_target_id = str(getattr(state, 'known_id_back', '') or '').lower()
             else:
                 #remove tracked task if no longer relevant
                 if hasattr(self, 'task_scheduler') and self.task_scheduler is not None:
@@ -391,42 +391,42 @@ class StrategyManager(Node):
             wait = cmd.get('wait', False)
             if not self.end_game:
                 self.get_logger().info(f"⚙️  [{idx+1}/{len(task['sequence'])}] {device} -> {command}")
-                executor_module.SYSTEMS_IDLE_COUNT=0
+                state.SYSTEMS_IDLE_COUNT=0
 
                 # Add command to device queue
                 if device in self.queues:
                     if(device == "ESP_front" ) :
-                        executor_module.ESP_FRONT_IDLE=False
+                        state.ESP_FRONT_IDLE=False
                     if(device == "ESP_back" ) :
-                        executor_module.ESP_BACK_IDLE=False
+                        state.ESP_BACK_IDLE=False
                     if(device == "STM" and command !="set_position"):
-                        executor_module.IDLE_FOR_SYSTEMS=False
+                        state.IDLE_FOR_SYSTEMS=False
                         
                     if wait :
                         self.get_logger().info(f"      ⏳ Waiting for dependencies...")
                         if(device == "STM"):
-                            while not executor_module.ESP_FRONT_IDLE or not executor_module.ESP_BACK_IDLE:
-                                self.get_logger().info(f"Waiting for ESP systems to be idle... ESP_FRONT_IDLE={executor_module.ESP_FRONT_IDLE}, ESP_BACK_IDLE={executor_module.ESP_BACK_IDLE}")
+                            while not state.ESP_FRONT_IDLE or not state.ESP_BACK_IDLE:
+                                self.get_logger().info(f"Waiting for ESP systems to be idle... ESP_FRONT_IDLE={state.ESP_FRONT_IDLE}, ESP_BACK_IDLE={state.ESP_BACK_IDLE}")
                                 if self.interrupt_wait:
                                     self.get_logger().warning("🛑 ESP wait interrupted")
                                     self.load_task_to_queues_ended = True
                                     return False
                                 time.sleep(0.1)
                         if(device == "ESP_front" or device == "ESP_back"):
-                            executor_module.SYSTEMS_IDLE_COUNT=0
+                            state.SYSTEMS_IDLE_COUNT=0
                             n=len((self.queues["STM"]))
-                            if executor_module.IDLE_FOR_SYSTEMS and not executor_module.IDLE:
-                                executor_module.SYSTEMS_IDLE_COUNT=1
+                            if state.IDLE_FOR_SYSTEMS and not state.IDLE:
+                                state.SYSTEMS_IDLE_COUNT=1
                             
                             # Track if prepare command has been added
                             prepare_added = False
                             
-                            while executor_module.SYSTEMS_IDLE_COUNT <n and len((self.queues["STM"]))>0 :
-                                self.get_logger().debug(f"Waiting for STM commands to be done in load tasks to queues... STM queue size: {n}, SYSTEMS_IDLE_COUNT: {executor_module.SYSTEMS_IDLE_COUNT}")
+                            while state.SYSTEMS_IDLE_COUNT <n and len((self.queues["STM"]))>0 :
+                                self.get_logger().debug(f"Waiting for STM commands to be done in load tasks to queues... STM queue size: {n}, SYSTEMS_IDLE_COUNT: {state.SYSTEMS_IDLE_COUNT}")
                                 # Static flow safety: if emergency/steal starts while waiting,
                                 # abort this task loading so ESP commands are not queued from stale flow.
                                 if(self.remove_esp_waiting):
-                                    emergency_active = bool(getattr(executor_module, 'EMERGENCY_STOP', False))
+                                    emergency_active = bool(getattr(state, 'EMERGENCY_STOP', False))
                                     if allow_during_emergency and not emergency_active:
                                         # Generated flow may inherit a stale interrupt flag after emergency clears.
                                         self.get_logger().info(
@@ -441,7 +441,7 @@ class StrategyManager(Node):
                                         return False
 
                                 # Add prepare command when on second-to-last STM command
-                                if not prepare_added and executor_module.SYSTEMS_IDLE_COUNT == n-1:
+                                if not prepare_added and state.SYSTEMS_IDLE_COUNT == n-1:
                                     prepare_cmd = {
                                         'command': 'prepare',
                                         'params': {'action': command},
@@ -451,14 +451,14 @@ class StrategyManager(Node):
                                     self.get_logger().info(f"      🔧 Adding prepare command for {device} with action: {command} (STM at {n-1}/{n})")
                                     prepare_added = True
                                 
-                                self.get_logger().info(f"Waiting for STM commands to be sent... STM queue size: {n}, SYSTEMS_IDLE_COUNT: {executor_module.SYSTEMS_IDLE_COUNT}")
+                                self.get_logger().info(f"Waiting for STM commands to be sent... STM queue size: {n}, SYSTEMS_IDLE_COUNT: {state.SYSTEMS_IDLE_COUNT}")
                                 time.sleep(0.1)
 
                     if device =="SSTM" and command =="set_position":
                         self.queues["RASP_PI"].append(cmd)
                     else:
                         if device =="RASP_PI" and command=="Wait for manual start":
-                            executor_module.WAITING_TIRETTE=True
+                            state.WAITING_TIRETTE=True
                         if not self.end_game:
                             self.queues[device].append(cmd)
                     
@@ -484,9 +484,9 @@ class StrategyManager(Node):
         """
 
         while (
-            (not (self.are_all_queues_empty() or (executor_module.ESP_FRONT_IDLE is True and executor_module.ESP_BACK_IDLE is True)))
-            or (not executor_module.IDLE)
-            or executor_module.WAITING_TIRETTE
+            (not (self.are_all_queues_empty() or (state.ESP_FRONT_IDLE is True and state.ESP_BACK_IDLE is True)))
+            or (not state.IDLE)
+            or state.WAITING_TIRETTE
             or len(self.queues["STM"]) != 0
             or ((not ignore_rasp_pi) and len(self.queues["RASP_PI"]) != 0)
             or self.end_game is True
@@ -495,11 +495,11 @@ class StrategyManager(Node):
             self.get_logger().debug(
                 f"Waiting for queues to empty... STM queue size: {len(self.queues['STM'])}, "
                 f"RASP_PI queue size: {len(self.queues['RASP_PI'])}, ignore_rasp_pi={ignore_rasp_pi}, "
-                f"ESP_FRONT_IDLE: {executor_module.ESP_FRONT_IDLE}, ESP_BACK_IDLE: {executor_module.ESP_BACK_IDLE}, "
-                f"IDLE: {executor_module.IDLE}, WAITING_TIRETTE: {executor_module.WAITING_TIRETTE}, "
-                f"replanning: {executor_module.replanning}"
+                f"ESP_FRONT_IDLE: {state.ESP_FRONT_IDLE}, ESP_BACK_IDLE: {state.ESP_BACK_IDLE}, "
+                f"IDLE: {state.IDLE}, WAITING_TIRETTE: {state.WAITING_TIRETTE}, "
+                f"replanning: {state.replanning}"
             )
-            if executor_module.SHUTDOWN_REQUESTED:
+            if state.SHUTDOWN_REQUESTED:
                 self.get_logger().info("Shutdown requested, stopping queue wait")
                 return
             
@@ -509,7 +509,7 @@ class StrategyManager(Node):
                 continue
             if not self.are_all_queues_empty():
                 time.sleep(0.1)
-            elif not executor_module.IDLE:
+            elif not state.IDLE:
                 time.sleep(0.1)
     
     def display_queue_contents(self):
@@ -576,7 +576,7 @@ class StrategyManager(Node):
                     # do not enqueue the next generated task until the current one is fully done.
                     self.wait_for_all_queues_empty(ignore_rasp_pi=False)
 
-                    if executor_module.SHUTDOWN_REQUESTED or self.end_game:
+                    if state.SHUTDOWN_REQUESTED or self.end_game:
                         self.get_logger().warning("⚠️ Stopping generated steal flow (shutdown/end-game)")
                         return False
                 finally:
@@ -592,7 +592,7 @@ class StrategyManager(Node):
         self.wait_for_all_queues_empty(ignore_rasp_pi=True)
 
         while generated_tasks is None:
-            if executor_module.SHUTDOWN_REQUESTED or self.end_game or getattr(executor_module, 'return_home_triggered', False):
+            if state.SHUTDOWN_REQUESTED or self.end_game or getattr(state, 'return_home_triggered', False):
                 self.get_logger().warning("⚠️ Steal generation aborted (shutdown/end-game)")
                 return False
 
@@ -899,7 +899,7 @@ def main(args=None):
             # Execute all static tasks first
             for idx, task in enumerate(strategy.tasks):
                 # Check if shutdown was requested
-                if executor_module.SHUTDOWN_REQUESTED:
+                if state.SHUTDOWN_REQUESTED:
                     strategy.get_logger().info("Shutdown requested, stopping task execution")
                     return
                 # Check last command in task sequence
@@ -941,8 +941,8 @@ def main(args=None):
                 # Do not enqueue static YAML tasks while steal loop is active/running.
                 # This keeps queue ownership with dynamically generated TaskScheduler tasks.
                 while (
-                    (executor_module.STEAL_LOOP_ACTIVE or executor_module.STEAL_LOOP_RUNNING)
-                    and not executor_module.SHUTDOWN_REQUESTED
+                    (state.STEAL_LOOP_ACTIVE or state.STEAL_LOOP_RUNNING)
+                    and not state.SHUTDOWN_REQUESTED
                     and not strategy.end_game
                 ):
                     strategy.get_logger().warning(
@@ -950,7 +950,7 @@ def main(args=None):
                     )
                     time.sleep(0.05)
 
-                if executor_module.SHUTDOWN_REQUESTED or strategy.end_game:
+                if state.SHUTDOWN_REQUESTED or strategy.end_game:
                     strategy.get_logger().info("Stopping static task execution loop (shutdown/end-game)")
                     return
                 
