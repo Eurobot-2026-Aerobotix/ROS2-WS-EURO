@@ -549,7 +549,7 @@ def stm32_task(strategy, stm32,lidar):
 
                     was_in_emergency = True
                     strategy.get_logger().info("⏸️  Waiting for STM32 to report IDLE after emergency stop...")
-                    
+                    lidar.start_enemy_collision_check()
                     idle_wait_count = 0
                     while(not IDLE and not SHUTDOWN_REQUESTED):
                         idle_wait_count += 1
