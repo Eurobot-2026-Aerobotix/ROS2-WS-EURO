@@ -515,7 +515,6 @@ def stm32_task(strategy, stm32,lidar):
             last_stm_command="navigation"
             
             strategy.get_logger().info(f"⏳ Entering wait loop - IDLE={IDLE}, EMERGENCY_STOP={EMERGENCY_STOP}, last_stm_command={last_stm_command}")
-            
             # Wait for command completion with emergency handling
             loop_iteration = 0
             while ((not IDLE and not SHUTDOWN_REQUESTED) or (EMERGENCY_STOP) or last_stm_command=="emergency") and last_stm_command != "replanned":
@@ -546,13 +545,7 @@ def stm32_task(strategy, stm32,lidar):
                     strategy.queues['ESP_back'].clear()
                     strategy.get_logger().warning("🧹 Cleared STM/ESP queues for steal-only emergency recovery")
 
-                    # Arm steal loop immediately from emergency stop.
-                    if not STEAL_LOOP_ACTIVE and not STEAL_LOOP_RUNNING:
-                        STEAL_REPEAT_COUNT = 30
-                        STEAL_LOOP_ACTIVE = True
-                        strategy.get_logger().warning(
-                            "🏴‍☠️ Emergency-triggered steal loop armed (STEAL_LOOP_ACTIVE=True, STEAL_REPEAT_COUNT=30)"
-                        )
+                    
 
                     was_in_emergency = True
                     strategy.get_logger().info("⏸️  Waiting for STM32 to report IDLE after emergency stop...")
@@ -563,12 +556,19 @@ def stm32_task(strategy, stm32,lidar):
                         if idle_wait_count % 10 == 0:  # Log every 0.5 seconds
                             strategy.get_logger().info(f"⏸️  Still waiting for IDLE... (count={idle_wait_count}, IDLE={IDLE})")
                         time.sleep(0.05)  # Wait until STM32 reports idle after stop
-                    
+                    strategy.remove_esp_waiting=True
                     strategy.get_logger().info(f"✓ STM32 now IDLE after emergency stop (waited {idle_wait_count * 0.05:.2f}s)")
-                    
+                    # Arm steal loop immediately from emergency stop.
+                    if not STEAL_LOOP_ACTIVE and not STEAL_LOOP_RUNNING:
+                        STEAL_REPEAT_COUNT = 30
+                        STEAL_LOOP_ACTIVE = True
+                        strategy.get_logger().warning(
+                            "🏴‍☠️ Emergency-triggered steal loop armed (STEAL_LOOP_ACTIVE=True, STEAL_REPEAT_COUNT=30)"
+                        )
+                        
                     # Keep lidar collision watch active until path is clear.
-                    lidar.start_enemy_collision_check()  # Start waiting period before rechecking obstacle
-                    strategy.get_logger().info("🔍 Started enemy collision check - waiting for obstacle to clear")
+                    # lidar.start_enemy_collision_check()  # Start waiting period before rechecking obstacle
+                    # strategy.get_logger().info("🔍 Started enemy collision check - waiting for obstacle to clear")
                 
                 # Check if emergency cleared
                 elif not EMERGENCY_STOP and was_in_emergency  :

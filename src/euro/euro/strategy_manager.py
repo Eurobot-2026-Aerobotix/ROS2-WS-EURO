@@ -101,10 +101,9 @@ class StrategyManager(Node):
         self._beacon_startup_publish_count = 0
         self._beacon_startup_timer = self.create_timer(0.5, self._publish_initial_beacon_status)
         self._task_scheduler_status_timer = self.create_timer(0.25, self._publish_task_scheduler_status)
-
         self.pathfinder = PathfinderClient()
         self.path_called = False
-
+        self.remove_esp_waiting=False
         # New scheduler stack (map + task scheduler) exposed through strategy manager.
         # This allows executor and other modules to use `strategy.task_scheduler.*`.
         self.map = Map(round_timer=self.round)
@@ -424,14 +423,9 @@ class StrategyManager(Node):
                             while executor_module.SYSTEMS_IDLE_COUNT <n and len((self.queues["STM"]))>0 :
                                 # Static flow safety: if emergency/steal starts while waiting,
                                 # abort this task loading so ESP commands are not queued from stale flow.
-                                if (not allow_during_emergency) and (
-                                    executor_module.EMERGENCY_STOP
-                                    or executor_module.STEAL_LOOP_ACTIVE
-                                    or executor_module.STEAL_LOOP_RUNNING
-                                ):
-                                    self.get_logger().warning(
-                                        f"⛔ Aborting static task load during emergency/steal: task={task_name}, device={device}, command={command}"
-                                    )
+                                if(self.remove_esp_waiting):
+                                    self.get_logger().warning("🛑 ESP32 command wait interrupted due to emergency/steal - stopping task load to prevent stale ESP commands")
+                                    self.remove_esp_waiting = False
                                     return False
 
                                 # Add prepare command when on second-to-last STM command
