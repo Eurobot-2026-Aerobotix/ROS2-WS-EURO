@@ -290,7 +290,7 @@ class StrategyManager(Node):
 
         # Track the execution intent in task_scheduler from global-goal context.
         # - pick_up  -> target_id = batch known_id returned by get_batch_color
-        # - put_down -> target_id = executor_module.known_id_front/back based on last ESP device
+        # - put_down -> target_id = shared state known_id_front/back based on last ESP device
         if hasattr(self, 'task_scheduler') and self.task_scheduler is not None:
             tracked_type = None
             tracked_target_id = ""
@@ -395,13 +395,6 @@ class StrategyManager(Node):
 
                 # Add command to device queue
                 if device in self.queues:
-                    if(device == "ESP_front" ) :
-                        state.ESP_FRONT_IDLE=False
-                    if(device == "ESP_back" ) :
-                        state.ESP_BACK_IDLE=False
-                    if(device == "STM" and command !="set_position"):
-                        state.IDLE_FOR_SYSTEMS=False
-                        
                     if wait :
                         self.get_logger().info(f"      ⏳ Waiting for dependencies...")
                         if(device == "STM"):
@@ -457,6 +450,15 @@ class StrategyManager(Node):
                     if device =="SSTM" and command =="set_position":
                         self.queues["RASP_PI"].append(cmd)
                     else:
+                        # Mark busy only when command is actually enqueued.
+                        # This avoids stale busy flags when wait is interrupted.
+                        if device == "ESP_front":
+                            state.ESP_FRONT_IDLE = False
+                        if device == "ESP_back":
+                            state.ESP_BACK_IDLE = False
+                        if device == "STM" and command != "set_position":
+                            state.IDLE_FOR_SYSTEMS = False
+
                         if device =="RASP_PI" and command=="Wait for manual start":
                             state.WAITING_TIRETTE=True
                         if not self.end_game:
@@ -1022,7 +1024,7 @@ def main(args=None):
     finally:
         # Signal threads to stop first
         strategy.get_logger().info("Signaling threads to stop...")
-        executor_module.SHUTDOWN_REQUESTED = True
+        state.SHUTDOWN_REQUESTED = True
         
         # Give threads time to react to shutdown flag
         time.sleep(0.3)

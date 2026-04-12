@@ -493,6 +493,8 @@ def stm32_task(strategy, stm32,lidar):
                     strategy.queues['STM'].clear()
                     strategy.queues['ESP_front'].clear()
                     strategy.queues['ESP_back'].clear()
+                    state.ESP_FRONT_IDLE = True
+                    state.ESP_BACK_IDLE = True
                     strategy.get_logger().warning("🧹 Cleared STM/ESP queues for steal-only emergency recovery")
 
                     
@@ -773,9 +775,17 @@ def pick_up(controller,pneumatic,strategy,front):
     strategy.get_logger().info(f"🚀 pick_up() called for {'FRONT' if front else 'BACK'}")
     
     if state.SHUTDOWN_REQUESTED:
+        if front:
+            state.ESP_FRONT_IDLE = True
+        else:
+            state.ESP_BACK_IDLE = True
         strategy.get_logger().warning("⚠️ pick_up() aborted - SHUTDOWN_REQUESTED")
         return
     if state.EMERGENCY_STOP:
+        if front:
+            state.ESP_FRONT_IDLE = True
+        else:
+            state.ESP_BACK_IDLE = True
         strategy.get_logger().warning("⚠️ pick_up() deferred - EMERGENCY_STOP is active")
         return
     #stana(controller)
