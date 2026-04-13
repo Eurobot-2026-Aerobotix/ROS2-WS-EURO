@@ -10,7 +10,7 @@ import threading
 import json
 from typing import List, Dict, Any, Optional
 from collections import deque
-from geometry_msgs.msg import PoseStamped, Pose2D, Quaternion, Vector3, Point
+from geometry_msgs.msg import PoseStamped, Pose2D, Quaternion, Vector3
 from std_msgs.msg import Int32, String
 from aruco_mapper_msgs.msg import ArucoMapperState
 from euro.yaml_loader import load_tasks_from_yaml
@@ -278,15 +278,23 @@ class StrategyManager(Node):
             return success
     def handle_global_goal(self, x, y, angle):
         global found_goal_batch
-        angle_rad = math.radians(float(angle)) if abs(float(angle)) > (2 * math.pi + 0.01) else float(angle)
-        pos = Point()
-        pos.x = float(x)
-        pos.y = float(y)
-        pos.z = 0.0
-        known_id = ''
-        self.get_logger().info("requesting from pathfinder for checking if there is a batch or no(global pose ) ")
-        color_pattern, success, direction, batch_center, batch_known_id = self.pathfinder.get_batch_color(known_id, pos)
-        self.get_logger().info(f"found batch: {success}")
+        target_x_mm = float(x) 
+        target_y_mm = float(y) 
+
+        batch_info = None
+        if hasattr(self, 'map') and self.map is not None:
+            batch_info = self.map.find_batch_by_position(
+                x=target_x_mm,
+                y=target_y_mm,
+                max_distance_mm=200.0,
+            )
+
+        success = batch_info is not None
+        batch_known_id = str(batch_info.known_id).lower() if batch_info is not None else ""
+        self.get_logger().info(
+            f"global goal batch lookup at ({target_x_mm:.1f},{target_y_mm:.1f}) -> "
+            f"found={success}, id={batch_known_id or 'none'}"
+        )
 
         # Track the execution intent in task_scheduler from global-goal context.
         # - pick_up  -> target_id = batch known_id returned by get_batch_color
@@ -326,34 +334,14 @@ class StrategyManager(Node):
         
         if success and self.last_task_command =='pick_up' :
             found_goal_batch=True
-            if (direction == "horizontal" and y < batch_center.y) :
-                global_x=x
-                global_y=y-0.1
-                global_angle=angle
-            elif(direction == "horizontal" and y > batch_center.y) :
-                global_x=x
-                global_y=y+0.1
-                global_angle=angle
-            elif(direction == "vertical" and x < batch_center.x) :
-                global_x=x-0.1
-                global_y=y
-                global_angle=angle
-            elif(direction == "vertical" and x > batch_center.x) :
-                global_x=x+0.1
-                global_y=y
-                global_angle=angle
-            else:
-                # Default case: use original coordinates
-                global_x=x
-                global_y=y
-                global_angle=angle
-                self.get_logger().warn(f"Edge case: position equals batch center or unexpected direction '{direction}'")
-            self.get_logger().info(f"pathfinder goal set to :x = {x}, y = {y}  angle=  {angle}with pickup ")
-            self.pathfinder.set_goal(float(global_x), float(global_y), angle)
+            self.get_logger().info(
+                f"Batch found for pick_up near global goal: id={batch_known_id}"
+            )
         else:
             found_goal_batch=False
-            self.get_logger().info(f"pathfinder goal set to :x = {x}, y = {y}  angle=  {angle}without pickuo ")
-            self.pathfinder.set_goal(float(x), float(y), angle)
+            self.get_logger().info(
+                "No matching batch for pick_up near global goal (or last command is not pick_up)"
+            )
     def quaternion_to_yaw(self, quat: Quaternion) -> float:
         """Convert quaternion to yaw angle"""
         siny_cosp = 2 * (quat.w * quat.z + quat.x * quat.y)

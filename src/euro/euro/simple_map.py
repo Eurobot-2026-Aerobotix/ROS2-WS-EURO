@@ -402,6 +402,52 @@ class Map:
     def get_batch(self, known_id: str) -> Optional[BatchInfo]:
         normalized_id = self._normalize_batch_id(known_id)
         return self.batches.get(normalized_id)
+
+    def find_batch_by_position(
+        self,
+        x: float,
+        y: float,
+        max_distance_mm: Optional[float] = None,
+    ) -> Optional[BatchInfo]:
+        """
+        Return the nearest active batch to position (x, y) in millimeters,
+        if it is within `max_distance_mm`.
+
+        Args:
+            x: X position in mm
+            y: Y position in mm
+            max_distance_mm: Match radius in mm (defaults to `self.batch_radius`)
+        """
+        if not self.batches:
+            return None
+
+        threshold = float(self.batch_radius if max_distance_mm is None else max_distance_mm)
+        best_batch: Optional[BatchInfo] = None
+        best_distance = float('inf')
+
+        px = float(x)
+        py = float(y)
+
+        for batch in self.batches.values():
+            distance = math.hypot(px - float(batch.x), py - float(batch.y))
+            if distance < best_distance:
+                best_distance = distance
+                best_batch = batch
+
+        if best_batch is None or best_distance > threshold:
+            return None
+
+        return best_batch
+
+    def find_batch_id_by_position(
+        self,
+        x: float,
+        y: float,
+        max_distance_mm: Optional[float] = None,
+    ) -> Optional[str]:
+        """Return only the matched batch known_id near (x, y) in millimeters."""
+        batch = self.find_batch_by_position(x=x, y=y, max_distance_mm=max_distance_mm)
+        return None if batch is None else str(batch.known_id)
     
     def update_time_left(self, time_left: float) -> None:
         self.time_left = time_left
