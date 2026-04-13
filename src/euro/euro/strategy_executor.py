@@ -203,6 +203,101 @@ def execute_prepared_path(strategy, lidar):
     strategy.get_logger().info("ℹ️ execute_prepared_path() skipped (steal-only mode enabled)")
     return False
 
+
+def task_tracking_task(strategy, stm32, lidar=None):
+    """
+    Monitor TaskScheduler tracked-task cancellation and trigger emergency recovery.
+
+    If `strategy.task_scheduler.cancel_tracked_task()` becomes True while the current
+    execution context is a pick/put action, enforce the same steal-only emergency
+    recovery flow used for lidar emergency handling.
+    """
+    strategy.get_logger().info("🧭 Task-tracking monitor thread started")
+
+    while rclpy.ok() and not state.SHUTDOWN_REQUESTED:
+        scheduler = getattr(strategy, 'task_scheduler', None)
+        if scheduler is None:
+            time.sleep(0.05)
+            continue
+
+        try:
+            should_cancel = bool(scheduler.cancel_tracked_task())
+        except Exception as e:
+            strategy.get_logger().warning(f"⚠️ task_tracking: cancel_tracked_task() failed: {e}")
+            time.sleep(0.05)
+            continue
+
+        if not should_cancel:
+            time.sleep(0.05)
+            continue
+
+        in_pickput_context = str(getattr(strategy, 'last_task_command', '') or '').lower() in ('pick_up', 'put_down')
+        if not in_pickput_context:
+            # No active pickup/putdown context: consume stale invalid flag and continue.
+            scheduler.tracked_task_invalid = False
+            time.sleep(0.05)
+            continue
+
+        if state.replanning:
+            # Recovery already in progress; consume flag to avoid retrigger spam.
+            scheduler.tracked_task_invalid = False
+            time.sleep(0.05)
+            continue
+
+        strategy.get_logger().warning(
+            f"🚨 Task-tracking cancellation detected during {strategy.last_task_command} - triggering emergency stop"
+        )
+        strategy.remove_esp_waiting = True
+        stm32.stop()
+        state.last_stm_command = "emergency"
+        state.IDLE = False
+        state.IDLE_FOR_SYSTEMS = True
+        state.replanning = True
+
+        # Emergency mode is steal-only: drop static queued motion/actuator work.
+        strategy.queues['STM'].clear()
+        strategy.queues['ESP_front'].clear()
+        strategy.queues['ESP_back'].clear()
+        state.ESP_DISPATCH_EPOCH = int(getattr(state, 'ESP_DISPATCH_EPOCH', 0)) + 1
+        state.ESP_FRONT_IDLE = True
+        state.ESP_BACK_IDLE = True
+        strategy.get_logger().warning(
+            f"🧹 Cleared STM/ESP queues for task-tracking emergency recovery (epoch={state.ESP_DISPATCH_EPOCH})"
+        )
+
+        if lidar is not None:
+            try:
+                lidar.start_enemy_collision_check()
+            except Exception as e:
+                strategy.get_logger().warning(f"⚠️ Failed to start lidar collision check: {e}")
+
+        strategy.get_logger().info("⏸️  Waiting for STM32 to report IDLE after task-tracking emergency stop...")
+        idle_wait_count = 0
+        while (not state.IDLE and not state.SHUTDOWN_REQUESTED):
+            idle_wait_count += 1
+            if idle_wait_count % 10 == 0:
+                strategy.get_logger().info(
+                    f"⏸️  Still waiting for IDLE... (count={idle_wait_count}, IDLE={state.IDLE})"
+                )
+            time.sleep(0.05)
+
+        strategy.get_logger().info(
+            f"✓ STM32 now IDLE after task-tracking emergency stop (waited {idle_wait_count * 0.05:.2f}s)"
+        )
+
+        # Arm steal loop immediately from emergency stop.
+        if not state.STEAL_LOOP_ACTIVE and not state.STEAL_LOOP_RUNNING:
+            state.STEAL_REPEAT_COUNT = 30
+            state.STEAL_LOOP_ACTIVE = True
+            strategy.get_logger().warning(
+                "🏴‍☠️ Task-tracking emergency armed steal loop (STEAL_LOOP_ACTIVE=True, STEAL_REPEAT_COUNT=30)"
+            )
+
+        # Consume cancellation trigger so we only react once per invalidation event.
+        scheduler.tracked_task_invalid = False
+
+        time.sleep(0.05)
+
 def robot_status(strategy, stm32, lidar):
     """Runs every 100ms to check STM32 movement status and lidar obstacles"""
     first_emergency = True

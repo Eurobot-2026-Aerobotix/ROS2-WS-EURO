@@ -18,7 +18,7 @@ import math
 from euro.pathfinder_controller import PathfinderClient
 from euro.simple_map import Map
 from euro.task_scheduler import TaskScheduler, Task
-from euro.strategy_executor import robot_status, lidar_status, stm32_task, front_task, back_task,rasp_pi_task, pami_task, path_planning_task
+from euro.strategy_executor import robot_status, lidar_status, stm32_task, front_task, back_task,rasp_pi_task, pami_task, path_planning_task, task_tracking_task
 from euro.shared_state import state  # Import module to access SHUTDOWN_REQUESTED and other globals
 
 # Global variable to store team color
@@ -799,6 +799,13 @@ def main(args=None):
         daemon=True
     )
     path_planning_thread.start()
+
+    task_tracking_thread = threading.Thread(
+        target=task_tracking_task,
+        args=(strategy, stm32, lidar),
+        daemon=True
+    )
+    task_tracking_thread.start()
     
     stm32_thread = threading.Thread(
         target=stm32_task,
@@ -1053,6 +1060,7 @@ def main(args=None):
         # Wait for threads to finish (with longer timeout)
         threads = [
             ('Status Monitor', status_thread),
+            ('Task Tracking', task_tracking_thread),
             ('STM32 Task', stm32_thread),
             ('Front Task', front_thread),
             ('Back Task', back_thread),
