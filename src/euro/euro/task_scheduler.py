@@ -66,6 +66,7 @@ class TaskScheduler:
         self._last_available_batches_signature = None
         self._last_pickup_queue_signature = None
         self._last_task_queue_signature = None
+        self._last_empty_queue_reason_signature = None
 
         # Explicit ROS wiring only:
         # - If a node is provided and map is a plain data-map, attach subscribers on it.
@@ -685,20 +686,36 @@ class TaskScheduler:
             self._last_available_batches_signature = available_signature
 
         queue = []
+        skip_stats: Dict[str, int] = {
+            'pickup_fx_disabled': 0,
+            'pickup_reserved_center': 0,
+            'pickup_invalid_or_own_color': 0,
+            'pickup_phi_mismatch': 0,
+            'pickup_time_guard': 0,
+            'pickup_choose_side_failed': 0,
+            'dropoff_not_empty': 0,
+            'dropoff_time_guard': 0,
+            'dropoff_choose_side_failed': 0,
+            'filtered_tracked_target': 0,
+            'filtered_ninja_target': 0,
+        }
         queued_pickup_debug_rows = []
         # generate pickup tasks if we have space in the robot
         if self.map.robot_front_empty or self.map.robot_back_empty:
             for batch_id, batch in batches_snapshot:
                 if (self.allow_fx == False) and (batch_id[0] == "f"):
+                    skip_stats['pickup_fx_disabled'] += 1
                     if self.ros_node is not None:
                         self.ros_node.get_logger().debug(f"⏭️ Skip pickup {batch_id}: fx pickups disabled")
                     continue
                 if batch_id in ["f3", "f5", "f8"]:
+                    skip_stats['pickup_reserved_center'] += 1
                     if self.ros_node is not None:
                         self.ros_node.get_logger().debug(f"⏭️ Skip pickup {batch_id}: reserved center drop-off zone")
                     continue
                 # ken mafihouch 4 walla deja m3abbi b mte3na 
                 if (len(batch.color) != 4) or (batch.color.count(self.map.robot_color[0]) == 4):
+                    skip_stats['pickup_invalid_or_own_color'] += 1
                     if self.ros_node is not None:
                         self.ros_node.get_logger().debug(
                             f"⏭️ Skip pickup {batch_id}: invalid/own color pattern='{batch.color}' robot_color='{self.map.robot_color}'"
@@ -709,12 +726,14 @@ class TaskScheduler:
                     if batch_id in ["f1", "f10"]:
                         possible_pickup_phi = 90.0
                     if batch.phi_degrees is None or abs(batch.phi_degrees - possible_pickup_phi) > 1.0:
+                        skip_stats['pickup_phi_mismatch'] += 1
                         if self.ros_node is not None:
                             self.ros_node.get_logger().debug(
                                 f"⏭️ Skip pickup {batch_id}: phi mismatch current={batch.phi_degrees} expected={possible_pickup_phi}"
                             )
                         continue
                 if (self.map.time_left < self.must_leave_pamiyeet_alone_time) and (((self.map.robot_color[0] == "y") and (batch_id in ["s1", "s2", "s3", "s4", "f1", "f2", "f6"])) or ((self.map.robot_color[0] == "b") and (batch_id in ["s5", "s6", "s7", "s8", "f9", "f10", "f6"]))):
+                    skip_stats['pickup_time_guard'] += 1
                     if self.ros_node is not None:
                         self.ros_node.get_logger().debug(
                             f"⏭️ Skip pickup {batch_id}: time left {self.map.time_left:.1f}s < must_leave_pamiyeet_alone_time {self.must_leave_pamiyeet_alone_time:.1f}s"
@@ -730,6 +749,7 @@ class TaskScheduler:
                         f"{task.target_id}(score={task.score:.3f},options={task.options})"
                     )
                 else:
+                    skip_stats['pickup_choose_side_failed'] += 1
                     if self.ros_node is not None:
                         self.ros_node.get_logger().debug(
                             f"⏭️ Skip pickup {batch_id}: choose_side returned False"
@@ -753,8 +773,10 @@ class TaskScheduler:
         if not self.map.robot_front_empty or not self.map.robot_back_empty:
             for dropoff_id, dropoff in dropoffs_snapshot:
                 if (dropoff_id not in ["f3", "f5", "f8"]) and (dropoff["status"] != "empty"):
+                    skip_stats['dropoff_not_empty'] += 1
                     continue
                 if (self.map.time_left < self.must_leave_pamiyeet_alone_time) and (((self.map.robot_color[0] == "y") and (dropoff_id in ["f1", "f2", "f3", "f4", "f6"])) or ((self.map.robot_color[0] == "b") and (dropoff_id in ["f7", "f8", "f9", "f10", "f6"]))):
+                    skip_stats['dropoff_time_guard'] += 1
                     if self.ros_node is not None:
                         self.ros_node.get_logger().debug(
                             f"⏭️ Skip dropoff {dropoff_id}: time left {self.map.time_left:.1f}s < must_leave_pamiyeet_alone_time {self.must_leave_pamiyeet_alone_time:.1f}s"
@@ -765,13 +787,19 @@ class TaskScheduler:
                 self._log_score_breakdown(task, contributions)
                 if (self.choose_side(task)):
                     queue.append(task)
+                else:
+                    skip_stats['dropoff_choose_side_failed'] += 1
         
         if self.tracked_task is not None:
+            before_tracked_filter = len(queue)
             queue = [t for t in queue if t.target_id != self.tracked_task.target_id]
+            skip_stats['filtered_tracked_target'] += max(0, before_tracked_filter - len(queue))
 
         if self.map.ninja_on_map:
             blocked_id = "f7" if self.map.robot_color == "blue" else "f4"
+            before_ninja_filter = len(queue)
             queue = [t for t in queue if t.target_id != blocked_id]
+            skip_stats['filtered_ninja_target'] += max(0, before_ninja_filter - len(queue))
 
         # sorting tasks
         queue.sort(key=lambda t: t.score, reverse=True)
@@ -811,6 +839,43 @@ class TaskScheduler:
                 task.options["drop"] = "back"
             queue.insert(0, task)  # Prioritize return home task
 
+        if len(queue) == 0:
+            tracked = self.tracked_task.target_id if self.tracked_task is not None else 'none'
+            skip_rows = [f"{k}={v}" for k, v in skip_stats.items() if v > 0]
+            if not skip_rows:
+                skip_rows = ["no_filter_counted=1"]
+
+            empty_message = (
+                "⚠️ Empty task queue diagnostic | "
+                f"batches={len(batches_snapshot)} | "
+                f"dropoffs={len(dropoffs_snapshot)} | "
+                f"time_left={time_left_s:.1f}s | "
+                f"front_empty={self.map.robot_front_empty} | "
+                f"back_empty={self.map.robot_back_empty} | "
+                f"ninja_on_map={self.map.ninja_on_map} | "
+                f"tracked={tracked} | "
+                f"filters={', '.join(skip_rows)}"
+            )
+            empty_signature = (
+                len(batches_snapshot),
+                len(dropoffs_snapshot),
+                round(float(time_left_s), 1),
+                bool(self.map.robot_front_empty),
+                bool(self.map.robot_back_empty),
+                bool(self.map.ninja_on_map),
+                str(tracked),
+                tuple(skip_rows),
+            )
+
+            if empty_signature != self._last_empty_queue_reason_signature:
+                if self.ros_node is not None:
+                    self.ros_node.get_logger().warning(empty_message)
+                else:
+                    print(f"[TaskScheduler] {empty_message}")
+                self._last_empty_queue_reason_signature = empty_signature
+        else:
+            self._last_empty_queue_reason_signature = None
+
         self._log_task_queue_snapshot(queue)
         self.task_queue = queue
     
@@ -819,22 +884,40 @@ class TaskScheduler:
         if self.tracked_task is None:
             return
 
-        if self.tracked_task.type == "pickup":
+        tracked_type = str(self.tracked_task.type).strip().lower()
+        if tracked_type == "pick_up":
+            tracked_type = "pickup"
+            self.tracked_task.type = "pickup"
+        elif tracked_type == "put_down":
+            tracked_type = "dropoff"
+            self.tracked_task.type = "dropoff"
+
+        invalid_reason = None
+
+        if tracked_type == "pickup":
             batch = self.map.batches.get(self.tracked_task.target_id)
             if batch is None:
-                self.tracked_task_invalid = True
-                return
-            if (len(batch.color) != 4) or (batch.color.count(self.map.robot_color[0]) == 4):
-                self.tracked_task_invalid = True
-                return
-        elif self.tracked_task.type == "dropoff":
+                invalid_reason = "tracked pickup batch no longer exists"
+            elif (len(batch.color) != 4) or (batch.color.count(self.map.robot_color[0]) == 4):
+                invalid_reason = "tracked pickup color pattern became invalid"
+        elif tracked_type == "dropoff":
             dropoff = self.map.drop_offs.get(self.tracked_task.target_id)
             if dropoff is None:
-                self.tracked_task_invalid = True
-                return
-            if dropoff["status"] != "empty" and dropoff["type"] != "center":
-                self.tracked_task_invalid = True
-                return
+                invalid_reason = "tracked dropoff no longer exists"
+            elif dropoff["status"] != "empty" and dropoff["type"] != "center":
+                invalid_reason = "tracked dropoff is no longer available"
+
+        if invalid_reason is not None:
+            old_target = self.tracked_task.target_id
+            old_type = tracked_type
+            self.tracked_task_invalid = True
+            self.untrack_task()
+            message = f"🧹 Auto-untracked invalid task {old_type}:{old_target} | reason={invalid_reason}"
+            if self.ros_node is not None:
+                self.ros_node.get_logger().warning(message)
+            else:
+                print(f"[TaskScheduler] {message}")
+            return invalid_reason
 
     def cancel_tracked_task(self) -> bool:
         return self.tracked_task_invalid
