@@ -45,6 +45,7 @@ class TaskScheduler:
         "number_of_obstacles_between": -1.0,
         "enemy_is_obstacle_between": -3,
         "distance_to_enemy": 0.001,
+        "distance_from_nest": 0.00001,
         "number_of_opposite_crates": 1,
         "distance_to_goal_close":0.008,
         "pickup_facing_available_face": 0.75,
@@ -221,6 +222,7 @@ class TaskScheduler:
             "number_of_obstacles_between": 0.0,
             "enemy_is_obstacle_between": 0.0,
             "distance_to_enemy": 0.0,
+            "distance_from_nest": 0.0,
             "number_of_opposite_crates": 0.0,
             "pickup_facing_available_face": 0.0,
             "dropoff_facing_loaded_face": 0.0,
@@ -255,6 +257,13 @@ class TaskScheduler:
             )
         else:
             contributions["distance_to_enemy"] = self.coeffs["distance_to_enemy"] * 1000.0  # If enemy not detected, assume far away
+
+        time_weight = max(float(self.map.get_time_left()) - 20.0, 0.0)
+        contributions["distance_from_nest"] = (
+            self.coeffs["distance_from_nest"]
+            * self.map.distance_from(self.map.nest_position, target_pos)
+            * time_weight
+        )
 
         if task.type == "pickup":
             preferred_face = self._preferred_face_toward_target(target_pos)
@@ -663,8 +672,16 @@ class TaskScheduler:
         self.predict_enemy_goal()
 
         # Snapshot mutable maps to avoid concurrent-size-change crashes while iterating.
-        batches_snapshot = list(self.map.batches.items())
-        dropoffs_snapshot = list(self.map.drop_offs.items())
+        # Use lock if available (e.g., MapManager) to ensure atomic snapshot
+        batches_lock = getattr(self.map, 'batches_lock', None)
+        if batches_lock is not None:
+            with batches_lock:
+                batches_snapshot = list(self.map.batches.items())
+                dropoffs_snapshot = list(self.map.drop_offs.items())
+        else:
+            # Fallback for Map without locks (simple_map)
+            batches_snapshot = list(self.map.batches.items())
+            dropoffs_snapshot = list(self.map.drop_offs.items())
 
         # Log available batches only when snapshot changes.
         if batches_snapshot:
@@ -700,6 +717,10 @@ class TaskScheduler:
             'filtered_ninja_target': 0,
         }
         queued_pickup_debug_rows = []
+        
+        # Track target_ids to prevent duplicate tasks in a single generation
+        queued_target_ids = set()
+        
         # generate pickup tasks if we have space in the robot
         if self.map.robot_front_empty or self.map.robot_back_empty:
             for batch_id, batch in batches_snapshot:
@@ -744,10 +765,19 @@ class TaskScheduler:
                 task.score, contributions = self._calculate_score_with_breakdown(task)
                 self._log_score_breakdown(task, contributions)
                 if (self.choose_side(task)):
-                    queue.append(task)
-                    queued_pickup_debug_rows.append(
-                        f"{task.target_id}(score={task.score:.3f},options={task.options})"
-                    )
+                    # Deduplication: prevent same target_id in same generation cycle
+                    if batch_id not in queued_target_ids:
+                        queue.append(task)
+                        queued_target_ids.add(batch_id)
+                        queued_pickup_debug_rows.append(
+                            f"{task.target_id}(score={task.score:.3f},options={task.options})"
+                        )
+                    else:
+                        # Duplicate detected within same generation
+                        if self.ros_node is not None:
+                            self.ros_node.get_logger().warning(
+                                f"⚠️ Duplicate pickup {batch_id} in same generation cycle (already queued)"
+                            )
                 else:
                     skip_stats['pickup_choose_side_failed'] += 1
                     if self.ros_node is not None:
@@ -786,7 +816,16 @@ class TaskScheduler:
                 task.score, contributions = self._calculate_score_with_breakdown(task)
                 self._log_score_breakdown(task, contributions)
                 if (self.choose_side(task)):
-                    queue.append(task)
+                    # Deduplication: prevent same target_id in same generation cycle
+                    if dropoff_id not in queued_target_ids:
+                        queue.append(task)
+                        queued_target_ids.add(dropoff_id)
+                    else:
+                        # Duplicate detected within same generation
+                        if self.ros_node is not None:
+                            self.ros_node.get_logger().warning(
+                                f"⚠️ Duplicate dropoff {dropoff_id} in same generation cycle (already queued)"
+                            )
                 else:
                     skip_stats['dropoff_choose_side_failed'] += 1
         
@@ -1392,14 +1431,15 @@ class TaskScheduler:
             return 'back'
         return None
 
-    def build_return_home(self) -> Optional[List[Dict[str, Any]]]:
+    def build_return_home(self, drop_option: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
         """
         Build a return-to-home task sequence for end-game.
         
         Sequence:
         1. If robot color is yellow, navigate to intermediate waypoint (803, 879)
         2. Wait for end game (RASP_PI wait_end_game with 12 second param)
-        3. Perform bezier backwards movement to home position (251.19, 277.60, θ=0.36)
+        3. Perform final bezier movement to home position (251.19, 277.60, θ=0.36)
+           Command direction depends on selected drop side.
         
         Returns:
             List of executable task dicts, or None if build fails
@@ -1413,8 +1453,18 @@ class TaskScheduler:
                 )
             robot_color = "yellow"
 
+        normalized_drop = str(drop_option or '').strip().lower()
+        if normalized_drop == 'back':
+            final_bezier_command = 'bezier'
+        elif normalized_drop == 'front':
+            final_bezier_command = 'bezier_backwards'
+        else:
+            final_bezier_command = 'bezier_backwards'
+
         # Blue return-home: path to staging point, wait end-game, then bezier to blue home.
         if robot_color == "blue":
+            # Preserve prior blue behavior when drop side is unspecified.
+            blue_bezier_command = 'bezier' if normalized_drop == '' else final_bezier_command
             if self.pathfinder is None:
                 if self.ros_node is not None:
                     self.ros_node.get_logger().warning(
@@ -1493,7 +1543,7 @@ class TaskScheduler:
                 'sequence': [
                     {
                         'device': 'STM',
-                        'command': 'bezier',
+                        'command': blue_bezier_command,
                         'params': [
                             '897.99',
                             '2390.29',
@@ -1597,7 +1647,7 @@ class TaskScheduler:
             'sequence': [
                 {
                     'device': 'STM',
-                    'command': 'bezier_backwards',
+                    'command': final_bezier_command,
                     'params': [
                         '791.09',
                         '267.57000000000016',
@@ -1690,7 +1740,7 @@ class TaskScheduler:
             )
 
         elif task.type == 'return_home':
-            generated_tasks = self.build_return_home()
+            generated_tasks = self.build_return_home(drop_option=str(task.options.get('drop', '') or '').lower())
 
         else:
             # Only pickup/dropoff/return_home are converted here.
