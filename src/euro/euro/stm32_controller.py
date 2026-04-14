@@ -640,7 +640,99 @@ class STM32Controller(Node):
         except Exception as e:
             self.get_logger().error(f'fix position command error: {str(e)}')
             return False, f'fix position error: {str(e)}'
-
+    def creep_to(self, x, y, timeout=2.0):
+        """Send a request to creep to a specific position (x, y)"""
+        if not self.navi_client.wait_for_service(timeout_sec=2.0):
+            self.get_logger().error('NaviStm service not available')
+            return False, 'NaviStm service not available'
+        
+        request = NaviStm.Request()
+        request.arg1 = 20.0  # Indicates creep_to command
+        request.arg2 = x
+        request.arg3 = y
+        request.arg4 = 0.0
+        request.arg5 = 0.0
+        request.arg6 = 0.0
+        request.arg7 = 0.0
+        request.arg8 = 0.0
+        request.arg9 = 0.0
+        request.arg10 = 0.0
+        self.get_logger().info(f"Sending creep_to: X={x}, Y={y}")
+        
+        try:
+            future = self.navi_client.call_async(request)
+            if not self._wait_for_future(future, timeout):
+                self.get_logger().error('Service call timeout')
+                return False, 'Service call timeout'
+            
+            response = future.result()
+            self.get_logger().info(f"creep_to response: {response.result}")
+            return True, response
+        except Exception as e:
+            self.get_logger().error(f'Creep_to service error: {str(e)}')
+            return False, f'Service error: {str(e)}'
+    def creep_to_backwards(self, x, y, timeout=2.0):
+        """Send a request to creep to a specific position backwards (x, y)"""
+        if not self.navi_client.wait_for_service(timeout_sec=2.0):
+            self.get_logger().error('NaviStm service not available')
+            return False, 'NaviStm service not available'
+        
+        request = NaviStm.Request()
+        request.arg1 = 21.0  # Indicates creep_to_backwards command
+        request.arg2 = x
+        request.arg3 = y
+        request.arg4 = 0.0
+        request.arg5 = 0.0
+        request.arg6 = 0.0
+        request.arg7 = 0.0
+        request.arg8 = 0.0
+        request.arg9 = 0.0
+        request.arg10 = 0.0
+        self.get_logger().info(f"Sending creep_to_backwards: X={x}, Y={y}")
+        
+        try:
+            future = self.navi_client.call_async(request)
+            if not self._wait_for_future(future, timeout):
+                self.get_logger().error('Service call timeout')
+                return False, 'Service call timeout'
+            
+            response = future.result()
+            self.get_logger().info(f"creep_to_backwards response: {response.result}")
+            return True, response
+        except Exception as e:
+            self.get_logger().error(f'Creep_to_backwards service error: {str(e)}')
+            return False, f'Service error: {str(e)}'
+    def soft_stop(self, timeout=2.0):
+        """Send a request to soft stop command"""
+        if not self.navi_client.wait_for_service(timeout_sec=2.0):
+            self.get_logger().error('NaviStm service not available')
+            return False, 'NaviStm service not available'
+        
+        request = NaviStm.Request()
+        request.arg1 = 22.0  # Indicates soft_stop command
+        request.arg2 = 0.0
+        request.arg3 = 0.0
+        request.arg4 = 0.0
+        request.arg5 = 0.0
+        request.arg6 = 0.0
+        request.arg7 = 0.0
+        request.arg8 = 0.0
+        request.arg9 = 0.0
+        request.arg10 = 0.0
+        self.get_logger().info(f"Sending soft_stop")
+        
+        try:
+            future = self.navi_client.call_async(request)
+            if not self._wait_for_future(future, timeout):
+                self.get_logger().error('Service call timeout')
+                return False, 'Service call timeout'
+            
+            response = future.result()
+            self.get_logger().info(f"soft_stop response: {response.result}")
+            return True, response
+        except Exception as e:
+            self.get_logger().error(f'Soft_stop service error: {str(e)}')
+            return False, f'Service error: {str(e)}'
     def send_navi_command(self, request_msg, timeout=10.0):
         """
         Send navigation command to STM32 via NaviStm service
