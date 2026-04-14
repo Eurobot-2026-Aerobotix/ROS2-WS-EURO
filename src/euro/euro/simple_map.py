@@ -410,7 +410,7 @@ class Map:
         max_distance_mm: Optional[float] = None,
     ) -> Optional[BatchInfo]:
         """
-        Return the nearest active batch to position (x, y) in millimeters,
+        Return the nearest predefined batch anchor to position (x, y) in millimeters,
         if it is within `max_distance_mm`.
 
         Args:
@@ -418,7 +418,7 @@ class Map:
             y: Y position in mm
             max_distance_mm: Match radius in mm (defaults to `self.batch_radius`)
         """
-        if not self.batches:
+        if not self.predefined_batch_positions:
             return None
 
         threshold = float(self.batch_radius if max_distance_mm is None else max_distance_mm)
@@ -428,11 +428,24 @@ class Map:
         px = float(x)
         py = float(y)
 
-        for batch in self.batches.values():
-            distance = math.hypot(px - float(batch.x), py - float(batch.y))
+        for known_id, position in self.predefined_batch_positions.items():
+            bx = float(position.get('x', 0.0))
+            by = float(position.get('y', 0.0))
+            bphi = float(position.get('phi_degrees', 0.0))
+
+            distance = math.hypot(px - bx, py - by)
             if distance < best_distance:
                 best_distance = distance
-                best_batch = batch
+                # Keep live color if this predefined batch exists in active map,
+                # otherwise expose it as unknown from predefined anchors.
+                live_batch = self.batches.get(self._normalize_batch_id(known_id))
+                best_batch = BatchInfo(
+                    known_id=self._normalize_batch_id(known_id),
+                    x=bx,
+                    y=by,
+                    phi_degrees=bphi,
+                    color=(live_batch.color if live_batch is not None else "unknown"),
+                )
 
         if best_batch is None or best_distance > threshold:
             return None
