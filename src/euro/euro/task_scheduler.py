@@ -1757,13 +1757,19 @@ class TaskScheduler:
             return None
 
         if not generated_tasks:
-            self.tracked_task_invalid = True
+            # Do not keep a stale tracked target when task build/path fails.
+            # Keeping it tracked causes repeated filtering (`filtered_tracked_target`)
+            # and can starve the queue in steal-loop retries.
+            failed_target = str(task.target_id)
+            if self.tracked_task is not None and str(self.tracked_task.target_id) == failed_target:
+                self.untrack_task()
+            self.tracked_task_invalid = False
             if self.ros_node is not None:
                 self.ros_node.get_logger().warning(
-                    f"⚠️ Failed to build executable task for selected batch id={task.target_id}, type={task.type}"
+                    f"⚠️ Failed to build executable task for selected batch id={task.target_id}, type={task.type} (untracked to avoid starvation)"
                 )
             else:
-                print(f"[TaskScheduler] Failed to build executable task for selected batch id={task.target_id}, type={task.type}")
+                print(f"[TaskScheduler] Failed to build executable task for selected batch id={task.target_id}, type={task.type} (untracked to avoid starvation)")
             return None
 
         self.rpi_queue.extend(generated_tasks)
