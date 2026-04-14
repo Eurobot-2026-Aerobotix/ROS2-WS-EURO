@@ -103,9 +103,11 @@ def path_planning_task(strategy, lidar, round_timer, pneumatic_controller=None, 
                     strategy.get_logger().warning(f"⚠️ Return home path attempt #{attempt_count} failed - retrying...")
                     time.sleep(0.5)
 
-        # If emergency stop is active, arm the steal loop
-        if state.EMERGENCY_STOP and not state.STEAL_LOOP_ACTIVE:
-            state.STEAL_LOOP_ACTIVE = True
+        # Run dynamic steal flow whenever it is armed.
+        # This allows task-tracking to arm dynamic generation even if
+        # EMERGENCY_STOP is already cleared by lidar.
+        if state.STEAL_LOOP_ACTIVE and not state.STEAL_LOOP_RUNNING:
+            state.STEAL_LOOP_RUNNING = True
             try:
                 repeat_count = max(1, int(state.STEAL_REPEAT_COUNT))
             except (TypeError, ValueError):
@@ -288,6 +290,7 @@ def task_tracking_task(strategy, stm32, lidar=None):
         # Arm steal loop immediately from emergency stop.
         if not state.STEAL_LOOP_ACTIVE and not state.STEAL_LOOP_RUNNING:
             state.STEAL_REPEAT_COUNT = 30
+            state.STEAL_LOOP_RUNNING = False
             state.STEAL_LOOP_ACTIVE = True
             strategy.get_logger().warning(
                 "🏴‍☠️ Task-tracking emergency armed steal loop (STEAL_LOOP_ACTIVE=True, STEAL_REPEAT_COUNT=30)"
