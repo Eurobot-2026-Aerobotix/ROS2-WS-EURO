@@ -35,6 +35,7 @@ class TaskScheduler:
     distance_from_wall = 200.0
     dropoff_min_clearance_to_sx = 420.0
     dropoff_min_clearance_to_fx = 330.0
+    drop_off_enemy_clearance = 50.0
     putdown_insert_distance = 175.0
     putdown_retreat_distance = 250.0
     switch_distance=550.0
@@ -462,6 +463,15 @@ class TaskScheduler:
 
             center_x = float(dropoff["x"])
             center_y = float(dropoff["y"])
+
+            if bool(getattr(self.map.enemy_relative, 'detected', False)):
+                enemy_distance_to_dropoff = math.hypot(
+                    float(self.map.enemy_absolute.x) - center_x,
+                    float(self.map.enemy_absolute.y) - center_y,
+                )
+                if enemy_distance_to_dropoff <= self.map.enemy_radius + self.map.batch_radius + float(self.drop_off_enemy_clearance):
+                    return False
+
             radius = float(self.drop_off_distance)
             sample_count = 72
 
