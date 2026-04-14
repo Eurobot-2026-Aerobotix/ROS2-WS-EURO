@@ -1008,6 +1008,19 @@ def main(args=None):
                     strategy.get_logger().warning(
                         f"⏭️ Skipping static task '{task['name']}' enqueue (interrupted by emergency/steal)"
                     )
+                    # In steal-only emergency mode, do not proceed to following static tasks
+                    # after an interrupted enqueue; ownership transfers to generated flow.
+                    if (
+                        state.replanning
+                        or state.STEAL_LOOP_ACTIVE
+                        or state.STEAL_LOOP_RUNNING
+                        or strategy.remove_esp_waiting
+                        or str(getattr(state, 'last_stm_command', '') or '') == 'emergency'
+                    ):
+                        strategy.get_logger().warning(
+                            "🛑 Static task execution halted after interruption; waiting for emergency/steal recovery"
+                        )
+                        return
                     continue
                 
                 # Wait for all commands to complete
