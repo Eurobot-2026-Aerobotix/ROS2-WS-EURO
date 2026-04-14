@@ -286,7 +286,7 @@ class StrategyManager(Node):
             batch_info = self.map.find_batch_by_position(
                 x=target_x_mm,
                 y=target_y_mm,
-                max_distance_mm=200.0,
+                max_distance_mm=300.0,
             )
 
         success = batch_info is not None
