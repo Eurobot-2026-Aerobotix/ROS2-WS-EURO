@@ -46,7 +46,7 @@ class TaskScheduler:
         "number_of_obstacles_between": -1.0,
         "enemy_is_obstacle_between": -3,
         "distance_to_enemy": 0.001,
-        "distance_from_nest": 0.00001,
+        "distance_from_nest": 0.000015,
         "number_of_opposite_crates": 1,
         "distance_to_goal_close":0.008,
         "pickup_facing_available_face": 0.75,
