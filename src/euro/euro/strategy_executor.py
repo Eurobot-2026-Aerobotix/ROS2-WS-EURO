@@ -608,6 +608,17 @@ def stm32_task(strategy, stm32,lidar):
                 # Log state every 20 iterations (2 seconds)
                 if loop_iteration % 20 == 0:
                     strategy.get_logger().info(f"🔄 Wait loop iteration {loop_iteration}: IDLE={state.IDLE}, EMERGENCY_STOP={state.EMERGENCY_STOP}, was_in_emergency={was_in_emergency}, replanning={state.replanning}, last_stm_command={state.last_stm_command}")
+
+                # Emergency can be set by another thread (e.g. task_tracking_task),
+                # in which case `was_in_emergency` in this STM thread remains False.
+                # If robot is already idle and lidar emergency is clear, transition to
+                # replanned state to avoid being stuck forever in the wait loop.
+                if state.last_stm_command == "emergency" and (not state.EMERGENCY_STOP) and state.IDLE:
+                    strategy.get_logger().info(
+                        "✅ External emergency state resolved - switching STM wait loop to replanned"
+                    )
+                    state.last_stm_command = "replanned"
+                    continue
                 
                 # Check for emergency stop
                 if state.EMERGENCY_STOP and not was_in_emergency and not state.replanning :
