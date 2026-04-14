@@ -267,6 +267,17 @@ def task_tracking_task(strategy, stm32, lidar=None):
             f"🧹 Cleared STM/ESP queues for task-tracking emergency recovery (epoch={state.ESP_DISPATCH_EPOCH})"
         )
 
+        # Arm dynamic steal flow immediately (do not wait for this thread's
+        # post-stop IDLE wait to complete). The path-planning thread will
+        # gate actual attempts until motion state is safe.
+        if not state.STEAL_LOOP_ACTIVE and not state.STEAL_LOOP_RUNNING:
+            state.STEAL_REPEAT_COUNT = 30
+            state.STEAL_LOOP_RUNNING = False
+            state.STEAL_LOOP_ACTIVE = True
+            strategy.get_logger().warning(
+                "🏴‍☠️ Task-tracking emergency armed steal loop (STEAL_LOOP_ACTIVE=True, STEAL_REPEAT_COUNT=30)"
+            )
+
         if lidar is not None:
             try:
                 lidar.start_enemy_collision_check()
@@ -287,7 +298,7 @@ def task_tracking_task(strategy, stm32, lidar=None):
             f"✓ STM32 now IDLE after task-tracking emergency stop (waited {idle_wait_count * 0.05:.2f}s)"
         )
 
-        # Arm steal loop immediately from emergency stop.
+        # If not already armed above (race/edge case), arm once here.
         if not state.STEAL_LOOP_ACTIVE and not state.STEAL_LOOP_RUNNING:
             state.STEAL_REPEAT_COUNT = 30
             state.STEAL_LOOP_RUNNING = False
