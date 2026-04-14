@@ -278,8 +278,8 @@ class StrategyManager(Node):
             return success
     def handle_global_goal(self, x, y, angle):
         global found_goal_batch
-        target_x_mm = float(x) 
-        target_y_mm = float(y) 
+        target_x_mm = float(x)*1000 
+        target_y_mm = float(y) *1000
 
         batch_info = None
         if hasattr(self, 'map') and self.map is not None:
@@ -443,9 +443,9 @@ class StrategyManager(Node):
                                     )
                                     prepare_added = True
                                 
-                                self.get_logger().info(
-                                    f"Waiting for STM commands to be sent... STM queue size: {expected_stm_count}, SYSTEMS_IDLE_COUNT: {state.SYSTEMS_IDLE_COUNT}"
-                                )
+                                # self.get_logger().info(
+                                #     f"Waiting for STM commands to be sent... STM queue size: {expected_stm_count}, SYSTEMS_IDLE_COUNT: {state.SYSTEMS_IDLE_COUNT}"
+                                # )
                                 time.sleep(0.1)
 
                             if int(getattr(state, 'ESP_DISPATCH_EPOCH', 0)) != cmd_enqueue_epoch:
