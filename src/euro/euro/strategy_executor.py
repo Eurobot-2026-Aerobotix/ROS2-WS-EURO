@@ -233,6 +233,18 @@ def task_tracking_task(strategy, stm32, lidar=None):
             time.sleep(0.05)
             continue
 
+        # New behavior: only react to tracked-task cancellation while an STM32
+        # command is actively in progress. If we're not in STM execution
+        # context, ignore this cancellation event.
+        in_stm32_command = (
+            (not bool(getattr(state, 'IDLE', True)))
+            or str(getattr(state, 'last_stm_command', '') or '').lower() == 'navigation'
+        )
+        if not in_stm32_command:
+            scheduler.tracked_task_invalid = False
+            time.sleep(0.05)
+            continue
+
         in_pickput_context = str(getattr(strategy, 'last_task_command', '') or '').lower() in ('pick_up', 'put_down')
         if not in_pickput_context:
             # No active pickup/putdown context: consume stale invalid flag and continue.
