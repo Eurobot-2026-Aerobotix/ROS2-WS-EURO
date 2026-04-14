@@ -282,19 +282,39 @@ class StrategyManager(Node):
         target_y_mm = float(y) *1000
 
         batch_info = None
+        dropoff_id = ""
         if hasattr(self, 'map') and self.map is not None:
-            batch_info = self.map.find_batch_by_position(
-                x=target_x_mm,
-                y=target_y_mm,
-                max_distance_mm=300.0,
-            )
+            if self.last_task_command == 'pick_up':
+                batch_info = self.map.find_batch_by_position(
+                    x=target_x_mm,
+                    y=target_y_mm,
+                    max_distance_mm=300.0,
+                )
+            elif self.last_task_command == 'put_down':
+                dropoff_id = str(self.map.find_dropoff_id_by_position(
+                    x=target_x_mm,
+                    y=target_y_mm,
+                    max_distance_mm=300.0,
+                ) or '').lower()
 
-        success = batch_info is not None
+        success = (batch_info is not None) if self.last_task_command == 'pick_up' else bool(dropoff_id)
         batch_known_id = str(batch_info.known_id).lower() if batch_info is not None else ""
-        self.get_logger().info(
-            f"global goal batch lookup at ({target_x_mm:.1f},{target_y_mm:.1f}) -> "
-            f"found={success}, id={batch_known_id or 'none'}"
-        )
+
+        if self.last_task_command == 'pick_up':
+            self.get_logger().info(
+                f"global goal pickup lookup at ({target_x_mm:.1f},{target_y_mm:.1f}) -> "
+                f"found={success}, id={batch_known_id or 'none'}"
+            )
+        elif self.last_task_command == 'put_down':
+            self.get_logger().info(
+                f"global goal dropoff lookup at ({target_x_mm:.1f},{target_y_mm:.1f}) -> "
+                f"found={success}, id={dropoff_id or 'none'}"
+            )
+        else:
+            self.get_logger().info(
+                f"global goal lookup skipped for last_task_command={self.last_task_command} "
+                f"at ({target_x_mm:.1f},{target_y_mm:.1f})"
+            )
 
         # Track the execution intent in task_scheduler from global-goal context.
         # - pick_up  -> target_id = batch known_id returned by get_batch_color
@@ -308,10 +328,7 @@ class StrategyManager(Node):
                 tracked_target_id = str(batch_known_id or '').lower()
             elif self.last_task_command == 'put_down':
                 tracked_type = 'put_down'
-                if self.last_task_device == 'ESP_front':
-                    tracked_target_id = str(getattr(state, 'known_id_front', '') or '').lower()
-                elif self.last_task_device == 'ESP_back':
-                    tracked_target_id = str(getattr(state, 'known_id_back', '') or '').lower()
+                tracked_target_id = str(dropoff_id or '').lower()
             else:
                 #remove tracked task if no longer relevant
                 if hasattr(self, 'task_scheduler') and self.task_scheduler is not None:

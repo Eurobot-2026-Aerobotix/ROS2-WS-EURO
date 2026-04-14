@@ -461,6 +461,36 @@ class Map:
         """Return only the matched batch known_id near (x, y) in millimeters."""
         batch = self.find_batch_by_position(x=x, y=y, max_distance_mm=max_distance_mm)
         return None if batch is None else str(batch.known_id)
+
+    def find_dropoff_id_by_position(
+        self,
+        x: float,
+        y: float,
+        max_distance_mm: Optional[float] = None,
+    ) -> Optional[str]:
+        """Return nearest dropoff id near (x, y) in millimeters within threshold."""
+        if not self.drop_offs:
+            return None
+
+        threshold = float(self.batch_radius if max_distance_mm is None else max_distance_mm)
+        best_dropoff_id: Optional[str] = None
+        best_distance = float('inf')
+
+        px = float(x)
+        py = float(y)
+
+        for dropoff_id, dropoff in self.drop_offs.items():
+            dx = float(dropoff.get('x', 0.0))
+            dy = float(dropoff.get('y', 0.0))
+            distance = math.hypot(px - dx, py - dy)
+            if distance < best_distance:
+                best_distance = distance
+                best_dropoff_id = str(dropoff_id).strip().lower()
+
+        if best_dropoff_id is None or best_distance > threshold:
+            return None
+
+        return best_dropoff_id
     
     def update_time_left(self, time_left: float) -> None:
         self.time_left = time_left
