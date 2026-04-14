@@ -233,14 +233,15 @@ def task_tracking_task(strategy, stm32, lidar=None):
             time.sleep(0.05)
             continue
 
-        # New behavior: only react to tracked-task cancellation while an STM32
-        # command is actively in progress. If we're not in STM execution
-        # context, ignore this cancellation event.
-        esp_front_queue_len = len(getattr(strategy, 'queues', {}).get('ESP_front', []))
-        esp_back_queue_len = len(getattr(strategy, 'queues', {}).get('ESP_back', []))
-        in_stm32_command = (
-            (esp_front_queue_len > 0 or esp_back_queue_len > 0))
-        if not in_stm32_command:
+        # React to tracked-task cancellation only in STM execution context:
+        # - len(STM queue) > 1
+        # - OR len(STM queue) == 1 and IDLE_FOR_SYSTEMS == False
+        stm_queue_len = len(getattr(strategy, 'queues', {}).get('STM', []))
+        in_stm_execution_window = (
+            (stm_queue_len > 1)
+            or (stm_queue_len == 1 and not bool(getattr(state, 'IDLE_FOR_SYSTEMS', True)))
+        )
+        if not in_stm_execution_window:
             scheduler.tracked_task_invalid = False
             time.sleep(0.05)
             continue
