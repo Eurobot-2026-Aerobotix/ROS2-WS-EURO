@@ -32,7 +32,7 @@ class TaskScheduler:
     max_distance_for_predict_enemy_goal = 1500.0 # in mm
     drop_off_distance = 400.0
     retreat_distance = 250.0
-    distance_from_wall = 200.0
+    distance_from_wall = 230.0
     dropoff_min_clearance_to_sx = 420.0
     dropoff_min_clearance_to_fx = 330.0
     drop_off_enemy_clearance = 50.0
@@ -460,7 +460,11 @@ class TaskScheduler:
             dropoff = self.map.drop_offs.get(task.target_id)
             if dropoff is None:
                 return False
-
+            batch = getattr(self.map, 'batches', {}).get(task.target_id)
+            if batch is not None:
+                robot_color_char = str(self.map.robot_color[0]) if self.map.robot_color else ""
+                if robot_color_char and batch.color.count(robot_color_char) > len(batch.color) / 2.0:
+                    return False
             center_x = float(dropoff["x"])
             center_y = float(dropoff["y"])
 
