@@ -588,8 +588,8 @@ class MapManager:
 
     def _reconcile_manual_putdown_batches(self, received_batch_ids: set, lost_batch_ids: set) -> set:
         """
-        Keep manual put-down FX batches unless the beacon explicitly reports
-        that known_id with state LOST.
+        Keep manual put-down FX batches even if beacon reports LOST.
+        Beacon updates must not remove/overwrite manual put_down batches.
 
         Returns:
             Set of manual put-down known_ids that should be preserved this cycle.
@@ -597,31 +597,14 @@ class MapManager:
         with self.batches_lock:
             manual_ids = set(self.manual_putdown_batch_ids)
 
-        # Preserve manual batches by default, and only remove if explicitly LOST.
+        # Preserve manual batches by default, including when beacon reports LOST.
+        # Requirement: if batch was put down manually by us, do not update/remove it.
         retained_manual_ids = set(manual_ids)
         lost_manual_ids = manual_ids & lost_batch_ids
 
         if lost_manual_ids:
-            with self.obstacles_lock:
-                self.obstacles = [
-                    obs for obs in self.obstacles
-                    if not any(obs.id.startswith(f"fx_{bid}_") for bid in lost_manual_ids)
-                ]
-                self.obstacle_sources = {
-                    k: v for k, v in self.obstacle_sources.items()
-                    if not any(k.startswith(f"fx_{bid}_") for bid in lost_manual_ids)
-                }
-
-            with self.batches_lock:
-                for bid in lost_manual_ids:
-                    self.batches_fx.pop(bid, None)
-                    self.batches_with_obstacles.discard(bid)
-                    self.manual_putdown_batch_ids.discard(bid)
-                    self.active_batch_ids.discard(bid)
-                    retained_manual_ids.discard(bid)
-
             self.node.get_logger().info(
-                f"🗑️  Removed {len(lost_manual_ids)} manual put_down batches reported LOST by beacon: {lost_manual_ids}"
+                f"📌 Ignoring LOST for manual put_down batches (preserved): {lost_manual_ids}"
             )
 
         if retained_manual_ids:
@@ -630,6 +613,42 @@ class MapManager:
             )
 
         return retained_manual_ids
+
+    def _remove_lost_batches(self, batch_ids: set, reason: str = "reported LOST") -> None:
+        """Hard-remove lost batches (except manually preserved ones handled elsewhere)."""
+        if not batch_ids:
+            return
+
+        with self.obstacles_lock:
+            old_count = len(self.obstacles)
+            self.obstacles = [
+                obs for obs in self.obstacles
+                if not any(
+                    obs.id.startswith(f"fx_{bid}_") or obs.id.startswith(f"sx_{bid}_")
+                    for bid in batch_ids
+                )
+            ]
+            removed_obs = old_count - len(self.obstacles)
+            self.obstacle_sources = {
+                k: v for k, v in self.obstacle_sources.items()
+                if not any(k.startswith(f"fx_{bid}_") or k.startswith(f"sx_{bid}_") for bid in batch_ids)
+            }
+
+        with self.batches_lock:
+            for bid in batch_ids:
+                self.batches_fx.pop(bid, None)
+                self.batches_sx.pop(bid, None)
+                self.batches_with_obstacles.discard(bid)
+                self.locked_baseline_batch_ids.discard(bid)
+                self.locked_baseline_all_batch_ids.discard(bid)
+                self.pending_baseline_lock_ids.discard(bid)
+                self.short_pattern_ids.discard(bid)
+                self.active_batch_ids.discard(bid)
+                self.known_ids_to_retry.discard(bid)
+
+        self.node.get_logger().info(
+            f"🗑️  Removed {len(batch_ids)} batch(es) {reason}: {batch_ids} (obstacles_removed={removed_obs})"
+        )
     
     def handle_obstacle_relative(self, msg: PoseStamped):
         """Handle incoming obstacle from /obstacle_relative topic (only keeps one enemy)"""
@@ -1240,6 +1259,14 @@ class MapManager:
                 for batch in aruco_state.batches
                 if batch.state.upper() == 'LOST'
             }
+
+            # Remove LOST batches immediately, except manual put_down batches
+            # which are preserved and must not be updated/removed from beacon input.
+            with self.batches_lock:
+                manual_putdown_ids = set(self.manual_putdown_batch_ids)
+            lost_non_manual_ids = set(lost_batch_ids) - manual_putdown_ids
+            if lost_non_manual_ids:
+                self._remove_lost_batches(lost_non_manual_ids, reason="reported LOST by beacon")
             
             # Initialize variables that may be used in final summary
             disappeared_ids = set()
@@ -1307,6 +1334,11 @@ class MapManager:
                 
                 for batch in aruco_state.batches:
                     state = batch.state.upper()
+                    if state == 'LOST':
+                        # LOST batches are removed immediately and must not be processed further.
+                        self.known_ids_to_retry.discard(batch.known_id)
+                        skipped_count += 1
+                        continue
                     if state != 'EMERGING':
                         # Accept all non-EMERGING batches (TRACKING, DEGRADED, etc.)
                         filtered_batches.append(batch)
@@ -1350,6 +1382,14 @@ class MapManager:
                     is_fx = batch.known_id.startswith('f') or not (batch.known_id.startswith('s') or batch.known_id.startswith('g'))
                     is_sx = batch.known_id.startswith('s')
                     batch_type = 'FX' if is_fx else ('SX' if batch.known_id.startswith('s') else 'GX')
+
+                    if state == 'LOST':
+                        # LOST batches are removed immediately and must not be processed further.
+                        if batch.known_id in self.known_ids_to_retry:
+                            self.known_ids_to_retry.discard(batch.known_id)
+                            self.node.get_logger().info(f"  🗑️  [{batch_type}] '{batch.known_id}': LOST → removed from retry")
+                        skipped_count += 1
+                        continue
                     
                     if state != 'EMERGING':
                         # Accept all non-EMERGING batches (TRACKING, DEGRADED, etc.)
@@ -1399,6 +1439,14 @@ class MapManager:
                     state = batch.state.upper()
                     is_fx = batch.known_id.startswith('f') or not (batch.known_id.startswith('s') or batch.known_id.startswith('g'))
                     batch_type = 'FX' if is_fx else ('SX' if batch.known_id.startswith('s') else 'GX')
+
+                    if state == 'LOST':
+                        # LOST batches are removed immediately and must not be processed further.
+                        self.known_ids_to_retry.discard(batch.known_id)
+                        self.node.get_logger().info(
+                            f"  🗑️  [{batch_type}] '{batch.known_id}': {state} ({len(batch.members)} members) → LOST, removing from retry"
+                        )
+                        continue
                     
                     if state != 'EMERGING':
                         # Accept non-EMERGING batches
@@ -2317,9 +2365,16 @@ class MapManager:
             # Remove from obstacle creation tracking
             self.batches_with_obstacles.discard(known_id)
             self.locked_baseline_batch_ids.discard(known_id)
+            self.locked_baseline_all_batch_ids.discard(known_id)
             self.pending_baseline_lock_ids.discard(known_id)
             self.short_pattern_ids.discard(known_id)
             self.manual_putdown_batch_ids.discard(known_id)
+            self.active_batch_ids.discard(known_id)
+            self.known_ids_to_retry.discard(known_id)
+
+            # Persist manual deletion so beacon updates do not re-add this batch
+            # (and therefore do not trigger new baseline-lock requests).
+            self.deleted_batch_ids.add(known_id)
             
             if not (deleted_from_fx or deleted_from_sx):
                 self.node.get_logger().warn(f"⚠️  Batch '{known_id}' not found in FX or SX storage")
@@ -2348,6 +2403,10 @@ class MapManager:
         
         # Republish obstacles to update visualization
         self.publish_current_obstacles()
+
+        self.node.get_logger().info(
+            f"🚫 Batch '{known_id}' marked deleted (will be ignored in updates): {self.deleted_batch_ids}"
+        )
         
         return True
     

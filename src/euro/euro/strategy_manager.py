@@ -575,6 +575,16 @@ class StrategyManager(Node):
                 base_name = generated_task.get('name', f'steal_generated_{idx+1}')
                 generated_task['name'] = f"{base_name}_{ts}_{sequence_index}_{idx+1}"
 
+                # Track last actuator command info FIRST so global-goal lookup below
+                # uses the correct command context (pick_up vs put_down).
+                if generated_task.get('sequence') and len(generated_task['sequence']) > 0:
+                    last_cmd = generated_task['sequence'][-1]
+                    last_command = last_cmd.get('command')
+                    last_device = last_cmd.get('device')
+                    if last_command in ['pick_up', 'put_down'] and last_device in ['ESP_front', 'ESP_back']:
+                        self.last_task_command = last_command
+                        self.last_task_device = last_device
+
                 # Refresh global goal for dynamically generated tasks so emergency
                 # replanning uses the current task goal instead of stale previous data.
                 global_goal = generated_task.get('global_goal')
@@ -595,15 +605,6 @@ class StrategyManager(Node):
                         self.get_logger().info(
                             f"🎯 Dynamic task global goal set: x={self.global_pos_x:.3f}, y={self.global_pos_y:.3f}, angle={self.global_pos_angle:.1f}°"
                         )
-
-                # Track last actuator command info (same behavior as static tasks loop)
-                if generated_task.get('sequence') and len(generated_task['sequence']) > 0:
-                    last_cmd = generated_task['sequence'][-1]
-                    last_command = last_cmd.get('command')
-                    last_device = last_cmd.get('device')
-                    if last_command in ['pick_up', 'put_down'] and last_device in ['ESP_front', 'ESP_back']:
-                        self.last_task_command = last_command
-                        self.last_task_device = last_device
 
                 self.tasks.append(generated_task)
                 try:
@@ -1008,6 +1009,19 @@ def main(args=None):
                     strategy.get_logger().warning(
                         f"⏭️ Skipping static task '{task['name']}' enqueue (interrupted by emergency/steal)"
                     )
+                    # In steal-only emergency mode, do not proceed to following static tasks
+                    # after an interrupted enqueue; ownership transfers to generated flow.
+                    if (
+                        state.replanning
+                        or state.STEAL_LOOP_ACTIVE
+                        or state.STEAL_LOOP_RUNNING
+                        or strategy.remove_esp_waiting
+                        or str(getattr(state, 'last_stm_command', '') or '') == 'emergency'
+                    ):
+                        strategy.get_logger().warning(
+                            "🛑 Static task execution halted after interruption; waiting for emergency/steal recovery"
+                        )
+                        return
                     continue
                 
                 # Wait for all commands to complete

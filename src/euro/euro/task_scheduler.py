@@ -32,7 +32,7 @@ class TaskScheduler:
     max_distance_for_predict_enemy_goal = 1500.0 # in mm
     drop_off_distance = 400.0
     retreat_distance = 250.0
-    distance_from_wall = 200.0
+    distance_from_wall = 230.0
     dropoff_min_clearance_to_sx = 420.0
     dropoff_min_clearance_to_fx = 330.0
     drop_off_enemy_clearance = 50.0
@@ -472,7 +472,11 @@ class TaskScheduler:
             dropoff = self.map.drop_offs.get(task.target_id)
             if dropoff is None:
                 return False
-
+            batch = getattr(self.map, 'batches', {}).get(task.target_id)
+            if batch is not None:
+                robot_color_char = str(self.map.robot_color[0]) if self.map.robot_color else ""
+                if robot_color_char and batch.color.count(robot_color_char) > len(batch.color) / 2.0:
+                    return False
             center_x = float(dropoff["x"])
             center_y = float(dropoff["y"])
 
@@ -1318,7 +1322,7 @@ class TaskScheduler:
         # If type B inserts toward center first, retreat starts from insertion endpoint.
         retreat_start_x = target_x
         retreat_start_y = target_y
-        if zone_type == 'B':
+        if zone_type == 'B' or zone_type == 'A':
             retreat_start_x = target_x + max(0.0, float(insert_distance_mm)) * to_center_ux
             retreat_start_y = target_y + max(0.0, float(insert_distance_mm)) * to_center_uy
 
@@ -1349,8 +1353,8 @@ class TaskScheduler:
         }
 
         # For type B, build insertion as a separate task executed after put_down
-        if zone_type != 'B':
-            return [putdown_task, putdown_retreat_task]
+        # if zone_type != 'B':
+        #return [putdown_task, putdown_retreat_task]
 
         dist = max(0.0, float(insert_distance_mm))
         # Always insert toward the center, regardless of front/back device.
@@ -1373,7 +1377,6 @@ class TaskScheduler:
                 'theta': theta_to_center_deg
             }
         }
-
         return [putdown_task, putdown_insert_task, putdown_retreat_task]
 
     def _select_pickup_face_for_task(self, task: Task) -> Optional[str]:
@@ -1769,13 +1772,19 @@ class TaskScheduler:
             return None
 
         if not generated_tasks:
-            self.tracked_task_invalid = True
+            # Do not keep a stale tracked target when task build/path fails.
+            # Keeping it tracked causes repeated filtering (`filtered_tracked_target`)
+            # and can starve the queue in steal-loop retries.
+            failed_target = str(task.target_id)
+            if self.tracked_task is not None and str(self.tracked_task.target_id) == failed_target:
+                self.untrack_task()
+            self.tracked_task_invalid = False
             if self.ros_node is not None:
                 self.ros_node.get_logger().warning(
-                    f"⚠️ Failed to build executable task for selected batch id={task.target_id}, type={task.type}"
+                    f"⚠️ Failed to build executable task for selected batch id={task.target_id}, type={task.type} (untracked to avoid starvation)"
                 )
             else:
-                print(f"[TaskScheduler] Failed to build executable task for selected batch id={task.target_id}, type={task.type}")
+                print(f"[TaskScheduler] Failed to build executable task for selected batch id={task.target_id}, type={task.type} (untracked to avoid starvation)")
             return None
 
         self.rpi_queue.extend(generated_tasks)

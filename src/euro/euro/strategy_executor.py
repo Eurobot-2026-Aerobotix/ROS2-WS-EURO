@@ -103,9 +103,11 @@ def path_planning_task(strategy, lidar, round_timer, pneumatic_controller=None, 
                     strategy.get_logger().warning(f"⚠️ Return home path attempt #{attempt_count} failed - retrying...")
                     time.sleep(0.5)
 
-        # If emergency stop is active, arm the steal loop
-        if state.EMERGENCY_STOP and not state.STEAL_LOOP_ACTIVE:
-            state.STEAL_LOOP_ACTIVE = True
+        # Run dynamic steal flow whenever it is armed.
+        # This allows task-tracking to arm dynamic generation even if
+        # EMERGENCY_STOP is already cleared by lidar.
+        if state.STEAL_LOOP_ACTIVE and not state.STEAL_LOOP_RUNNING:
+            state.STEAL_LOOP_RUNNING = True
             try:
                 repeat_count = max(1, int(state.STEAL_REPEAT_COUNT))
             except (TypeError, ValueError):
@@ -231,6 +233,19 @@ def task_tracking_task(strategy, stm32, lidar=None):
             time.sleep(0.05)
             continue
 
+        # React to tracked-task cancellation only in STM execution context:
+        # - len(STM queue) > 1
+        # - OR len(STM queue) == 1 and IDLE_FOR_SYSTEMS == False
+        stm_queue_len = len(getattr(strategy, 'queues', {}).get('STM', []))
+        in_stm_execution_window = (
+            (stm_queue_len > 1)
+            or (stm_queue_len == 1 and not bool(getattr(state, 'IDLE_FOR_SYSTEMS', True)))
+        )
+        if not in_stm_execution_window:
+            scheduler.tracked_task_invalid = False
+            time.sleep(0.05)
+            continue
+
         in_pickput_context = str(getattr(strategy, 'last_task_command', '') or '').lower() in ('pick_up', 'put_down')
         if not in_pickput_context:
             # No active pickup/putdown context: consume stale invalid flag and continue.
@@ -265,6 +280,17 @@ def task_tracking_task(strategy, stm32, lidar=None):
             f"🧹 Cleared STM/ESP queues for task-tracking emergency recovery (epoch={state.ESP_DISPATCH_EPOCH})"
         )
 
+        # Arm dynamic steal flow immediately (do not wait for this thread's
+        # post-stop IDLE wait to complete). The path-planning thread will
+        # gate actual attempts until motion state is safe.
+        if not state.STEAL_LOOP_ACTIVE and not state.STEAL_LOOP_RUNNING:
+            state.STEAL_REPEAT_COUNT = 30
+            state.STEAL_LOOP_RUNNING = False
+            state.STEAL_LOOP_ACTIVE = True
+            strategy.get_logger().warning(
+                "🏴‍☠️ Task-tracking emergency armed steal loop (STEAL_LOOP_ACTIVE=True, STEAL_REPEAT_COUNT=30)"
+            )
+
         if lidar is not None:
             try:
                 lidar.start_enemy_collision_check()
@@ -285,9 +311,10 @@ def task_tracking_task(strategy, stm32, lidar=None):
             f"✓ STM32 now IDLE after task-tracking emergency stop (waited {idle_wait_count * 0.05:.2f}s)"
         )
 
-        # Arm steal loop immediately from emergency stop.
+        # If not already armed above (race/edge case), arm once here.
         if not state.STEAL_LOOP_ACTIVE and not state.STEAL_LOOP_RUNNING:
             state.STEAL_REPEAT_COUNT = 30
+            state.STEAL_LOOP_RUNNING = False
             state.STEAL_LOOP_ACTIVE = True
             strategy.get_logger().warning(
                 "🏴‍☠️ Task-tracking emergency armed steal loop (STEAL_LOOP_ACTIVE=True, STEAL_REPEAT_COUNT=30)"
@@ -581,6 +608,17 @@ def stm32_task(strategy, stm32,lidar):
                 # Log state every 20 iterations (2 seconds)
                 if loop_iteration % 20 == 0:
                     strategy.get_logger().info(f"🔄 Wait loop iteration {loop_iteration}: IDLE={state.IDLE}, EMERGENCY_STOP={state.EMERGENCY_STOP}, was_in_emergency={was_in_emergency}, replanning={state.replanning}, last_stm_command={state.last_stm_command}")
+
+                # Emergency can be set by another thread (e.g. task_tracking_task),
+                # in which case `was_in_emergency` in this STM thread remains False.
+                # If robot is already idle and lidar emergency is clear, transition to
+                # replanned state to avoid being stuck forever in the wait loop.
+                if state.last_stm_command == "emergency" and (not state.EMERGENCY_STOP) and state.IDLE:
+                    strategy.get_logger().info(
+                        "✅ External emergency state resolved - switching STM wait loop to replanned"
+                    )
+                    state.last_stm_command = "replanned"
+                    continue
                 
                 # Check for emergency stop
                 if state.EMERGENCY_STOP and not was_in_emergency and not state.replanning :
