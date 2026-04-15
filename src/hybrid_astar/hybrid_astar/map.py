@@ -1334,6 +1334,11 @@ class MapManager:
                 
                 for batch in aruco_state.batches:
                     state = batch.state.upper()
+                    if state == 'LOST':
+                        # LOST batches are removed immediately and must not be processed further.
+                        self.known_ids_to_retry.discard(batch.known_id)
+                        skipped_count += 1
+                        continue
                     if state != 'EMERGING':
                         # Accept all non-EMERGING batches (TRACKING, DEGRADED, etc.)
                         filtered_batches.append(batch)
@@ -1377,6 +1382,14 @@ class MapManager:
                     is_fx = batch.known_id.startswith('f') or not (batch.known_id.startswith('s') or batch.known_id.startswith('g'))
                     is_sx = batch.known_id.startswith('s')
                     batch_type = 'FX' if is_fx else ('SX' if batch.known_id.startswith('s') else 'GX')
+
+                    if state == 'LOST':
+                        # LOST batches are removed immediately and must not be processed further.
+                        if batch.known_id in self.known_ids_to_retry:
+                            self.known_ids_to_retry.discard(batch.known_id)
+                            self.node.get_logger().info(f"  🗑️  [{batch_type}] '{batch.known_id}': LOST → removed from retry")
+                        skipped_count += 1
+                        continue
                     
                     if state != 'EMERGING':
                         # Accept all non-EMERGING batches (TRACKING, DEGRADED, etc.)
@@ -1426,6 +1439,14 @@ class MapManager:
                     state = batch.state.upper()
                     is_fx = batch.known_id.startswith('f') or not (batch.known_id.startswith('s') or batch.known_id.startswith('g'))
                     batch_type = 'FX' if is_fx else ('SX' if batch.known_id.startswith('s') else 'GX')
+
+                    if state == 'LOST':
+                        # LOST batches are removed immediately and must not be processed further.
+                        self.known_ids_to_retry.discard(batch.known_id)
+                        self.node.get_logger().info(
+                            f"  🗑️  [{batch_type}] '{batch.known_id}': {state} ({len(batch.members)} members) → LOST, removing from retry"
+                        )
+                        continue
                     
                     if state != 'EMERGING':
                         # Accept non-EMERGING batches
