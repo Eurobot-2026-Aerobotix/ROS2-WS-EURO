@@ -1365,7 +1365,6 @@ class TaskScheduler:
                 'theta': theta_to_center_deg
             }
         }
-
         return [putdown_task, putdown_insert_task, putdown_retreat_task]
 
     def _select_pickup_face_for_task(self, task: Task) -> Optional[str]:
