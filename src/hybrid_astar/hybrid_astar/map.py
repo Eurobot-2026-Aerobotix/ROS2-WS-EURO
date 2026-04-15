@@ -2365,9 +2365,16 @@ class MapManager:
             # Remove from obstacle creation tracking
             self.batches_with_obstacles.discard(known_id)
             self.locked_baseline_batch_ids.discard(known_id)
+            self.locked_baseline_all_batch_ids.discard(known_id)
             self.pending_baseline_lock_ids.discard(known_id)
             self.short_pattern_ids.discard(known_id)
             self.manual_putdown_batch_ids.discard(known_id)
+            self.active_batch_ids.discard(known_id)
+            self.known_ids_to_retry.discard(known_id)
+
+            # Persist manual deletion so beacon updates do not re-add this batch
+            # (and therefore do not trigger new baseline-lock requests).
+            self.deleted_batch_ids.add(known_id)
             
             if not (deleted_from_fx or deleted_from_sx):
                 self.node.get_logger().warn(f"⚠️  Batch '{known_id}' not found in FX or SX storage")
@@ -2396,6 +2403,10 @@ class MapManager:
         
         # Republish obstacles to update visualization
         self.publish_current_obstacles()
+
+        self.node.get_logger().info(
+            f"🚫 Batch '{known_id}' marked deleted (will be ignored in updates): {self.deleted_batch_ids}"
+        )
         
         return True
     
