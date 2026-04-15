@@ -1310,7 +1310,7 @@ class TaskScheduler:
         # If type B inserts toward center first, retreat starts from insertion endpoint.
         retreat_start_x = target_x
         retreat_start_y = target_y
-        if zone_type == 'B':
+        if zone_type == 'B' or zone_type == 'A':
             retreat_start_x = target_x + max(0.0, float(insert_distance_mm)) * to_center_ux
             retreat_start_y = target_y + max(0.0, float(insert_distance_mm)) * to_center_uy
 
@@ -1341,8 +1341,8 @@ class TaskScheduler:
         }
 
         # For type B, build insertion as a separate task executed after put_down
-        if zone_type != 'B':
-            return [putdown_task, putdown_retreat_task]
+        # if zone_type != 'B':
+        #return [putdown_task, putdown_retreat_task]
 
         dist = max(0.0, float(insert_distance_mm))
         # Always insert toward the center, regardless of front/back device.
