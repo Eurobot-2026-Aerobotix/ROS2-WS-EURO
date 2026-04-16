@@ -1091,6 +1091,21 @@ class HybridAStarNode(Node):
 
                     smoothed = aligned
 
+                if used_reverse_fallback and len(smoothed) > 0:
+                    # Keep the robot's requested start pose as waypoint[0] in the
+                    # returned path when reverse fallback was required.
+                    first_x, first_y, first_theta = smoothed[0]
+                    same_start = (
+                        abs(first_x - start_x) < 1e-6
+                        and abs(first_y - start_y) < 1e-6
+                        and abs(first_theta - start_theta) < 1e-9
+                    )
+                    if not same_start:
+                        smoothed = [(start_x, start_y, start_theta)] + smoothed
+                        self.get_logger().info(
+                            "↪ Reverse fallback used: prepended original start pose as first waypoint"
+                        )
+
                 # Calculate path length
                 total_dist = 0
                 for i in range(len(smoothed) - 1):
