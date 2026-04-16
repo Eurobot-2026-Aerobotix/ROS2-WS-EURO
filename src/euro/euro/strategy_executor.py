@@ -44,65 +44,6 @@ def path_planning_task(strategy, lidar, round_timer, pneumatic_controller=None, 
             stm32_controller.reset()
             reset_stm_triggered=True
             strategy.end_game = True
-        if round_timer.time() >= 190.0 and round_timer.time() <= 100.0 and not state.return_home_triggered:
-            state.return_home_triggered = True
-            strategy.end_game = True
-            strategy.get_logger().warning("⏰ Only 10 seconds left! Returning home to (250, 225)...")
-            
-            # Reset systems without stopping STM32 (like at start)
-            if pneumatic_controller and front_controller and back_controller:
-                strategy.get_logger().info("🔄 Resetting pneumatic and ESP systems for return home...")
-                pneumatic_controller.front(16)
-                pneumatic_controller.back(16)
-                front_controller.kabech(0)
-                back_controller.kabech(0)
-                front_controller.dawer(0)
-                back_controller.dawer(0)
-                front_controller.n20(0)
-                back_controller.n20(0)
-                time.sleep(0.2)
-            
-            # Clear all device queues
-            strategy.queues['ESP_front'].clear()
-            strategy.queues['ESP_back'].clear()
-            state.ESP_DISPATCH_EPOCH = int(getattr(state, 'ESP_DISPATCH_EPOCH', 0)) + 1
-            strategy.queues['RASP_PI'].clear()
-            strategy.queues['STM'].clear()
-            strategy.get_logger().info(
-                f"🗑️  Cleared all task queues for return home (epoch={state.ESP_DISPATCH_EPOCH})"
-            )
-            
-            # Set goal to home position (250mm, 225mm)
-            strategy.pathfinder.set_goal(0.25, 0.225, 0.0)  # Convert mm to meters
-            strategy.get_logger().info("🏠 Home goal set: (250mm, 225mm)")
-            
-            # Generate return home path with retry loop
-            path_found = False
-            attempt_count = 0
-            
-            while not path_found and not state.SHUTDOWN_REQUESTED and (round_timer.time() < 100.0):
-                attempt_count += 1
-                strategy.get_logger().info(f"🏠 Return home path attempt #{attempt_count}")
-                
-                # Re-set home goal before each attempt
-                strategy.pathfinder.set_goal(0.25, 0.225, 0.0)
-                path_found = strategy.path(end_game=True)
-                
-                if path_found:
-                    strategy.get_logger().info(f"✅ Return home path found on attempt #{attempt_count}")
-                    # Set flags for execution
-                    state.last_stm_command = "replanned"
-                    state.SYSTEMS_IDLE_COUNT = 0
-                    state.IDLE = True
-                    state.IDLE_FOR_SYSTEMS = True
-                    lidar.clear_on = True
-                    lidar.clear_goto_target()
-                    lidar.generate_path = 0
-                    state.replanning = False
-                else:
-                    strategy.get_logger().warning(f"⚠️ Return home path attempt #{attempt_count} failed - retrying...")
-                    time.sleep(0.5)
-
         # Run dynamic steal flow whenever it is armed.
         # This allows task-tracking to arm dynamic generation even if
         # EMERGENCY_STOP is already cleared by lidar.
@@ -263,7 +204,7 @@ def task_tracking_task(strategy, stm32, lidar=None):
             f"🚨 Task-tracking cancellation detected during {strategy.last_task_command} - triggering emergency stop"
         )
         strategy.remove_esp_waiting = True
-        stm32.stop()
+        stm32.soft_stop()
         state.last_stm_command = "emergency"
         state.IDLE = False
         state.IDLE_FOR_SYSTEMS = True
@@ -296,7 +237,7 @@ def task_tracking_task(strategy, stm32, lidar=None):
         # post-stop IDLE wait to complete). The path-planning thread will
         # gate actual attempts until motion state is safe.
         if not state.STEAL_LOOP_ACTIVE and not state.STEAL_LOOP_RUNNING:
-            state.STEAL_REPEAT_COUNT = 30
+            state.STEAL_REPEAT_COUNT = 3000
             state.STEAL_LOOP_RUNNING = False
             state.STEAL_LOOP_ACTIVE = True
             strategy.get_logger().warning(
@@ -325,7 +266,7 @@ def task_tracking_task(strategy, stm32, lidar=None):
 
         # If not already armed above (race/edge case), arm once here.
         if not state.STEAL_LOOP_ACTIVE and not state.STEAL_LOOP_RUNNING:
-            state.STEAL_REPEAT_COUNT = 30
+            state.STEAL_REPEAT_COUNT = 3000
             state.STEAL_LOOP_RUNNING = False
             state.STEAL_LOOP_ACTIVE = True
             strategy.get_logger().warning(
@@ -679,10 +620,10 @@ def stm32_task(strategy, stm32,lidar):
                     strategy.get_logger().info(f"✓ STM32 now IDLE after emergency stop (waited {idle_wait_count * 0.05:.2f}s)")
                     # Arm steal loop immediately from emergency stop.
                     if not state.STEAL_LOOP_ACTIVE and not state.STEAL_LOOP_RUNNING:
-                        state.STEAL_REPEAT_COUNT = 30
+                        state.STEAL_REPEAT_COUNT = 3000
                         state.STEAL_LOOP_ACTIVE = True
                         strategy.get_logger().warning(
-                            "🏴‍☠️ Emergency-triggered steal loop armed (STEAL_LOOP_ACTIVE=True, STEAL_REPEAT_COUNT=30)"
+                            "🏴‍☠️ Emergency-triggered steal loop armed (STEAL_LOOP_ACTIVE=True, STEAL_REPEAT_COUNT=3000)"
                         )
                         
                     # Keep lidar collision watch active until path is clear.
