@@ -790,7 +790,6 @@ class HybridAStarNode(Node):
             
             if path:
                 self.get_logger().info(f"✅ Found path: {len(path)} waypoints")
-                
                 # Smooth path (always enabled, same as local script)
                 smoothed = self.pathfinder.smooth_path(path, grid_resolution)
                 reduction = 100 * (1 - len(smoothed) / len(path)) if len(path) > 0 else 0
