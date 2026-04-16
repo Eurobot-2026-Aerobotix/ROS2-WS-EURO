@@ -280,6 +280,18 @@ def task_tracking_task(strategy, stm32, lidar=None):
             f"🧹 Cleared STM/ESP queues for task-tracking emergency recovery (epoch={state.ESP_DISPATCH_EPOCH})"
         )
 
+        # Motion command is canceled: clear stale motion targets so lidar does not
+        # keep EMERGENCY_STOP latched against an obsolete path.
+        if lidar is not None:
+            try:
+                lidar.clear_goto_target()
+            except Exception as e:
+                strategy.get_logger().warning(f"⚠️ Failed to clear lidar go-to target: {e}")
+        try:
+            strategy.pathfinder.clear_goal()
+        except Exception as e:
+            strategy.get_logger().warning(f"⚠️ Failed to clear pathfinder goal: {e}")
+
         # Arm dynamic steal flow immediately (do not wait for this thread's
         # post-stop IDLE wait to complete). The path-planning thread will
         # gate actual attempts until motion state is safe.
@@ -640,6 +652,18 @@ def stm32_task(strategy, stm32,lidar):
                     strategy.get_logger().warning(
                         f"🧹 Cleared STM/ESP queues for steal-only emergency recovery (epoch={state.ESP_DISPATCH_EPOCH})"
                     )
+
+                    # Motion command is canceled: clear stale motion targets so lidar does not
+                    # keep EMERGENCY_STOP latched against an obsolete path.
+                    if lidar is not None:
+                        try:
+                            lidar.clear_goto_target()
+                        except Exception as e:
+                            strategy.get_logger().warning(f"⚠️ Failed to clear lidar go-to target: {e}")
+                    try:
+                        strategy.pathfinder.clear_goal()
+                    except Exception as e:
+                        strategy.get_logger().warning(f"⚠️ Failed to clear pathfinder goal: {e}")
 
                     
 
