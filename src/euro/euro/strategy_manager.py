@@ -585,6 +585,25 @@ class StrategyManager(Node):
                         self.last_task_command = last_command
                         self.last_task_device = last_device
 
+                explicit_tracking_type = ''
+                explicit_tracking_target_id = ''
+                tracking_info = generated_task.get('tracking')
+                if isinstance(tracking_info, dict):
+                    explicit_tracking_type = str(tracking_info.get('type', '')).strip().lower()
+                    explicit_tracking_target_id = str(tracking_info.get('target_id', '')).strip().lower()
+
+                    if explicit_tracking_type in ('pick_up', 'put_down') and explicit_tracking_target_id:
+                        tracked_task = Task(
+                            target_id=explicit_tracking_target_id,
+                            type=explicit_tracking_type,
+                            options={},
+                            score=0.0,
+                        )
+                        self.task_scheduler.track_task(tracked_task)
+                        self.get_logger().info(
+                            f"🧭 task_scheduler.track_task (explicit) -> type={explicit_tracking_type}, target_id={explicit_tracking_target_id}"
+                        )
+
                 # Refresh global goal for dynamically generated tasks so emergency
                 # replanning uses the current task goal instead of stale previous data.
                 global_goal = generated_task.get('global_goal')
@@ -594,17 +613,28 @@ class StrategyManager(Node):
                     self.global_pos_angle = global_goal.get('theta')
 
                     if self.global_pos_x is not None and self.global_pos_y is not None and self.global_pos_angle is not None:
-                        self.handle_global_goal(
-                            float(self.global_pos_x) / 1000.0,
-                            float(self.global_pos_y) / 1000.0,
-                            float(self.global_pos_angle)
-                        )
+                        if explicit_tracking_type == 'put_down' and explicit_tracking_target_id:
+                            # For generated put_down flows, rely on explicit target id
+                            # instead of distance-based dropoff lookup.
+                            pass
+                        else:
+                            self.handle_global_goal(
+                                float(self.global_pos_x) / 1000.0,
+                                float(self.global_pos_y) / 1000.0,
+                                float(self.global_pos_angle)
+                            )
                         self.global_pos_x = float(self.global_pos_x) / 1000.0
                         self.global_pos_y = float(self.global_pos_y) / 1000.0
                         self.global_pos_angle = float(self.global_pos_angle)
-                        self.get_logger().info(
-                            f"🎯 Dynamic task global goal set: x={self.global_pos_x:.3f}, y={self.global_pos_y:.3f}, angle={self.global_pos_angle:.1f}°"
-                        )
+                        if explicit_tracking_type == 'put_down' and explicit_tracking_target_id:
+                            self.get_logger().info(
+                                f"🎯 Dynamic task global goal set: x={self.global_pos_x:.3f}, y={self.global_pos_y:.3f}, angle={self.global_pos_angle:.1f}° "
+                                f"(explicit_dropoff_id={explicit_tracking_target_id})"
+                            )
+                        else:
+                            self.get_logger().info(
+                                f"🎯 Dynamic task global goal set: x={self.global_pos_x:.3f}, y={self.global_pos_y:.3f}, angle={self.global_pos_angle:.1f}°"
+                            )
 
                 self.tasks.append(generated_task)
                 try:

@@ -1359,7 +1359,11 @@ class TaskScheduler:
                 'x': target_x,
                 'y': target_y,
                 'theta': theta_to_center_deg
-            }
+            },
+            'tracking': {
+                'type': 'put_down',
+                'target_id': normalized_id,
+            },
         }
 
         # Build geometric direction vectors from dropoff center so movement direction
@@ -1409,7 +1413,11 @@ class TaskScheduler:
                 'x': retreat_x,
                 'y': retreat_y,
                 'theta': theta_to_center_deg
-            }
+            },
+            'tracking': {
+                'type': 'put_down',
+                'target_id': normalized_id,
+            },
         }
 
         # For type B, build insertion as a separate task executed after put_down
@@ -1435,7 +1443,11 @@ class TaskScheduler:
                 'x': insert_x,
                 'y': insert_y,
                 'theta': theta_to_center_deg
-            }
+            },
+            'tracking': {
+                'type': 'put_down',
+                'target_id': normalized_id,
+            },
         }
         return [putdown_task, putdown_insert_task, putdown_retreat_task]
 
