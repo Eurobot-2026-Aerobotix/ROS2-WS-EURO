@@ -69,7 +69,7 @@ class TaskScheduler:
         self._last_pickup_queue_signature = None
         self._last_task_queue_signature = None
         self._last_empty_queue_reason_signature = None
-
+        self.log_batches=False
         # Explicit ROS wiring only:
         # - If a node is provided and map is a plain data-map, attach subscribers on it.
         # - If map is already a ROS node (e.g. MapNode), do not attach again.
@@ -352,6 +352,38 @@ class TaskScheduler:
         while normalized < -180.0:
             normalized += 360.0
         return normalized
+
+    def _resolve_start_pose_mm_deg(self, start_pose: Optional[Dict[str, float]]) -> Tuple[float, float, float]:
+        """Resolve start pose in mm/deg from explicit start pose or current map pose."""
+        if start_pose is not None and all(k in start_pose for k in ('x', 'y', 'theta')):
+            return (float(start_pose['x']), float(start_pose['y']), float(start_pose['theta']))
+        return (
+            float(self.map.robot_position.x),
+            float(self.map.robot_position.y),
+            float(self.map.robot_position.theta),
+        )
+
+    def _choose_first_motion_command(
+        self,
+        start_x_mm: float,
+        start_y_mm: float,
+        start_theta_deg: float,
+        first_waypoint_x_mm: float,
+        first_waypoint_y_mm: float,
+        default_command: str,
+    ) -> str:
+        """
+        Choose go_to vs go_to_backwards for first waypoint based on heading.
+        If movement direction is behind robot (>90deg), use backward command.
+        """
+        dx = float(first_waypoint_x_mm) - float(start_x_mm)
+        dy = float(first_waypoint_y_mm) - float(start_y_mm)
+        if math.hypot(dx, dy) < 1e-6:
+            return default_command
+
+        travel_theta_deg = math.degrees(math.atan2(dy, dx))
+        angle_diff = self._normalize_angle_deg(travel_theta_deg - float(start_theta_deg))
+        return 'go_to' if abs(angle_diff) <= 90.0 else 'go_to_backwards'
 
     def _choose_pickup_face_by_heading(self, target: Pose2D) -> Optional[str]:
         """Pick front/back based on availability and which side faces target best."""
@@ -721,55 +753,12 @@ class TaskScheduler:
             message = "📦 Available batches: none"
             available_signature = ()
 
-        if available_signature != self._last_available_batches_signature:
+        if available_signature != self._last_available_batches_signature and self.log_batches:
             if self.ros_node is not None:
                 self.ros_node.get_logger().info(message)
             else:
                 print(f"[TaskScheduler] {message}")
-
-        @staticmethod
-        def _normalize_angle_deg(angle_deg: float) -> float:
-            """Normalize angle to [-180, 180]."""
-            a = float(angle_deg)
-            while a > 180.0:
-                a -= 360.0
-            while a <= -180.0:
-                a += 360.0
-            return a
-
-        def _resolve_start_pose_mm_deg(self, start_pose: Optional[Dict[str, float]]) -> Tuple[float, float, float]:
-            """Resolve start pose in mm/deg from explicit start_pose or map robot pose."""
-            if start_pose is not None and all(k in start_pose for k in ('x', 'y', 'theta')):
-                return (float(start_pose['x']), float(start_pose['y']), float(start_pose['theta']))
-            return (
-                float(self.map.robot_position.x),
-                float(self.map.robot_position.y),
-                float(self.map.robot_position.theta),
-            )
-
-        def _choose_first_motion_command(
-            self,
-            start_x_mm: float,
-            start_y_mm: float,
-            start_theta_deg: float,
-            first_waypoint_x_mm: float,
-            first_waypoint_y_mm: float,
-            default_command: str,
-        ) -> str:
-            """
-            Choose `go_to` vs `go_to_backwards` for first waypoint only based on heading.
-            If movement direction is behind robot (>90°), use backward command.
-            """
-            dx = float(first_waypoint_x_mm) - float(start_x_mm)
-            dy = float(first_waypoint_y_mm) - float(start_y_mm)
-            if math.hypot(dx, dy) < 1e-6:
-                return default_command
-
-            travel_theta_deg = math.degrees(math.atan2(dy, dx))
-            angle_diff = self._normalize_angle_deg(travel_theta_deg - float(start_theta_deg))
-
-            return 'go_to' if abs(angle_diff) <= 90.0 else 'go_to_backwards'
-            self._last_available_batches_signature = available_signature
+        self._last_available_batches_signature = available_signature
 
         queue = []
         skip_stats: Dict[str, int] = {
