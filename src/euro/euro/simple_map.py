@@ -582,7 +582,10 @@ class Map:
 
     def _robot_pose_callback(self, msg) -> None:
         """/robot_pose_raw callback (geometry_msgs/msg/Vector3)."""
-        self.set_robot_position(float(msg.x) * 1000.0, float(msg.y) * 1000.0, float(msg.z))
+        # `/robot_pose_raw` publishes yaw in radians.
+        # TaskScheduler heading logic uses degrees, so convert here.
+        theta_deg = math.degrees(float(msg.z))
+        self.set_robot_position(float(msg.x) * 1000.0, float(msg.y) * 1000.0, theta_deg)
         # /obstacle_relative is in robot frame; refresh absolute enemy pose when robot moves.
         if self.enemy_relative.detected:
             self.update_enemy_absolute()

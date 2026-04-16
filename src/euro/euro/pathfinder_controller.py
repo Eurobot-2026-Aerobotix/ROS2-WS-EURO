@@ -272,7 +272,7 @@ class PathfinderClient(Node):
         start_pose.pose.position.x = resolved_start_x
         start_pose.pose.position.y = resolved_start_y
         start_pose.pose.position.z = 0.0
-        start_pose.pose.orientation = self._yaw_to_quaternion(resolved_start_theta)
+        start_pose.pose.orientation = self._yaw_to_quaternion(self._coerce_yaw_radians(resolved_start_theta))
         
         # Create goal pose from stored goal
         goal_pose = PoseStamped()
@@ -281,7 +281,7 @@ class PathfinderClient(Node):
         goal_pose.pose.position.x = self.goal_x
         goal_pose.pose.position.y = self.goal_y
         goal_pose.pose.position.z = 0.0
-        goal_pose.pose.orientation = self._yaw_to_quaternion(self.goal_angle)
+        goal_pose.pose.orientation = self._yaw_to_quaternion(self._coerce_yaw_radians(self.goal_angle))
         
         # Get path
         stm32_commands, success = self.get_path(start_pose, goal_pose)
@@ -299,6 +299,27 @@ class PathfinderClient(Node):
         quat.z = math.sin(yaw / 2.0)
         quat.w = math.cos(yaw / 2.0)
         return quat
+
+    def _coerce_yaw_radians(self, yaw: float) -> float:
+        """
+        Coerce yaw input to radians.
+        Accepts either radians or degrees (auto-detected).
+        """
+        import math
+
+        y = float(yaw)
+        # If magnitude is clearly larger than a radian-wrapped angle,
+        # treat input as degrees.
+        if abs(y) > (2.0 * math.pi + 1e-6):
+            y = math.radians(y)
+
+        # Normalize to [-pi, pi]
+        while y > math.pi:
+            y -= 2.0 * math.pi
+        while y <= -math.pi:
+            y += 2.0 * math.pi
+
+        return y
 
     # =========================================================
     # 1️⃣ GET PATH
