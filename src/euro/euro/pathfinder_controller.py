@@ -133,6 +133,8 @@ class PathfinderClient(Node):
 
         # Batch known_ids to ignore as obstacles during path computation
         self.untracked_batches = []
+        # Last planner diagnostic flag from ComputePath response
+        self.last_can_rotate = False
 
         # Robot pose storage
         self.latest_robot_pose_x = None
@@ -313,6 +315,7 @@ class PathfinderClient(Node):
         # Check if service is available
         if not self.path_client.service_is_ready():
             self.get_logger().error('❌ /compute_path service is not available!')
+            self.last_can_rotate = False
             return [], False
 
         self.get_logger().info(f'📍 Requesting path from ({start_pose.pose.position.x:.3f}, {start_pose.pose.position.y:.3f}) to ({goal_pose.pose.position.x:.3f}, {goal_pose.pose.position.y:.3f})')
@@ -329,19 +332,24 @@ class PathfinderClient(Node):
         
         if not future.done():
             self.get_logger().error('❌ Path service call timed out after 30s')
+            self.last_can_rotate = False
             return [], False
 
         if not future.result():
             self.get_logger().error('❌ Path service call failed - no response received')
+            self.last_can_rotate = False
             return [], False
 
         response = future.result()
+        self.last_can_rotate = bool(getattr(response, 'can_rotate', False))
 
         if response.success:
-            self.get_logger().info(f'✅ Path found with {len(response.stm32_commands)} commands')
+            self.get_logger().info(
+                f'✅ Path found with {len(response.stm32_commands)} commands (can_rotate={self.last_can_rotate})'
+            )
             return response.stm32_commands, True
         else:
-            self.get_logger().warning(f'⚠ Path failed: {response.message}')
+            self.get_logger().warning(f'⚠ Path failed: {response.message} (can_rotate={self.last_can_rotate})')
             return [], False
 
     def add_untracked_batch(self, known_id: str):
