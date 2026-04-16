@@ -796,6 +796,138 @@ class STM32Controller(Node):
         except Exception as e:
             self.get_logger().error(f'Reset service error: {str(e)}')
             return False, f'Service error: {str(e)}'
+    def shutdown(self, timeout=10.0):
+        """Send a shutdown command to the STM32 (synchronous)"""
+        # Keep trying to connect to service until timeout
+        if not self.navi_client.wait_for_service(timeout_sec=10):
+            self.get_logger().error(f'NaviStm service not available after 10 seconds')
+            return False, f'NaviStm service not available after 10 seconds'
+
+        #self.get_logger().info('NaviStm service is now available!')
+        request = NaviStm.Request()
+        request.arg1 = 19.0  # Indicates shutdown command
+        request.arg2 = 0.0
+        request.arg3 = 0.0
+        request.arg4 = 0.0
+        request.arg5 = 0.0
+        request.arg6 = 0.0
+        request.arg7 = 0.0
+        request.arg8 = 0.0
+        request.arg9 = 0.0
+        request.arg10 = 0.0
+        self.get_logger().info("Envoi de shutdown command")
+        
+        try:
+            future = self.navi_client.call_async(request)
+            if not self._wait_for_future(future, timeout):
+                self.get_logger().error('Shutdown service call timeout')
+                return False, 'Service call timeout'
+            
+            response = future.result()
+            self.get_logger().info(f"Shutdown response: {response.result}")
+            return True, response
+        except Exception as e:
+            self.get_logger().error(f'Shutdown service error: {str(e)}')
+            return False, f'Service error: {str(e)}'
+    def creep(self, timeout=10.0):
+        """Send a creep command to the STM32 (synchronous)"""
+        # Keep trying to connect to service until timeout
+        if not self.navi_client.wait_for_service(timeout_sec=10):
+            self.get_logger().error(f'NaviStm service not available after 10 seconds')
+            return False, f'NaviStm service not available after 10 seconds'
+
+        #self.get_logger().info('NaviStm service is now available!')
+        request = NaviStm.Request()
+        request.arg1 = 20.0  # Indicates creep command
+        request.arg2 = 0.0
+        request.arg3 = 0.0
+        request.arg4 = 0.0
+        request.arg5 = 0.0
+        request.arg6 = 0.0
+        request.arg7 = 0.0
+        request.arg8 = 0.0
+        request.arg9 = 0.0
+        request.arg10 = 0.0
+        self.get_logger().info("Envoi de creep command")
+        
+        try:
+            future = self.navi_client.call_async(request)
+            if not self._wait_for_future(future, timeout):
+                self.get_logger().error('Creep service call timeout')
+                return False, 'Service call timeout'
+            
+            response = future.result()
+            self.get_logger().info(f"Creep response: {response.result}")
+            return True, response
+        except Exception as e:
+            self.get_logger().error(f'Creep service error: {str(e)}')
+            return False, f'Service error: {str(e)}'
+    def soft_stop(self, timeout=10.0):
+        """Send a soft stop command to the STM32 (synchronous)"""
+        # Keep trying to connect to service until timeout
+        if not self.navi_client.wait_for_service(timeout_sec=10):
+            self.get_logger().error(f'NaviStm service not available after 10 seconds')
+            return False, f'NaviStm service not available after 10 seconds'
+
+        #self.get_logger().info('NaviStm service is now available!')
+        request = NaviStm.Request()
+        request.arg1 = 21.0  # Indicates soft stop command
+        request.arg2 = 0.0
+        request.arg3 = 0.0
+        request.arg4 = 0.0
+        request.arg5 = 0.0
+        request.arg6 = 0.0
+        request.arg7 = 0.0
+        request.arg8 = 0.0
+        request.arg9 = 0.0
+        request.arg10 = 0.0
+        self.get_logger().info("Envoi de soft stop command")
+        
+        try:
+            future = self.navi_client.call_async(request)
+            if not self._wait_for_future(future, timeout):
+                self.get_logger().error('Soft stop service call timeout')
+                return False, 'Service call timeout'
+            
+            response = future.result()
+            self.get_logger().info(f"Soft stop response: {response.result}")
+            return True, response
+        except Exception as e:
+            self.get_logger().error(f'Soft stop service error: {str(e)}')
+            return False, f'Service error: {str(e)}'
+    def creep_backwards(self, timeout=10.0):
+        """Send a creep backwards command to the STM32 (synchronous)"""
+        # Keep trying to connect to service until timeout
+        if not self.navi_client.wait_for_service(timeout_sec=10):
+            self.get_logger().error(f'NaviStm service not available after 10 seconds')
+            return False, f'NaviStm service not available after 10 seconds'
+
+        #self.get_logger().info('NaviStm service is now available!')
+        request = NaviStm.Request()
+        request.arg1 = 21.0  # Indicates creep backwards command
+        request.arg2 = 0.0
+        request.arg3 = 0.0
+        request.arg4 = 0.0
+        request.arg5 = 0.0
+        request.arg6 = 0.0
+        request.arg7 = 0.0
+        request.arg8 = 0.0
+        request.arg9 = 0.0
+        request.arg10 = 0.0
+        self.get_logger().info("Envoi de creep backwards command")
+        
+        try:
+            future = self.navi_client.call_async(request)
+            if not self._wait_for_future(future, timeout):
+                self.get_logger().error('Creep backwards service call timeout')
+                return False, 'Service call timeout'
+            
+            response = future.result()
+            self.get_logger().info(f"Creep backwards response: {response.result}")
+            return True, response
+        except Exception as e:
+            self.get_logger().error(f'Creep backwards service error: {str(e)}')
+            return False, f'Service error: {str(e)}'
 def main(args=None):
     rclpy.init(args=args)
     controller = STM32Controller()
