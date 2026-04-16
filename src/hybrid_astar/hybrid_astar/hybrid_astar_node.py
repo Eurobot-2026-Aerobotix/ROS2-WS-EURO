@@ -715,6 +715,7 @@ class HybridAStarNode(Node):
         Uses the same advanced pathfinding logic as the local test script.
         """
         start_time = time.time()
+        response.can_rotate = False
         
         # Extract start and goal (convert m to mm)
         start_x = request.start_pose.pose.position.x * 1000.0
@@ -780,6 +781,9 @@ class HybridAStarNode(Node):
                 max_iterations=self.params['pathfinding']['max_iterations'],
                 allow_goal_collision=allow_goal_collision
             )
+
+            # True only when start was in collision and planner used reverse (+180) fallback.
+            response.can_rotate = bool(getattr(self.pathfinder, 'last_used_reverse_fallback', False))
             
             if path:
                 self.get_logger().info(f"✅ Found path: {len(path)} waypoints")
@@ -1107,6 +1111,7 @@ class HybridAStarNode(Node):
                 response.num_waypoints = len(smoothed)
                 response.path_length_m = total_dist / 1000.0
                 response.message = f"Path found: {len(smoothed)} waypoints, {response.path_length_m:.2f}m"
+                response.message += f" (can_rotate={str(response.can_rotate).lower()})"
                 
                 # Add STM32 go_to commands to response
                 response.stm32_commands = self.waypoints_to_stm32_go_to_commands(smoothed, speed=100)
@@ -1118,6 +1123,7 @@ class HybridAStarNode(Node):
             else:
                 response.success = False
                 response.message = "No path found - start/goal in collision or blocked"
+                response.message += f" (can_rotate={str(response.can_rotate).lower()})"
                 self.get_logger().warn(f"❌ {response.message}")
                 start_collision = self.pathfinder.is_collision(start_x, start_y, start_theta, grid_resolution)
                 goal_collision = self.pathfinder.is_collision(goal_x, goal_y, goal_theta, grid_resolution)
@@ -1168,6 +1174,7 @@ class HybridAStarNode(Node):
         except Exception as e:
             response.success = False
             response.message = f"Error: {str(e)}"
+            response.can_rotate = bool(getattr(self.pathfinder, 'last_used_reverse_fallback', False))
             self.get_logger().error(f"❌ Planning failed: {e}")
             import traceback
             self.get_logger().error(traceback.format_exc())

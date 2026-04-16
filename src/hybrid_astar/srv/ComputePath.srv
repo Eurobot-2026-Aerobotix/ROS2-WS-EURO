@@ -7,6 +7,7 @@ string[] untracked_batches
 nav_msgs/Path path
 bool success
 string message
+bool can_rotate
 float32 planning_time_ms
 int32 num_waypoints
 float32 path_length_m

@@ -63,6 +63,9 @@ class HybridAStarPathfinder:
         
         # Precomputed footprint masks for each orientation
         self.footprints = {}
+        # Last planning-call diagnostics
+        self.last_start_in_collision = False
+        self.last_used_reverse_fallback = False
         # Keep internal planner logs quiet by default.
         # Main ROS node already logs request/response summaries and waypoints.
         self.verbose = False
@@ -649,6 +652,10 @@ class HybridAStarPathfinder:
         Returns:
             List of (x, y, theta) waypoints or None
         """
+        # Reset per-call diagnostics
+        self.last_start_in_collision = False
+        self.last_used_reverse_fallback = False
+
         start_x, start_y, start_theta = start_pose
         goal_x, goal_y, goal_theta = goal_pose
         effective_start_pose = start_pose
@@ -662,6 +669,7 @@ class HybridAStarPathfinder:
         # Check start/goal validity
         start_collision = self.is_collision(start_x, start_y, start_theta, grid_resolution)
         if start_collision:
+            self.last_start_in_collision = True
             self._vprint(f"✗ Start position ({start_x:.1f}, {start_y:.1f}) is in collision!")
             # Check which grid cell
             gx = int(start_x / grid_resolution)
@@ -679,6 +687,7 @@ class HybridAStarPathfinder:
 
             effective_start_pose = relocated
             start_x, start_y, start_theta = relocated
+            self.last_used_reverse_fallback = True
             self._vprint(
                 f"↪ Relocated start to reverse escape pose: ({start_x:.1f}, {start_y:.1f}, {math.degrees(start_theta):.1f}°)"
             )
