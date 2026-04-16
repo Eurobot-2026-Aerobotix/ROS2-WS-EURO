@@ -71,6 +71,131 @@ class HybridAStarPathfinder:
     def _vprint(self, message: str):
         if self.verbose:
             print(message)
+
+    def _is_collision_with_margin(
+        self,
+        x: float,
+        y: float,
+        theta: float,
+        grid_resolution: float,
+        margin_mm: float,
+    ) -> bool:
+        """Collision check for an expanded footprint (robot size + margin)."""
+        if margin_mm <= 0.0:
+            return self.is_collision(x, y, theta, grid_resolution)
+
+        half_length = self.robot_length / 2.0 + margin_mm
+        half_width = self.robot_width / 2.0 + margin_mm
+
+        cos_theta = math.cos(theta)
+        sin_theta = math.sin(theta)
+
+        corners_local = [
+            (half_length, half_width),
+            (half_length, -half_width),
+            (-half_length, -half_width),
+            (-half_length, half_width),
+        ]
+
+        min_x = float("inf")
+        max_x = float("-inf")
+        min_y = float("inf")
+        max_y = float("-inf")
+
+        for lx, ly in corners_local:
+            wx = x + lx * cos_theta - ly * sin_theta
+            wy = y + lx * sin_theta + ly * cos_theta
+            min_x = min(min_x, wx)
+            max_x = max(max_x, wx)
+            min_y = min(min_y, wy)
+            max_y = max(max_y, wy)
+
+        grid_x_start = int(math.floor(min_x / grid_resolution))
+        grid_x_end = int(math.floor(max_x / grid_resolution))
+        grid_y_start = int(math.floor(min_y / grid_resolution))
+        grid_y_end = int(math.floor(max_y / grid_resolution))
+
+        if (
+            grid_x_start < 0
+            or grid_y_start < 0
+            or grid_x_end >= self.grid_width
+            or grid_y_end >= self.grid_height
+        ):
+            return True
+
+        for gx in range(grid_x_start, grid_x_end + 1):
+            for gy in range(grid_y_start, grid_y_end + 1):
+                cell_x = (gx + 0.5) * grid_resolution
+                cell_y = (gy + 0.5) * grid_resolution
+
+                # Point-in-expanded-rectangle test
+                dx = cell_x - x
+                dy = cell_y - y
+                local_x = dx * cos_theta + dy * sin_theta
+                local_y = -dx * sin_theta + dy * cos_theta
+
+                if abs(local_x) <= half_length and abs(local_y) <= half_width:
+                    if self.grid[gy, gx]:
+                        return True
+
+        return False
+
+    def _find_reverse_offset_free_pose(
+        self,
+        start_pose: Tuple[float, float, float],
+        grid_resolution: float,
+        clearance_mm: float = 100.0,
+        step_mm: float = 25.0,
+        max_distance_mm: float = 2000.0,
+    ) -> Optional[Tuple[float, float, float]]:
+        """
+        Move strictly in reverse direction (+180°) until a start pose is found that:
+        1) is collision-free with a minimum obstacle clearance, and
+        2) has at least one forward motion primitive.
+        """
+        sx, sy, stheta = start_pose
+
+        reverse_dx = -math.cos(stheta)
+        reverse_dy = -math.sin(stheta)
+
+        self._vprint(
+            f"🔄 Reverse escape from ({sx:.1f}, {sy:.1f}) with min clearance {clearance_mm:.1f}mm..."
+        )
+
+        dist_mm = step_mm
+        while dist_mm <= max_distance_mm + 1e-6:
+            x = sx + dist_mm * reverse_dx
+            y = sy + dist_mm * reverse_dy
+
+            gx = int(x / grid_resolution)
+            gy = int(y / grid_resolution)
+            if gx < 0 or gx >= self.grid_width or gy < 0 or gy >= self.grid_height:
+                dist_mm += step_mm
+                continue
+
+            # Require 100mm obstacle clearance (expanded footprint check)
+            if self._is_collision_with_margin(x, y, stheta, grid_resolution, clearance_mm):
+                dist_mm += step_mm
+                continue
+
+            # Candidate must also be able to move forward
+            has_forward_move = False
+            for _ in self.get_motion_primitives(x, y, stheta, grid_resolution, is_forward=True):
+                has_forward_move = True
+                break
+
+            if has_forward_move:
+                self._vprint(
+                    f"✅ Reverse escape found: ({x:.1f}, {y:.1f}), dist={dist_mm:.1f}mm, clearance={clearance_mm:.1f}mm"
+                )
+                return (x, y, stheta)
+
+            dist_mm += step_mm
+
+        self._vprint(
+            f"⚠ Reverse escape failed up to {max_distance_mm:.1f}mm with {clearance_mm:.1f}mm clearance"
+        )
+        return None
     
     def _precompute_footprints(self):
         """
@@ -526,6 +651,7 @@ class HybridAStarPathfinder:
         """
         start_x, start_y, start_theta = start_pose
         goal_x, goal_y, goal_theta = goal_pose
+        effective_start_pose = start_pose
         
         self._vprint(f"🚀 Starting Hybrid A* search...")
         self._vprint(f"   Start: ({start_x:.1f}, {start_y:.1f}, {math.degrees(start_theta):.1f}°)")
@@ -545,7 +671,17 @@ class HybridAStarPathfinder:
                 self._vprint(f"   Grid occupied: {self.grid[gy, gx]}")
             for idx, info in enumerate(self.get_collision_debug_info(start_x, start_y, start_theta, grid_resolution), start=1):
                 self._vprint(f"   Collision[{idx}]: {info}")
-            return None
+
+            relocated = self._find_reverse_offset_free_pose(start_pose, grid_resolution, clearance_mm=100.0)
+            if relocated is None:
+                self._vprint("✗ Could not find reverse escape pose with 100mm clearance")
+                return None
+
+            effective_start_pose = relocated
+            start_x, start_y, start_theta = relocated
+            self._vprint(
+                f"↪ Relocated start to reverse escape pose: ({start_x:.1f}, {start_y:.1f}, {math.degrees(start_theta):.1f}°)"
+            )
         
         goal_collision = self.is_collision(goal_x, goal_y, goal_theta, grid_resolution)
         if goal_collision and not allow_goal_collision:
@@ -564,12 +700,12 @@ class HybridAStarPathfinder:
         
         # Priority queue: (f_score, counter, pose)
         counter = 0
-        open_set = [(0, counter, start_pose)]
+        open_set = [(0, counter, effective_start_pose)]
         counter += 1
         
         # Tracking
         came_from = {}
-        g_score = {self.discretize_pose(*start_pose, grid_resolution): 0}
+        g_score = {self.discretize_pose(*effective_start_pose, grid_resolution): 0}
         closed_set = set()
         
         # Goal tolerance (relaxed for speed)
@@ -645,19 +781,43 @@ class HybridAStarPathfinder:
             directions = [True]
             if allow_backward:
                 directions.append(False)
-            
+
+            generated_neighbor = False
+
             for is_forward in directions:
                 for new_x, new_y, new_theta, move_cost in self.get_motion_primitives(
                     current_x, current_y, current_theta, grid_resolution, is_forward
                 ):
                     new_pose = (new_x, new_y, new_theta)
                     new_discrete = self.discretize_pose(new_x, new_y, new_theta, grid_resolution)
-                    
+
                     if new_discrete in closed_set:
                         continue
-                    
+
                     tentative_g = g_score[current_discrete] + move_cost
-                    
+
+                    if new_discrete not in g_score or tentative_g < g_score[new_discrete]:
+                        came_from[new_pose] = current
+                        g_score[new_discrete] = tentative_g
+                        f_score = tentative_g + self.heuristic(new_x, new_y, goal_x, goal_y)
+                        heapq.heappush(open_set, (f_score, counter, new_pose))
+                        counter += 1
+                        generated_neighbor = True
+
+            # Fallback: if no forward neighbor was possible (e.g. tight local trap),
+            # still try backward primitives even when heading-to-goal rule disabled them.
+            if not generated_neighbor and not allow_backward:
+                for new_x, new_y, new_theta, move_cost in self.get_motion_primitives(
+                    current_x, current_y, current_theta, grid_resolution, False
+                ):
+                    new_pose = (new_x, new_y, new_theta)
+                    new_discrete = self.discretize_pose(new_x, new_y, new_theta, grid_resolution)
+
+                    if new_discrete in closed_set:
+                        continue
+
+                    tentative_g = g_score[current_discrete] + move_cost
+
                     if new_discrete not in g_score or tentative_g < g_score[new_discrete]:
                         came_from[new_pose] = current
                         g_score[new_discrete] = tentative_g
