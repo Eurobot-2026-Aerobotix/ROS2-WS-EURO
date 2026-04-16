@@ -437,14 +437,26 @@ class TaskScheduler:
             elif task.target_id in ["s3", "s5"]:
                 pickup_pos.append(Pose2D(x=self.map.batches[task.target_id].x - 175.0, y=self.map.batches[task.target_id].y))
                 pickup_pos.append(Pose2D(x=self.map.batches[task.target_id].x + 175.0, y=self.map.batches[task.target_id].y))
-            for pos in pickup_pos:
-                if self.map.distance_from(self.map.enemy_absolute, pos) < self.map.enemy_radius + self.map.robot_radius + 50.0:
-                    pickup_pos.remove(pos)
-            pickup_pos.sort(key=lambda p: self.map.distance_from(self.map.robot_position, p))
+            pickup_pos = [
+                pos for pos in pickup_pos
+                if self.map.distance_from(self.map.enemy_absolute, pos) >= self.map.enemy_radius + self.map.robot_radius + 50.0
+            ]
             if len(pickup_pos) == 0:
                 return False
-            task.options["x"] = pickup_pos[0].x
-            task.options["y"] = pickup_pos[0].y
+
+            if bool(getattr(self.map.enemy_relative, 'detected', False)):
+                selected_pos = max(
+                    pickup_pos,
+                    key=lambda p: self.map.distance_from(self.map.enemy_absolute, p),
+                )
+            else:
+                selected_pos = min(
+                    pickup_pos,
+                    key=lambda p: self.map.distance_from(self.map.robot_position, p),
+                )
+
+            task.options["x"] = selected_pos.x
+            task.options["y"] = selected_pos.y
 
             target_batch = self.map.batches.get(task.target_id)
             if target_batch is None:
