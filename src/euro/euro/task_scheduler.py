@@ -1143,7 +1143,7 @@ class TaskScheduler:
             return None
 
         start_mm_x, start_mm_y, start_theta_deg = self._resolve_start_pose_mm_deg(start_pose)
-        can_rotate = bool(getattr(self.pathfinder, 'last_can_rotate', False))
+        can_rotate = bool(getattr(self.pathfinder, 'last_can_rotate', True))
         first_waypoint_command = stm_command
         if not can_rotate and len(stm32_commands) > 0:
             first_values = stm32_commands[0].replace('go_to(', '').replace(')', '').split(',')
@@ -1304,7 +1304,7 @@ class TaskScheduler:
             return None
 
         start_mm_x, start_mm_y, start_theta_deg = self._resolve_start_pose_mm_deg(start_pose)
-        can_rotate = bool(getattr(self.pathfinder, 'last_can_rotate', False))
+        can_rotate = bool(getattr(self.pathfinder, 'last_can_rotate', True))
         first_waypoint_command = stm_command
         if not can_rotate and len(stm32_commands) > 0:
             first_values = stm32_commands[0].replace('go_to(', '').replace(')', '').split(',')
@@ -1575,7 +1575,7 @@ class TaskScheduler:
                 return None
 
             start_mm_x, start_mm_y, start_theta_deg = self._resolve_start_pose_mm_deg(None)
-            can_rotate = bool(getattr(self.pathfinder, 'last_can_rotate', False))
+            can_rotate = bool(getattr(self.pathfinder, 'last_can_rotate', True))
             first_waypoint_command = 'go_to'
             if not can_rotate and len(stm32_commands) > 0:
                 first_values = stm32_commands[0].replace('go_to(', '').replace(')', '').split(',')
@@ -1689,7 +1689,7 @@ class TaskScheduler:
                 return None
 
             start_mm_x, start_mm_y, start_theta_deg = self._resolve_start_pose_mm_deg(None)
-            can_rotate = bool(getattr(self.pathfinder, 'last_can_rotate', False))
+            can_rotate = bool(getattr(self.pathfinder, 'last_can_rotate', True))
             first_waypoint_command = 'go_to'
             if not can_rotate and len(stm32_commands) > 0:
                 first_values = stm32_commands[0].replace('go_to(', '').replace(')', '').split(',')

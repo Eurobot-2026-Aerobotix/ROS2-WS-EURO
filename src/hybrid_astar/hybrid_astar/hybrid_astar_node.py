@@ -715,7 +715,7 @@ class HybridAStarNode(Node):
         Uses the same advanced pathfinding logic as the local test script.
         """
         start_time = time.time()
-        response.can_rotate = False
+        response.can_rotate = True
         
         # Extract start and goal (convert m to mm)
         start_x = request.start_pose.pose.position.x * 1000.0
@@ -782,8 +782,11 @@ class HybridAStarNode(Node):
                 allow_goal_collision=allow_goal_collision
             )
 
-            # True only when start was in collision and planner used reverse (+180) fallback.
-            response.can_rotate = bool(getattr(self.pathfinder, 'last_used_reverse_fallback', False))
+            # can_rotate is enabled by default.
+            # If reverse-start fallback was required, report can_rotate=False.
+            used_reverse_fallback = bool(getattr(self.pathfinder, 'last_used_reverse_fallback', False))
+            if used_reverse_fallback:
+                response.can_rotate = False
             
             if path:
                 self.get_logger().info(f"✅ Found path: {len(path)} waypoints")
@@ -1174,7 +1177,7 @@ class HybridAStarNode(Node):
         except Exception as e:
             response.success = False
             response.message = f"Error: {str(e)}"
-            response.can_rotate = bool(getattr(self.pathfinder, 'last_used_reverse_fallback', False))
+            response.can_rotate = True
             self.get_logger().error(f"❌ Planning failed: {e}")
             import traceback
             self.get_logger().error(traceback.format_exc())
