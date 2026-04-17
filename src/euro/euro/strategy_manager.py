@@ -598,6 +598,7 @@ class StrategyManager(Node):
                             type=explicit_tracking_type,
                             options={},
                             score=0.0,
+                            task_name=str(generated_task.get('name', '') or ''),
                         )
                         self.task_scheduler.track_task(tracked_task)
                         self.get_logger().info(

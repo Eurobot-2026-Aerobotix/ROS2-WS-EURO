@@ -69,7 +69,7 @@ class TaskScheduler:
         self._last_pickup_queue_signature = None
         self._last_task_queue_signature = None
         self._last_empty_queue_reason_signature = None
-        self.log_batches=False
+        self.log_batches=True
         # Explicit ROS wiring only:
         # - If a node is provided and map is a plain data-map, attach subscribers on it.
         # - If map is already a ROS node (e.g. MapNode), do not attach again.

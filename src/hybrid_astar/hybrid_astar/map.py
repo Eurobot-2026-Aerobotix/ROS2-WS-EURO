@@ -5,7 +5,7 @@ Manages dynamic obstacles from ArUco mapper and enemy detection
 """
 
 import math
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from threading import Lock
 
 import rclpy

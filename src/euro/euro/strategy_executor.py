@@ -174,6 +174,15 @@ def task_tracking_task(strategy, stm32, lidar=None):
             time.sleep(0.05)
             continue
 
+        # Ignore cancellation while executing generated post-putdown follow-up
+        # tasks; those phases intentionally run after the initial put_down.
+        tracked_task = getattr(scheduler, 'tracked_task', None)
+        tracked_task_name = str(getattr(tracked_task, 'task_name', '') or '').lower()
+        if tracked_task_name.startswith('putdown_insert_') or tracked_task_name.startswith('putdown_retreat_'):
+            scheduler.tracked_task_invalid = False
+            time.sleep(0.05)
+            continue
+
         # React to tracked-task cancellation only in STM execution context:
         # - len(STM queue) > 1
         # - OR len(STM queue) == 1 and IDLE_FOR_SYSTEMS == False
