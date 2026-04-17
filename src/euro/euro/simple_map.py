@@ -109,6 +109,7 @@ class BatchInfo:
     y: float
     phi_degrees: float = 0.0
     color: str = "unknown"
+    quality: str = ""
 
 class Map:
     """
@@ -241,6 +242,7 @@ class Map:
         member_counts = batch_info.get('member_counts', [])
         directions = batch_info.get('directions', [])
         patterns = batch_info.get('patterns', [])
+        qualities = batch_info.get('qualities', [])
         theta_degrees_list = batch_info.get('theta_degrees', [])
         centers = batch_info.get('centers', [])
 
@@ -269,13 +271,15 @@ class Map:
 
             pattern = str(patterns[i]).lower() if i < len(patterns) else 'unknown'
             batch_color = pattern if pattern else 'unknown'
+            batch_quality = str(qualities[i]).strip().upper() if i < len(qualities) else ''
 
             self.set_batch(
                 known_id=known_id,
                 x=float(center.x) * 1000.0,
                 y=float(center.y) * 1000.0,
                 phi_degrees=phi_degrees,
-                color=batch_color
+                color=batch_color,
+                quality=batch_quality,
             )
         
         # Remove batches that are no longer active (using remove_batch which handles dropoff status)
@@ -343,7 +347,15 @@ class Map:
             theta=None,
         )
 
-    def set_batch(self, known_id: str, x: float, y: float, phi_degrees: float = 0.0, color: str = "unknown") -> None:
+    def set_batch(
+        self,
+        known_id: str,
+        x: float,
+        y: float,
+        phi_degrees: float = 0.0,
+        color: str = "unknown",
+        quality: str = "",
+    ) -> None:
         normalized_id = self._normalize_batch_id(known_id)
         if not normalized_id:
             return
@@ -356,6 +368,7 @@ class Map:
             y=y,
             phi_degrees=phi_degrees,
             color=color,
+            quality=str(quality or '').strip().upper(),
         )
         if normalized_id[0] == "f" and normalized_id in self.drop_offs:
             if color != "unknown":

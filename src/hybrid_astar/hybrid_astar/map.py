@@ -88,6 +88,10 @@ class MapManager:
         # Using known_id as key to avoid overwrites when batch_id is reused
         self.batches_fx: Dict[str, Batch] = {}
         self.batches_sx: Dict[str, Batch] = {}
+        # Optional FX status type extracted from mapper state suffixes:
+        #   TRACKING_P / EMERGING_P   -> 'P'
+        #   TRACKING_NP / EMERGING_NP -> 'NP'
+        self.batches_fx_status_type: Dict[str, str] = {}
         self.batches_lock = Lock()
         
         # Static obstacles - using permanent area instead of JSON file
@@ -265,6 +269,25 @@ class MapManager:
             self.node.get_logger().warn(
                 f"⚠️  SX '{known_id}' regressed to {state}; clearing baseline lock markers so it can be re-locked"
             )
+
+    @staticmethod
+    def _parse_batch_state(state_value: str) -> Tuple[str, str]:
+        """
+        Parse mapper batch state and extract optional FX status suffix.
+
+        Examples:
+          TRACKING      -> (TRACKING, '')
+          TRACKING_NP   -> (TRACKING, 'NP')
+          EMERGING_P    -> (EMERGING, 'P')
+        """
+        normalized = str(state_value or "").strip().upper()
+        if not normalized:
+            return "", ""
+        if normalized.endswith("_NP"):
+            return normalized[:-3], "NP"
+        if normalized.endswith("_P"):
+            return normalized[:-2], "P"
+        return normalized, ""
     
     def handle_clear_all(self, msg: Empty):
         """Clear all obstacles"""
@@ -308,6 +331,7 @@ class MapManager:
             sx_count = len(self.batches_sx)
             self.batches_fx.clear()
             self.batches_sx.clear()
+            self.batches_fx_status_type.clear()
             self.batches_with_obstacles.clear()  # Clear tracking
             self.manual_putdown_batch_ids.clear()
         
@@ -375,6 +399,7 @@ class MapManager:
         with self.batches_lock:
             if known_id in self.batches_fx:
                 del self.batches_fx[known_id]
+                self.batches_fx_status_type.pop(known_id, None)
                 deleted = True
                 self.node.get_logger().info(f"  ✅ Removed FX batch '{known_id}'")
             if known_id in self.batches_sx:
@@ -577,6 +602,7 @@ class MapManager:
 
         with self.batches_lock:
             self.batches_fx[known_id] = batch
+            self.batches_fx_status_type.pop(known_id, None)
             self.batches_with_obstacles.add(known_id)
             self.manual_putdown_batch_ids.add(known_id)
             self.active_batch_ids.add(known_id)
@@ -637,6 +663,7 @@ class MapManager:
         with self.batches_lock:
             for bid in batch_ids:
                 self.batches_fx.pop(bid, None)
+                self.batches_fx_status_type.pop(bid, None)
                 self.batches_sx.pop(bid, None)
                 self.batches_with_obstacles.discard(bid)
                 self.locked_baseline_batch_ids.discard(bid)
@@ -1257,7 +1284,7 @@ class MapManager:
             lost_batch_ids = {
                 batch.known_id
                 for batch in aruco_state.batches
-                if batch.state.upper() == 'LOST'
+                if self._parse_batch_state(batch.state)[0] == 'LOST'
             }
 
             # Remove LOST batches immediately, except manual put_down batches
@@ -1333,7 +1360,7 @@ class MapManager:
                 skipped_count = 0
                 
                 for batch in aruco_state.batches:
-                    state = batch.state.upper()
+                    state, _ = self._parse_batch_state(batch.state)
                     if state == 'LOST':
                         # LOST batches are removed immediately and must not be processed further.
                         self.known_ids_to_retry.discard(batch.known_id)
@@ -1378,7 +1405,7 @@ class MapManager:
                 skipped_count = 0
                 
                 for batch in aruco_state.batches:
-                    state = batch.state.upper()
+                    state, _ = self._parse_batch_state(batch.state)
                     is_fx = batch.known_id.startswith('f') or not (batch.known_id.startswith('s') or batch.known_id.startswith('g'))
                     is_sx = batch.known_id.startswith('s')
                     batch_type = 'FX' if is_fx else ('SX' if batch.known_id.startswith('s') else 'GX')
@@ -1436,7 +1463,7 @@ class MapManager:
                 filtered_batches = []
                 
                 for batch in aruco_state.batches:
-                    state = batch.state.upper()
+                    state, _ = self._parse_batch_state(batch.state)
                     is_fx = batch.known_id.startswith('f') or not (batch.known_id.startswith('s') or batch.known_id.startswith('g'))
                     batch_type = 'FX' if is_fx else ('SX' if batch.known_id.startswith('s') else 'GX')
 
@@ -1531,6 +1558,7 @@ class MapManager:
                         # Clear both batch dictionaries
                         with self.batches_lock:
                             self.batches_fx.clear()
+                            self.batches_fx_status_type.clear()
                             self.batches_sx.clear()
                             self.batches_with_obstacles.clear()  # Clear tracking
                             self.locked_baseline_batch_ids.clear()
@@ -1570,6 +1598,7 @@ class MapManager:
                                 for bid in disappeared_ids:
                                     # Remove disappeared batches from storage
                                     self.batches_fx.pop(bid, None)
+                                    self.batches_fx_status_type.pop(bid, None)
                                     self.batches_sx.pop(bid, None)
                                     self.batches_with_obstacles.discard(bid)  # Remove from tracking
                                     self.locked_baseline_batch_ids.discard(bid)
@@ -1579,6 +1608,7 @@ class MapManager:
                                 for bid in fx_batches_ids:
                                     # Remove FX batches for refresh (they'll be re-added)
                                     self.batches_fx.pop(bid, None)
+                                    self.batches_fx_status_type.pop(bid, None)
                                     self.batches_with_obstacles.discard(bid)  # Remove from tracking
                             
                             # Log removal
@@ -1638,7 +1668,8 @@ class MapManager:
                     for batch in filtered_batches:
                         if batch.known_id == specific_known_id:
                             # Remove obstacles only if TRACKING (upgrade) or if we have members (new data)
-                            if batch.state.upper() == 'TRACKING' or (batch.members and len(batch.members) > 0):
+                            parsed_state, _ = self._parse_batch_state(batch.state)
+                            if parsed_state == 'TRACKING' or (batch.members and len(batch.members) > 0):
                                 should_update = True
                                 with self.obstacles_lock:
                                     old_count = len(self.obstacles)
@@ -1941,6 +1972,11 @@ class MapManager:
                                 )
                                 continue
                             self.batches_fx[batch.known_id] = batch
+                            _, status_type = self._parse_batch_state(batch.state)
+                            if status_type:
+                                self.batches_fx_status_type[batch.known_id] = status_type
+                            else:
+                                self.batches_fx_status_type.pop(batch.known_id, None)
                             self.node.get_logger().info(f"   🔒 Locked FX pattern: {batch.known_id} = '{batch.pattern}'")
                 
                 # CRITICAL: Add locked batches to active_batch_ids to prevent them from being removed
@@ -2194,6 +2230,11 @@ class MapManager:
                 with self.batches_lock:
                     if source == 'fx':
                         self.batches_fx[batch.known_id] = batch
+                        _, status_type = self._parse_batch_state(batch.state)
+                        if status_type:
+                            self.batches_fx_status_type[batch.known_id] = status_type
+                        else:
+                            self.batches_fx_status_type.pop(batch.known_id, None)
                     elif source == 'sx':
                         self.batches_sx[batch.known_id] = batch
 
@@ -2354,6 +2395,7 @@ class MapManager:
             
             if known_id in self.batches_fx:
                 del self.batches_fx[known_id]
+                self.batches_fx_status_type.pop(known_id, None)
                 deleted_from_fx = True
                 self.node.get_logger().info(f"🗑️  Deleted batch '{known_id}' from FX storage")
             
@@ -2431,7 +2473,7 @@ class MapManager:
             - patterns: List of color patterns ('ybyb', etc.)
             - theta_degrees: List of batch orientations in degrees
             - centers: List of Point objects (batch centers)
-            - qualities: List of quality indicators (all 1 for now)
+            - qualities: List of quality tags (FX: 'P'/'NP' when available, otherwise '')
         """
         with self.batches_lock:
             known_ids = []
@@ -2462,7 +2504,7 @@ class MapManager:
                     patterns.append(batch.pattern.lower() if getattr(batch, 'pattern', None) else '')
                     theta_degrees.append(_theta_from_direction(direction))
                     centers.append(batch.center)
-                    qualities.append(1)  # Always 1 for now
+                    qualities.append(str(self.batches_fx_status_type.get(known_id, '')))
             
             # Process SX batches
             for known_id, batch in self.batches_sx.items():
@@ -2476,7 +2518,7 @@ class MapManager:
                     patterns.append(batch.pattern.lower() if getattr(batch, 'pattern', None) else '')
                     theta_degrees.append(_theta_from_direction(direction))
                     centers.append(batch.center)
-                    qualities.append(1)  # Always 1 for now
+                    qualities.append('')
             
             return {
                 'known_ids': known_ids,

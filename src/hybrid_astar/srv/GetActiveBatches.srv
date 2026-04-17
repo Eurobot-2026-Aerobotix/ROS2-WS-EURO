@@ -10,4 +10,4 @@ int32[] member_counts
 string[] directions
 string[] patterns
 float32[] theta_degrees
-int32[] qualities
+string[] qualities
