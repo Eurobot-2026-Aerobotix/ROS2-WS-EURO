@@ -819,7 +819,7 @@ def main(args=None):
     # Reset ArUco stability in background thread (after executor starts spinning)
     def reset_aruco_stability():
         time.sleep(0.5)  # Wait for executor to start
-        strategy.pathfinder.reset_stability()
+        #strategy.pathfinder.reset_stability()
         strategy.pathfinder.clear_map()
     
     reset_thread = threading.Thread(
@@ -970,8 +970,8 @@ def main(args=None):
                 strategy.get_logger().warning("Startup reset thread did not finish before update_map timeout")
         
         #reset_systems(pneumatic,front,back,None,strategy,True,False)
-        time.sleep(1)
-        strategy.pathfinder.update_map()
+        #time.sleep(1)
+        #strategy.pathfinder.update_map()
         # Execute tasks sequentially
         # Start a thread to execute tasks one by one
         def execute_tasks_sequentially():

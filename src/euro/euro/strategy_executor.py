@@ -1207,14 +1207,13 @@ def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=No
                         strategy.get_logger().info(f"🎮 Pathfinder game timer started: {message}")
                     else:
                         strategy.get_logger().warning(f"⚠️ Failed to start pathfinder game timer: {message}")
-                    
                     # Start timer and map update FIRST (critical for robot operation)
                     round_timer.start_game()
                     strategy.get_logger().info(f"⏱️  Game timer started!")
                     _update_robot_color_in_map(strategy)
                     strategy.get_logger().info(f"🎨 Robot color synced to map: {strategy.color}")
-                    #strategy.get_logger().info("🗺️  Updating map...")
-                    #strategy.pathfinder.update_map()
+                    strategy.get_logger().info("🗺️  Updating map...")
+                    strategy.pathfinder.update_map()
                     
                     # Enqueue PAMI start command to dedicated PAMI task
                     if pami_controller:
