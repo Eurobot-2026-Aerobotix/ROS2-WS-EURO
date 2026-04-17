@@ -8,4 +8,4 @@ string known_id
 string direction
 string pattern
 string state
-string extreme_span_center
+float32[2] corrected_center
