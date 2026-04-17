@@ -32,6 +32,9 @@ class StrategyManager(Node):
     
     def __init__(self, node_name='strategy_manager'):
         super().__init__(node_name)
+
+        # Minimum delay between pick_up and following put_down on the same ESP device.
+        self.min_pickup_putdown_gap_s = 3.0
         
         # Task storage - simple list
         self.tasks = []
@@ -69,6 +72,10 @@ class StrategyManager(Node):
         # Track last pick_up/put_down command and device from task
         self.last_task_command = None
         self.last_task_device = None
+        self.last_pickup_enqueue_time = {
+            'ESP_front': None,
+            'ESP_back': None,
+        }
         # Storage for prepared path commands
         self.prepared_commands = []
         self.prepared_goal_angle = None
@@ -374,8 +381,19 @@ class StrategyManager(Node):
         quat.w = math.cos(yaw / 2.0)
         return quat
     
-    def load_task_to_queues(self, task_name: str, allow_during_emergency: bool = False):
-        """Load a task's commands into device queues"""
+    def load_task_to_queues(
+        self,
+        task_name: str,
+        allow_during_emergency: bool = False,
+        dynamic_task: bool = False,
+    ):
+        """Load a task's commands into device queues.
+
+        Args:
+            task_name: Name of task to enqueue.
+            allow_during_emergency: Keep generated-flow behavior during emergency transitions.
+            dynamic_task: When True, apply dynamic-only enqueue guards (e.g. pickup→put_down gap).
+        """
         # Find the task
         task = None
         for t in self.tasks:
@@ -480,6 +498,15 @@ class StrategyManager(Node):
                     if device =="SSTM" and command =="set_position":
                         self.queues["RASP_PI"].append(cmd)
                     else:
+                        if dynamic_task:
+                            if not self._enforce_pickup_putdown_gap(
+                                device=device,
+                                command=command,
+                                cmd_enqueue_epoch=cmd_enqueue_epoch,
+                                allow_during_emergency=allow_during_emergency,
+                            ):
+                                return False
+
                         # Mark busy only when command is actually enqueued.
                         # This avoids stale busy flags when wait is interrupted.
                         if device == "ESP_front":
@@ -505,6 +532,77 @@ class StrategyManager(Node):
                 else:
                     self.get_logger().warn(f"      ⚠ Unknown device: {device}")
         
+        return True
+
+    def _enforce_pickup_putdown_gap(
+        self,
+        device: str,
+        command: str,
+        cmd_enqueue_epoch: int,
+        allow_during_emergency: bool = False,
+    ) -> bool:
+        """Ensure a minimum time gap between pick_up and next put_down on same ESP device."""
+        if device not in ('ESP_front', 'ESP_back'):
+            return True
+
+        normalized_command = str(command or '').strip().lower()
+
+        if normalized_command == 'pick_up':
+            self.last_pickup_enqueue_time[device] = time.monotonic()
+            return True
+
+        if normalized_command != 'put_down':
+            return True
+
+        last_pickup_t = self.last_pickup_enqueue_time.get(device)
+        if last_pickup_t is None:
+            return True
+
+        elapsed = time.monotonic() - float(last_pickup_t)
+        remaining = float(self.min_pickup_putdown_gap_s) - elapsed
+        if remaining <= 0.0:
+            return True
+
+        self.get_logger().info(
+            f"⏳ Delaying {device} put_down by {remaining:.2f}s "
+            f"(pickup→put_down gap={elapsed:.2f}s, min={self.min_pickup_putdown_gap_s:.2f}s)"
+        )
+
+        wait_step = 0.05
+        wait_until = time.monotonic() + remaining
+        while time.monotonic() < wait_until:
+            if state.SHUTDOWN_REQUESTED:
+                return False
+
+            if int(getattr(state, 'ESP_DISPATCH_EPOCH', 0)) != int(cmd_enqueue_epoch):
+                self.get_logger().warning(
+                    f"🛑 put_down delay canceled due to dispatch epoch change "
+                    f"({cmd_enqueue_epoch} -> {state.ESP_DISPATCH_EPOCH})"
+                )
+                return False
+
+            if self.interrupt_wait:
+                self.get_logger().warning("🛑 put_down delay interrupted")
+                self.load_task_to_queues_ended = True
+                return False
+
+            if self.remove_esp_waiting:
+                emergency_active = bool(getattr(state, 'EMERGENCY_STOP', False))
+                if allow_during_emergency and not emergency_active:
+                    self.get_logger().info(
+                        "🔄 Consuming stale ESP wait interrupt during put_down delay"
+                    )
+                    self.remove_esp_waiting = False
+                else:
+                    self.get_logger().warning(
+                        f"🛑 put_down delay interrupted (allow_during_emergency={allow_during_emergency}, "
+                        f"emergency_active={int(emergency_active)})"
+                    )
+                    self.remove_esp_waiting = False
+                    return False
+
+            time.sleep(wait_step)
+
         return True
     def are_all_queues_empty(self) -> bool:
         """Check if all device queues are empty"""
@@ -639,7 +737,11 @@ class StrategyManager(Node):
 
                 self.tasks.append(generated_task)
                 try:
-                    success = self.load_task_to_queues(generated_task['name'], allow_during_emergency=True)
+                    success = self.load_task_to_queues(
+                        generated_task['name'],
+                        allow_during_emergency=True,
+                        dynamic_task=True,
+                    )
                     if not success:
                         self.get_logger().error(f"❌ Failed loading generated steal task: {generated_task['name']}")
                         return False
@@ -1035,7 +1137,11 @@ def main(args=None):
                 
                 # Load task into queues
                 strategy.get_logger().warning(f"  loading  tasks {task['name']} into queues...")
-                loaded = strategy.load_task_to_queues(task['name'], allow_during_emergency=False)
+                loaded = strategy.load_task_to_queues(
+                    task['name'],
+                    allow_during_emergency=False,
+                    dynamic_task=False,
+                )
                 if not loaded:
                     strategy.get_logger().warning(
                         f"⏭️ Skipping static task '{task['name']}' enqueue (interrupted by emergency/steal)"
