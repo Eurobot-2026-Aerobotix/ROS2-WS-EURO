@@ -1347,7 +1347,7 @@ class TaskScheduler:
             'command': 'put_down',
             'params': {
                 'from_task_scheduler': True,
-                'putdown_insert_distance_mm': float(insert_distance_mm) if zone_type == 'B' else 0.0,
+                'putdown_insert_distance_mm': float(insert_distance_mm),
             },
             'wait': True
         })
