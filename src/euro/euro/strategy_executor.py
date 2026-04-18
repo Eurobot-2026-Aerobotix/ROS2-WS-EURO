@@ -203,6 +203,38 @@ def task_tracking_task(strategy, stm32, lidar=None):
             time.sleep(0.05)
             continue
 
+        # Distance guard: do not cancel tracked task when robot is still far
+        # from the current global goal (threshold in millimeters).
+        max_cancel_distance_mm = 500.0
+        latest_pose = getattr(strategy, 'latest_robot_pose', None)
+        goal_x = getattr(strategy, 'global_pos_x', None)
+        goal_y = getattr(strategy, 'global_pos_y', None)
+        if latest_pose is not None and goal_x is not None and goal_y is not None:
+            try:
+                robot_x_m = float(getattr(latest_pose, 'x'))
+                robot_y_m = float(getattr(latest_pose, 'y'))
+                goal_x_m = float(goal_x)
+                goal_y_m = float(goal_y)
+
+                # Global goal can occasionally be in mm before normalization.
+                if abs(goal_x_m) > 10.0 or abs(goal_y_m) > 10.0:
+                    goal_x_m /= 1000.0
+                    goal_y_m /= 1000.0
+
+                goal_distance_mm = math.hypot(robot_x_m - goal_x_m, robot_y_m - goal_y_m) * 1000.0
+                if goal_distance_mm > max_cancel_distance_mm:
+                    strategy.get_logger().info(
+                        f"🛡️ Task-tracking cancel ignored: distance to global goal is {goal_distance_mm:.1f}mm "
+                        f"(>{max_cancel_distance_mm:.1f}mm)"
+                    )
+                    scheduler.tracked_task_invalid = False
+                    time.sleep(0.05)
+                    continue
+            except Exception as e:
+                strategy.get_logger().debug(
+                    f"task_tracking: distance guard skipped (pose/goal parse failed): {e}"
+                )
+
         if state.replanning:
             # Recovery already in progress; consume flag to avoid retrigger spam.
             scheduler.tracked_task_invalid = False
