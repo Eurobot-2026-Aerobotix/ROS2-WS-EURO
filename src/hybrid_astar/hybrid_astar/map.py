@@ -5,6 +5,7 @@ Manages dynamic obstacles from ArUco mapper and enemy detection
 """
 
 import math
+import time
 from typing import Dict, List, Optional, Tuple
 from threading import Lock
 
@@ -124,6 +125,12 @@ class MapManager:
         
         # Set to track currently active batch known_ids (from last update)
         self.active_batch_ids: set = set()
+
+        # Debounce repeated per-SX locked-baseline requests when source is flapping.
+        self.baseline_request_cooldown_sec = float(
+            params.get('rates', {}).get('baseline_request_cooldown_sec', 1.5)
+        )
+        self._last_locked_baseline_request_s: Dict[str, float] = {}
         
         # Set to track batches that already have obstacles created (prevents duplicates)
         self.batches_with_obstacles: set = set()
@@ -670,23 +677,52 @@ class MapManager:
         if not batch_ids:
             return
 
+        # Ignore no-op LOST sets to avoid flapping logs like
+        # "obstacles_removed=0" for already-removed batches.
+        with self.batches_lock:
+            tracked_batch_ids = (
+                set(self.batches_fx.keys())
+                | set(self.batches_sx.keys())
+                | set(self.batches_with_obstacles)
+                | set(self.locked_baseline_batch_ids)
+                | set(self.locked_baseline_all_batch_ids)
+                | set(self.pending_baseline_lock_ids)
+                | set(self.short_pattern_ids)
+                | set(self.active_batch_ids)
+                | set(self.known_ids_to_retry)
+            )
+
+        relevant_batch_ids = set(batch_ids) & tracked_batch_ids
+        if not relevant_batch_ids:
+            with self.obstacles_lock:
+                for obs in self.obstacles:
+                    obs_id = str(obs.id)
+                    if not (obs_id.startswith('fx_') or obs_id.startswith('sx_')):
+                        continue
+                    parts = obs_id.split('_', 2)
+                    if len(parts) >= 3 and parts[1] in batch_ids:
+                        relevant_batch_ids.add(parts[1])
+
+        if not relevant_batch_ids:
+            return
+
         with self.obstacles_lock:
             old_count = len(self.obstacles)
             self.obstacles = [
                 obs for obs in self.obstacles
                 if not any(
                     obs.id.startswith(f"fx_{bid}_") or obs.id.startswith(f"sx_{bid}_")
-                    for bid in batch_ids
+                    for bid in relevant_batch_ids
                 )
             ]
             removed_obs = old_count - len(self.obstacles)
             self.obstacle_sources = {
                 k: v for k, v in self.obstacle_sources.items()
-                if not any(k.startswith(f"fx_{bid}_") or k.startswith(f"sx_{bid}_") for bid in batch_ids)
+                if not any(k.startswith(f"fx_{bid}_") or k.startswith(f"sx_{bid}_") for bid in relevant_batch_ids)
             }
 
         with self.batches_lock:
-            for bid in batch_ids:
+            for bid in relevant_batch_ids:
                 self.batches_fx.pop(bid, None)
                 self.batches_fx_status_type.pop(bid, None)
                 self.batches_sx.pop(bid, None)
@@ -697,9 +733,10 @@ class MapManager:
                 self.short_pattern_ids.discard(bid)
                 self.active_batch_ids.discard(bid)
                 self.known_ids_to_retry.discard(bid)
+                self._last_locked_baseline_request_s.pop(bid, None)
 
         self.node.get_logger().info(
-            f"🗑️  Removed {len(batch_ids)} batch(es) {reason}: {batch_ids} (obstacles_removed={removed_obs})"
+            f"🗑️  Removed {len(relevant_batch_ids)} batch(es) {reason}: {relevant_batch_ids} (obstacles_removed={removed_obs})"
         )
     
     def handle_obstacle_relative(self, msg: PoseStamped):
@@ -1855,12 +1892,21 @@ class MapManager:
         future = self.retry_client.call_async(stable_request)
         future.add_done_callback(self._handle_lock_baseline_response)
 
-    def _request_locked_baseline_for_sx(self, known_id: str):
-        """Request locked baseline for a single SX batch when it appears after initial lock."""
+    def _request_locked_baseline_for_sx(self, known_id: str) -> bool:
+        """Request locked baseline for a single SX batch when it appears after initial lock.
+
+        Returns True when a request is already pending or newly sent.
+        Returns False when skipped (cooldown/service unavailable/not SX/already locked).
+        """
         if not known_id.startswith('s'):
-            return
+            return False
         if known_id in self.locked_baseline_batch_ids or known_id in self.pending_baseline_lock_ids:
-            return
+            return True
+
+        now_s = time.monotonic()
+        last_req_s = float(self._last_locked_baseline_request_s.get(known_id, 0.0))
+        if now_s - last_req_s < max(self.baseline_request_cooldown_sec, 0.0):
+            return False
 
         client = None
         if self.retry_client and self.retry_client.service_is_ready():
@@ -1877,9 +1923,10 @@ class MapManager:
             self.node.get_logger().warn(
                 f"⚠️ Cannot request locked baseline for '{known_id}': batch service not ready"
             )
-            return
+            return False
 
         self.pending_baseline_lock_ids.add(known_id)
+        self._last_locked_baseline_request_s[known_id] = now_s
         self.node.get_logger().info(
             f"🔒 Requesting locked baseline for SX batch '{known_id}'"
         )
@@ -1892,6 +1939,7 @@ class MapManager:
         future.add_done_callback(
             lambda f, kid=known_id: self._handle_single_locked_sx_response(f, kid)
         )
+        return True
 
     def _handle_single_locked_sx_response(self, future, known_id: str):
         """Handle locked-baseline response for a single SX batch."""
@@ -1910,7 +1958,7 @@ class MapManager:
                     break
 
             if target_batch is None:
-                self.node.get_logger().info(
+                self.node.get_logger().debug(
                     f"⏳ Locked baseline not available yet for '{known_id}'"
                 )
                 return
@@ -2290,7 +2338,7 @@ class MapManager:
 
                     if batch_known_id not in self.locked_baseline_batch_ids:
                         self._request_locked_baseline_for_sx(batch_known_id)
-                        self.node.get_logger().info(
+                        self.node.get_logger().debug(
                             f"⏳ Deferring SX obstacles for '{batch_known_id}' until its baseline is locked"
                         )
                         continue
