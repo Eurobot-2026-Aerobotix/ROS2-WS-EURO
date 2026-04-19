@@ -1230,6 +1230,9 @@ def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=No
                     tirette_status = rpi_controller.read_pin_17()
                     if tirette_status == 0:
                         strategy.get_logger().warning("⚠️ mafamech tirette ya maaahdi !")
+                    while(tirette_status == 0):  
+                        time.sleep(0.05)
+                        tirette_status = rpi_controller.read_pin_17()
                     result = rpi_controller.wait_start()
                     stm32_controller.reset()
                     state.WAITING_TIRETTE=False
