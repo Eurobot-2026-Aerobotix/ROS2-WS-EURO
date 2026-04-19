@@ -600,6 +600,31 @@ class MapManager:
                 self.obstacle_sources[obs.id] = 'put_down'
                 created_ids.append(obs.id)
 
+            # Add safety zone obstacle (17cm x 17cm square) centered at putdown zone position
+            # Only add on first registration (existing_count == 0), not on appends
+            if existing_count == 0:
+                safety_zone_size_mm = 170.0  # 17cm x 17cm
+                putdown_center_x_mm = self.putdown_fx_positions_mm[known_id]['x']
+                putdown_center_y_mm = self.putdown_fx_positions_mm[known_id]['y']
+                
+                safety_obs = Obstacle()
+                safety_obs.id = f"fx_{known_id}_safety"
+                safety_obs.type = 'safety_zone'
+                safety_obs.color = 'wall'  # Use wall color for visualization
+                safety_obs.width_mm = safety_zone_size_mm
+                safety_obs.height_mm = safety_zone_size_mm
+                safety_obs.pose.x = putdown_center_x_mm
+                safety_obs.pose.y = putdown_center_y_mm
+                safety_obs.pose.theta = 0.0
+                safety_obs.detected_at = stamp
+                self.obstacles.append(safety_obs)
+                self.obstacle_sources[safety_obs.id] = 'put_down_safety'
+                created_ids.append(safety_obs.id)
+                
+                self.node.get_logger().info(
+                    f"🛡️ Added safety zone for {known_id}: 170mm x 170mm square at ({putdown_center_x_mm:.1f}, {putdown_center_y_mm:.1f})mm"
+                )
+
         with self.batches_lock:
             self.batches_fx[known_id] = batch
             self.batches_fx_status_type.pop(known_id, None)
