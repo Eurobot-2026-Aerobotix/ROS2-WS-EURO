@@ -1003,7 +1003,9 @@ def put_down(controller,pneumatic,strategy,front,params=None):
         return
     
     params = params if isinstance(params, dict) else {}
-    insert_offset_mm = float(params.get('putdown_insert_distance_mm', 0.0) or 0.0)
+    insert_offset_mm = float(
+        params.get('insert_distance_mm', params.get('putdown_insert_distance_mm', 0.0)) or 0.0
+    )
 
     color_pattern = state.color_pt_front if front else state.color_pt_back
     strategy.get_logger().info(f"color_pattern {color_pattern}")
