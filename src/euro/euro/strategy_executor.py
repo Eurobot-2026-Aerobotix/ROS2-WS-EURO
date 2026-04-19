@@ -205,7 +205,7 @@ def task_tracking_task(strategy, stm32, lidar=None):
 
         # Distance guard: do not cancel tracked task when robot is still far
         # from the current global goal (threshold in millimeters).
-        max_cancel_distance_mm = 500.0
+        max_cancel_distance_mm = 300.0
         latest_pose = getattr(strategy, 'latest_robot_pose', None)
         goal_x = getattr(strategy, 'global_pos_x', None)
         goal_y = getattr(strategy, 'global_pos_y', None)
@@ -222,7 +222,7 @@ def task_tracking_task(strategy, stm32, lidar=None):
                     goal_y_m /= 1000.0
 
                 goal_distance_mm = math.hypot(robot_x_m - goal_x_m, robot_y_m - goal_y_m) * 1000.0
-                if goal_distance_mm > max_cancel_distance_mm:
+                if goal_distance_mm < max_cancel_distance_mm:
                     strategy.get_logger().info(
                         f"🛡️ Task-tracking cancel ignored: distance to global goal is {goal_distance_mm:.1f}mm "
                         f"(>{max_cancel_distance_mm:.1f}mm)"

@@ -337,9 +337,9 @@ class StrategyManager(Node):
                 tracked_type = 'put_down'
                 tracked_target_id = str(dropoff_id or '').lower()
             else:
-                #remove tracked task if no longer relevant
-                if hasattr(self, 'task_scheduler') and self.task_scheduler is not None:
-                    self.task_scheduler.untrack_task()
+                # No pickup/dropoff context: clear tracked task and consume stale invalid flags.
+                self.task_scheduler.untrack_task()
+                self.task_scheduler.tracked_task_invalid = False
             if tracked_type is not None and tracked_target_id:
                 tracked_task = Task(
                     target_id=tracked_target_id,
@@ -352,8 +352,11 @@ class StrategyManager(Node):
                     f"🧭 task_scheduler.track_task -> type={tracked_type}, target_id={tracked_target_id or 'unknown'}"
                 )
             elif tracked_type is not None:
-                self.get_logger().warning(
-                    f"⚠️ Skipping task tracking update: no batch id resolved for last_task_command={self.last_task_command}"
+                # Keep this non-destructive: unresolved ID must not trigger stale cancellation.
+                self.task_scheduler.untrack_task()
+                self.task_scheduler.tracked_task_invalid = False
+                self.get_logger().info(
+                    f"ℹ️ Skipping task tracking update (tracking cleared): no batch id resolved for last_task_command={self.last_task_command}"
                 )
         
         if success and self.last_task_command =='pick_up' :
@@ -682,6 +685,12 @@ class StrategyManager(Node):
                     if last_command in ['pick_up', 'put_down'] and last_device in ['ESP_front', 'ESP_back']:
                         self.last_task_command = last_command
                         self.last_task_device = last_device
+                    else:
+                        self.last_task_command = None
+                        self.last_task_device = None
+                else:
+                    self.last_task_command = None
+                    self.last_task_device = None
 
                 explicit_tracking_type = ''
                 explicit_tracking_target_id = ''
@@ -1094,6 +1103,12 @@ def main(args=None):
                         # Store in strategy attributes
                         strategy.last_task_command = last_command
                         strategy.last_task_device = last_device
+                    else:
+                        strategy.last_task_command = None
+                        strategy.last_task_device = None
+                else:
+                    strategy.last_task_command = None
+                    strategy.last_task_device = None
                 
                 # Extract and store global goal
                 global_goal = task['global_goal']
