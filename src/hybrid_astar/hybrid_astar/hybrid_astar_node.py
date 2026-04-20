@@ -783,9 +783,10 @@ class HybridAStarNode(Node):
             )
 
             # can_rotate is enabled by default.
-            # If reverse-start fallback was required, report can_rotate=False.
-            used_reverse_fallback = bool(getattr(self.pathfinder, 'last_used_reverse_fallback', False))
-            if used_reverse_fallback:
+            # If start escape fallback was required, report can_rotate=False.
+            used_start_fallback = bool(getattr(self.pathfinder, 'last_used_start_fallback', False))
+            start_escape_mode = str(getattr(self.pathfinder, 'last_start_escape_mode', 'unknown'))
+            if used_start_fallback:
                 response.can_rotate = False
             
             if path:
@@ -1091,9 +1092,9 @@ class HybridAStarNode(Node):
 
                     smoothed = aligned
 
-                if used_reverse_fallback and len(smoothed) > 0:
+                if used_start_fallback and len(smoothed) > 0:
                     # Keep the robot's requested start pose as waypoint[0] in the
-                    # returned path when reverse fallback was required.
+                    # returned path when start escape fallback was required.
                     first_x, first_y, first_theta = smoothed[0]
                     same_start = (
                         abs(first_x - start_x) < 1e-6
@@ -1103,7 +1104,7 @@ class HybridAStarNode(Node):
                     if not same_start:
                         smoothed = [(start_x, start_y, start_theta)] + smoothed
                         self.get_logger().info(
-                            "↪ Reverse fallback used: prepended original start pose as first waypoint"
+                            f"↪ Start escape fallback ({start_escape_mode}) used: prepended original start pose as first waypoint"
                         )
 
                 # Calculate path length

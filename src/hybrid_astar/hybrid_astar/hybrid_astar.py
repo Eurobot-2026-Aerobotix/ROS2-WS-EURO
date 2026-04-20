@@ -65,7 +65,10 @@ class HybridAStarPathfinder:
         self.footprints = {}
         # Last planning-call diagnostics
         self.last_start_in_collision = False
+        self.last_used_start_fallback = False
         self.last_used_reverse_fallback = False
+        self.last_start_escape_mode = 'none'
+        self.last_start_escape_distance_mm = 0.0
         # Keep internal planner logs quiet by default.
         # Main ROS node already logs request/response summaries and waypoints.
         self.verbose = False
@@ -143,32 +146,42 @@ class HybridAStarPathfinder:
 
         return False
 
-    def _find_reverse_offset_free_pose(
+    def _find_directional_offset_free_pose(
         self,
         start_pose: Tuple[float, float, float],
         grid_resolution: float,
+        direction: str,
         clearance_mm: float = 100.0,
         step_mm: float = 25.0,
         max_distance_mm: float = 2000.0,
-    ) -> Optional[Tuple[float, float, float]]:
+    ) -> Optional[Tuple[Tuple[float, float, float], float]]:
         """
-        Move strictly in reverse direction (+180°) until a start pose is found that:
+        Move strictly in the requested direction until a start pose is found that:
         1) is collision-free with a minimum obstacle clearance, and
         2) has at least one forward motion primitive.
+
+        Returns:
+            ((x, y, theta), travel_distance_mm) or None
         """
         sx, sy, stheta = start_pose
 
-        reverse_dx = -math.cos(stheta)
-        reverse_dy = -math.sin(stheta)
+        if direction == 'reverse':
+            move_dx = -math.cos(stheta)
+            move_dy = -math.sin(stheta)
+        elif direction == 'forward':
+            move_dx = math.cos(stheta)
+            move_dy = math.sin(stheta)
+        else:
+            raise ValueError(f"Unsupported direction '{direction}' (expected 'reverse' or 'forward')")
 
         self._vprint(
-            f"🔄 Reverse escape from ({sx:.1f}, {sy:.1f}) with min clearance {clearance_mm:.1f}mm..."
+            f"🔄 {direction.capitalize()} escape from ({sx:.1f}, {sy:.1f}) with min clearance {clearance_mm:.1f}mm..."
         )
 
         dist_mm = step_mm
         while dist_mm <= max_distance_mm + 1e-6:
-            x = sx + dist_mm * reverse_dx
-            y = sy + dist_mm * reverse_dy
+            x = sx + dist_mm * move_dx
+            y = sy + dist_mm * move_dy
 
             gx = int(x / grid_resolution)
             gy = int(y / grid_resolution)
@@ -189,16 +202,58 @@ class HybridAStarPathfinder:
 
             if has_forward_move:
                 self._vprint(
-                    f"✅ Reverse escape found: ({x:.1f}, {y:.1f}), dist={dist_mm:.1f}mm, clearance={clearance_mm:.1f}mm"
+                    f"✅ {direction.capitalize()} escape found: ({x:.1f}, {y:.1f}), dist={dist_mm:.1f}mm, clearance={clearance_mm:.1f}mm"
                 )
-                return (x, y, stheta)
+                return ((x, y, stheta), dist_mm)
 
             dist_mm += step_mm
 
         self._vprint(
-            f"⚠ Reverse escape failed up to {max_distance_mm:.1f}mm with {clearance_mm:.1f}mm clearance"
+            f"⚠ {direction.capitalize()} escape failed up to {max_distance_mm:.1f}mm with {clearance_mm:.1f}mm clearance"
         )
         return None
+
+    def _find_best_start_escape_pose(
+        self,
+        start_pose: Tuple[float, float, float],
+        grid_resolution: float,
+        clearance_mm: float = 100.0,
+        step_mm: float = 25.0,
+        max_distance_mm: float = 2000.0,
+    ) -> Optional[Tuple[Tuple[float, float, float], str, float]]:
+        """
+        Try both reverse and forward escape for a colliding start and pick the easiest one.
+
+        Selection rule: choose the valid candidate with minimum offset distance.
+        Tie-breaker: prefer forward.
+
+        Returns:
+            (pose, direction, distance_mm) or None
+        """
+        candidates: List[Tuple[float, int, str, Tuple[float, float, float]]] = []
+
+        for direction in ('reverse', 'forward'):
+            result = self._find_directional_offset_free_pose(
+                start_pose=start_pose,
+                grid_resolution=grid_resolution,
+                direction=direction,
+                clearance_mm=clearance_mm,
+                step_mm=step_mm,
+                max_distance_mm=max_distance_mm,
+            )
+            if result is None:
+                continue
+
+            pose, distance_mm = result
+            preference = 0 if direction == 'forward' else 1
+            candidates.append((distance_mm, preference, direction, pose))
+
+        if not candidates:
+            return None
+
+        candidates.sort(key=lambda item: (item[0], item[1]))
+        best_distance_mm, _, best_direction, best_pose = candidates[0]
+        return (best_pose, best_direction, best_distance_mm)
     
     def _precompute_footprints(self):
         """
@@ -654,7 +709,10 @@ class HybridAStarPathfinder:
         """
         # Reset per-call diagnostics
         self.last_start_in_collision = False
+        self.last_used_start_fallback = False
         self.last_used_reverse_fallback = False
+        self.last_start_escape_mode = 'none'
+        self.last_start_escape_distance_mm = 0.0
 
         start_x, start_y, start_theta = start_pose
         goal_x, goal_y, goal_theta = goal_pose
@@ -680,16 +738,25 @@ class HybridAStarPathfinder:
             for idx, info in enumerate(self.get_collision_debug_info(start_x, start_y, start_theta, grid_resolution), start=1):
                 self._vprint(f"   Collision[{idx}]: {info}")
 
-            relocated = self._find_reverse_offset_free_pose(start_pose, grid_resolution, clearance_mm=100.0)
-            if relocated is None:
-                self._vprint("✗ Could not find reverse escape pose with 100mm clearance")
+            best_escape = self._find_best_start_escape_pose(
+                start_pose,
+                grid_resolution,
+                clearance_mm=100.0,
+            )
+            if best_escape is None:
+                self._vprint("✗ Could not find forward/reverse escape pose with 100mm clearance")
                 return None
 
+            relocated, escape_mode, escape_distance_mm = best_escape
             effective_start_pose = relocated
             start_x, start_y, start_theta = relocated
-            self.last_used_reverse_fallback = True
+            self.last_used_start_fallback = True
+            self.last_used_reverse_fallback = (escape_mode == 'reverse')
+            self.last_start_escape_mode = escape_mode
+            self.last_start_escape_distance_mm = escape_distance_mm
             self._vprint(
-                f"↪ Relocated start to reverse escape pose: ({start_x:.1f}, {start_y:.1f}, {math.degrees(start_theta):.1f}°)"
+                f"↪ Relocated start via {escape_mode} escape ({escape_distance_mm:.1f}mm): "
+                f"({start_x:.1f}, {start_y:.1f}, {math.degrees(start_theta):.1f}°)"
             )
         
         goal_collision = self.is_collision(goal_x, goal_y, goal_theta, grid_resolution)
