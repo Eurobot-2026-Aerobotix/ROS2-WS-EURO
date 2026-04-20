@@ -403,7 +403,10 @@ class HybridAStarNode(Node):
     path: list,
     grid_resolution: float,
     max_added_distance_mm: float = 0.0,  # your threshold
-    sample_step_mm: float = 10.0  # Reduced from 50mm for better collision detection
+    sample_step_mm: float = 10.0,  # Reduced from 50mm for better collision detection
+    enable_direct_simplification: bool = False,
+    use_center_point_collision: bool = False,
+    enforce_full_footprint_on_segments: bool = True,
 ) -> list:
         """
         Simplify a path by replacing 4-point zig-zag segments with their line
@@ -419,6 +422,14 @@ class HybridAStarNode(Node):
         if len(path) < 3:
             return path
 
+        def center_point_collision(x: float, y: float) -> bool:
+            """Fast collision check using only robot center cell occupancy."""
+            gx = int(x / grid_resolution)
+            gy = int(y / grid_resolution)
+            if gx < 0 or gx >= self.pathfinder.grid_width or gy < 0 or gy >= self.pathfinder.grid_height:
+                return True
+            return bool(self.pathfinder.grid[gy, gx])
+
         def collision_check_segment(pose1, pose2):
             """
             Check collision along a straight segment by sampling points with interpolated orientation
@@ -433,12 +444,33 @@ class HybridAStarNode(Node):
                 x = x1 + t * (x2 - x1)
                 y = y1 + t * (y2 - y1)
                 theta = theta1 + t * (theta2 - theta1)  # Interpolate orientation
-                if self.pathfinder.is_collision(x, y, theta, grid_resolution):
+                if use_center_point_collision:
+                    if center_point_collision(x, y):
+                        return True
+                elif self.pathfinder.is_collision(x, y, theta, grid_resolution):
                     return True
             return False
 
         def first_collision_on_segment(pose1, pose2):
             """Return first collision sample (x, y, theta, i, steps) or None."""
+            x1, y1, theta1 = pose1
+            x2, y2, theta2 = pose2
+            dist = math.hypot(x2 - x1, y2 - y1)
+            steps = max(10, int(dist / sample_step_mm))
+            for i in range(steps + 1):
+                t = i / steps
+                x = x1 + t * (x2 - x1)
+                y = y1 + t * (y2 - y1)
+                theta = theta1 + t * (theta2 - theta1)
+                if use_center_point_collision:
+                    if center_point_collision(x, y):
+                        return (x, y, theta, i, steps)
+                elif self.pathfinder.is_collision(x, y, theta, grid_resolution):
+                    return (x, y, theta, i, steps)
+            return None
+
+        def first_collision_on_segment_full(pose1, pose2):
+            """Always use full-footprint collision check, regardless of mode."""
             x1, y1, theta1 = pose1
             x2, y2, theta2 = pose2
             dist = math.hypot(x2 - x1, y2 - y1)
@@ -469,6 +501,10 @@ class HybridAStarNode(Node):
 
         def rotation_safe_at_point(x, y, theta_from, theta_to):
             """Check if in-place rotation at one point is collision-free."""
+            if use_center_point_collision:
+                # With center-point mode, rotation does not change footprint occupancy.
+                return not center_point_collision(x, y)
+
             angle_diff = theta_to - theta_from
             while angle_diff > math.pi:
                 angle_diff -= 2 * math.pi
@@ -485,6 +521,11 @@ class HybridAStarNode(Node):
 
         def first_collision_on_rotation(x, y, theta_from, theta_to):
             """Return first colliding angle (theta, i, checks) or None."""
+            if use_center_point_collision:
+                if center_point_collision(x, y):
+                    return (theta_from, 0, 0)
+                return None
+
             angle_diff = theta_to - theta_from
             while angle_diff > math.pi:
                 angle_diff -= 2 * math.pi
@@ -503,6 +544,26 @@ class HybridAStarNode(Node):
         total_removed_intersection = 0
         total_removed_direct = 0
         rounds_used = 0
+        rejection_logs_left = 30
+
+        def _log_rejection(prefix: str, details: str):
+            nonlocal rejection_logs_left
+            if rejection_logs_left <= 0:
+                return
+            self.get_logger().info(f"🚫 simplify reject [{prefix}]: {details}")
+            rejection_logs_left -= 1
+
+        def _collision_debug_details(x: float, y: float, theta: float) -> str:
+            """Return compact collision debug info for a pose."""
+            try:
+                hits = self.pathfinder.get_collision_debug_info(
+                    x, y, theta, grid_resolution, max_items=2
+                )
+                if not hits:
+                    return ""
+                return f" | debug={'; '.join(str(h) for h in hits)}"
+            except Exception:
+                return ""
 
         for round_idx in range(max_rounds):
             rounds_used = round_idx + 1
@@ -519,6 +580,10 @@ class HybridAStarNode(Node):
                 # Compute intersection of (p1,p2) with (p3,p4)
                 den = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
                 if abs(den) < 1e-6:
+                    _log_rejection(
+                        f"I r{round_idx+1} i{index}",
+                        "segments nearly parallel (no stable intersection)"
+                    )
                     index += 1
                     continue
 
@@ -576,6 +641,20 @@ class HybridAStarNode(Node):
 
                 translation_collision = (first_seg_collision is not None) or (chosen_second_seg_collision is not None)
 
+                # Optional safety gate: even in center-point mode, enforce
+                # full-footprint line checks for accepted simplifications.
+                first_seg_full_collision = None
+                second_seg_full_collision = None
+                if use_center_point_collision and enforce_full_footprint_on_segments:
+                    first_seg_full_collision = first_collision_on_segment_full(
+                        (x1, y1, first_theta),
+                        (px, py, first_theta),
+                    )
+                    second_seg_full_collision = first_collision_on_segment_full(
+                        (px, py, chosen_second_theta),
+                        (x4, y4, chosen_second_theta),
+                    )
+
                 old_dist = segment_distance((x1, y1), (x2, y2)) + segment_distance((x2, y2), (x3, y3)) + segment_distance((x3, y3), (x4, y4))
                 new_dist = segment_distance((x1, y1), (px, py)) + segment_distance((px, py), (x4, y4))
                 added_distance = new_dist - old_dist
@@ -584,6 +663,8 @@ class HybridAStarNode(Node):
 
                 if (
                     (not translation_collision)
+                    and (first_seg_full_collision is None)
+                    and (second_seg_full_collision is None)
                     and start_rotation_ok
                     and chosen_mid_rotation_ok
                     and chosen_end_rotation_ok
@@ -594,53 +675,226 @@ class HybridAStarNode(Node):
                     removed += 1
                     continue
 
-                index += 1
-
-            # Second pass: simplify 3-point bends (A->B->C => A->C)
-            triple_removed = 0
-            index = 0
-            while index <= len(optimized) - 3:
-                x1, y1, t1 = optimized[index]
-                x2, y2, _ = optimized[index + 1]
-                x3, y3, t3 = optimized[index + 2]
-
-                direct_theta_base = math.atan2(y3 - y1, x3 - x1)
-                chosen_direct_theta = None
-                direct_seg_collision = None
-                end_rotation_ok = False
-
-                for direct_theta in heading_candidates(direct_theta_base):
-                    candidate_seg_collision = first_collision_on_segment(
-                        (x1, y1, direct_theta),
-                        (x3, y3, direct_theta)
+                # Log only the primary (first) rejection reason
+                if first_seg_collision is not None:
+                    ctheta, ci, csteps = first_seg_collision[2], first_seg_collision[3], first_seg_collision[4]
+                    extra = _collision_debug_details(first_seg_collision[0], first_seg_collision[1], ctheta)
+                    _log_rejection(
+                        f"I r{round_idx+1} i{index}",
+                        (
+                            f"seg1 collision at ({first_seg_collision[0]:.1f},{first_seg_collision[1]:.1f}) "
+                            f"sample={ci}/{csteps} theta={math.degrees(ctheta):.1f}° "
+                            f"seg=({x1:.1f},{y1:.1f})->({px:.1f},{py:.1f})"
+                            f"{extra}"
+                        )
                     )
-                    candidate_end_rotation_ok = rotation_safe_at_point(x3, y3, direct_theta, t3)
-
-                    if candidate_seg_collision is None and candidate_end_rotation_ok:
-                        chosen_direct_theta = direct_theta
-                        direct_seg_collision = candidate_seg_collision
-                        end_rotation_ok = candidate_end_rotation_ok
-                        break
-
-                    if chosen_direct_theta is None:
-                        chosen_direct_theta = direct_theta
-                        direct_seg_collision = candidate_seg_collision
-                        end_rotation_ok = candidate_end_rotation_ok
-
-                translation_collision = direct_seg_collision is not None
-
-                old_dist = segment_distance((x1, y1), (x2, y2)) + segment_distance((x2, y2), (x3, y3))
-                new_dist = segment_distance((x1, y1), (x3, y3))
-                added_distance = new_dist - old_dist
-
-                distance_ok = added_distance <= max_added_distance_mm
-
-                if (not translation_collision) and end_rotation_ok and distance_ok:
-                    del optimized[index + 1]
-                    triple_removed += 1
-                    continue
+                elif first_seg_full_collision is not None:
+                    ctheta, ci, csteps = first_seg_full_collision[2], first_seg_full_collision[3], first_seg_full_collision[4]
+                    extra = _collision_debug_details(first_seg_full_collision[0], first_seg_full_collision[1], ctheta)
+                    _log_rejection(
+                        f"I r{round_idx+1} i{index}",
+                        (
+                            f"seg1 full-footprint collision at ({first_seg_full_collision[0]:.1f},{first_seg_full_collision[1]:.1f}) "
+                            f"sample={ci}/{csteps} theta={math.degrees(ctheta):.1f}° "
+                            f"seg=({x1:.1f},{y1:.1f})->({px:.1f},{py:.1f})"
+                            f"{extra}"
+                        )
+                    )
+                elif not start_rotation_ok:
+                    rot_hit = first_collision_on_rotation(x1, y1, t1, first_theta)
+                    if rot_hit is not None:
+                        rtheta, ri, rchecks = rot_hit
+                        extra = _collision_debug_details(x1, y1, rtheta)
+                        details = (
+                            f"start rotation blocked at ({x1:.1f},{y1:.1f}) "
+                            f"theta={math.degrees(rtheta):.1f}° sample={ri}/{rchecks} "
+                            f"from={math.degrees(t1):.1f}° to={math.degrees(first_theta):.1f}°"
+                            f"{extra}"
+                        )
+                    else:
+                        details = "start rotation blocked"
+                    _log_rejection(
+                        f"I r{round_idx+1} i{index}",
+                        details
+                    )
+                elif chosen_second_seg_collision is not None:
+                    ctheta, ci, csteps = chosen_second_seg_collision[2], chosen_second_seg_collision[3], chosen_second_seg_collision[4]
+                    extra = _collision_debug_details(chosen_second_seg_collision[0], chosen_second_seg_collision[1], ctheta)
+                    _log_rejection(
+                        f"I r{round_idx+1} i{index}",
+                        (
+                            f"seg2 collision at ({chosen_second_seg_collision[0]:.1f},{chosen_second_seg_collision[1]:.1f}) "
+                            f"sample={ci}/{csteps} theta={math.degrees(ctheta):.1f}° "
+                            f"seg=({px:.1f},{py:.1f})->({x4:.1f},{y4:.1f})"
+                            f"{extra}"
+                        )
+                    )
+                elif second_seg_full_collision is not None:
+                    ctheta, ci, csteps = second_seg_full_collision[2], second_seg_full_collision[3], second_seg_full_collision[4]
+                    extra = _collision_debug_details(second_seg_full_collision[0], second_seg_full_collision[1], ctheta)
+                    _log_rejection(
+                        f"I r{round_idx+1} i{index}",
+                        (
+                            f"seg2 full-footprint collision at ({second_seg_full_collision[0]:.1f},{second_seg_full_collision[1]:.1f}) "
+                            f"sample={ci}/{csteps} theta={math.degrees(ctheta):.1f}° "
+                            f"seg=({px:.1f},{py:.1f})->({x4:.1f},{y4:.1f})"
+                            f"{extra}"
+                        )
+                    )
+                elif not chosen_mid_rotation_ok:
+                    rot_hit = first_collision_on_rotation(px, py, first_theta, chosen_second_theta)
+                    if rot_hit is not None:
+                        rtheta, ri, rchecks = rot_hit
+                        extra = _collision_debug_details(px, py, rtheta)
+                        details = (
+                            f"intersection rotation blocked at ({px:.1f},{py:.1f}) "
+                            f"theta={math.degrees(rtheta):.1f}° sample={ri}/{rchecks} "
+                            f"from={math.degrees(first_theta):.1f}° to={math.degrees(chosen_second_theta):.1f}°"
+                            f"{extra}"
+                        )
+                    else:
+                        details = "intersection rotation blocked"
+                    _log_rejection(
+                        f"I r{round_idx+1} i{index}",
+                        details
+                    )
+                elif not chosen_end_rotation_ok:
+                    rot_hit = first_collision_on_rotation(x4, y4, chosen_second_theta, t4)
+                    if rot_hit is not None:
+                        rtheta, ri, rchecks = rot_hit
+                        extra = _collision_debug_details(x4, y4, rtheta)
+                        details = (
+                            f"end rotation blocked at ({x4:.1f},{y4:.1f}) "
+                            f"theta={math.degrees(rtheta):.1f}° sample={ri}/{rchecks} "
+                            f"from={math.degrees(chosen_second_theta):.1f}° to={math.degrees(t4):.1f}°"
+                            f"{extra}"
+                        )
+                    else:
+                        details = "end rotation blocked"
+                    _log_rejection(
+                        f"I r{round_idx+1} i{index}",
+                        details
+                    )
+                elif not distance_ok:
+                    _log_rejection(
+                        f"I r{round_idx+1} i{index}",
+                        (
+                            f"added_distance={added_distance:.1f}mm > limit={max_added_distance_mm:.1f}mm "
+                            f"old={old_dist:.1f}mm new={new_dist:.1f}mm"
+                        )
+                    )
 
                 index += 1
+
+            # Second pass (optional): simplify 3-point bends (A->B->C => A->C)
+            triple_removed = 0
+            if enable_direct_simplification:
+                index = 0
+                while index <= len(optimized) - 3:
+                    x1, y1, t1 = optimized[index]
+                    x2, y2, _ = optimized[index + 1]
+                    x3, y3, t3 = optimized[index + 2]
+
+                    direct_theta_base = math.atan2(y3 - y1, x3 - x1)
+                    chosen_direct_theta = None
+                    direct_seg_collision = None
+                    end_rotation_ok = False
+
+                    for direct_theta in heading_candidates(direct_theta_base):
+                        candidate_seg_collision = first_collision_on_segment(
+                            (x1, y1, direct_theta),
+                            (x3, y3, direct_theta)
+                        )
+                        candidate_end_rotation_ok = rotation_safe_at_point(x3, y3, direct_theta, t3)
+
+                        if candidate_seg_collision is None and candidate_end_rotation_ok:
+                            chosen_direct_theta = direct_theta
+                            direct_seg_collision = candidate_seg_collision
+                            end_rotation_ok = candidate_end_rotation_ok
+                            break
+
+                        if chosen_direct_theta is None:
+                            chosen_direct_theta = direct_theta
+                            direct_seg_collision = candidate_seg_collision
+                            end_rotation_ok = candidate_end_rotation_ok
+
+                    translation_collision = direct_seg_collision is not None
+
+                    direct_seg_full_collision = None
+                    if use_center_point_collision and enforce_full_footprint_on_segments:
+                        direct_seg_full_collision = first_collision_on_segment_full(
+                            (x1, y1, chosen_direct_theta),
+                            (x3, y3, chosen_direct_theta),
+                        )
+
+                    old_dist = segment_distance((x1, y1), (x2, y2)) + segment_distance((x2, y2), (x3, y3))
+                    new_dist = segment_distance((x1, y1), (x3, y3))
+                    added_distance = new_dist - old_dist
+
+                    distance_ok = added_distance <= max_added_distance_mm
+
+                    if (
+                        (not translation_collision)
+                        and (direct_seg_full_collision is None)
+                        and end_rotation_ok
+                        and distance_ok
+                    ):
+                        del optimized[index + 1]
+                        triple_removed += 1
+                        continue
+
+                    # Log only the primary (first) rejection reason
+                    if translation_collision and direct_seg_collision is not None:
+                        ctheta, ci, csteps = direct_seg_collision[2], direct_seg_collision[3], direct_seg_collision[4]
+                        extra = _collision_debug_details(direct_seg_collision[0], direct_seg_collision[1], ctheta)
+                        _log_rejection(
+                            f"D r{round_idx+1} i{index}",
+                            (
+                                f"direct segment collision at ({direct_seg_collision[0]:.1f},{direct_seg_collision[1]:.1f}) "
+                                f"sample={ci}/{csteps} theta={math.degrees(ctheta):.1f}° "
+                                f"seg=({x1:.1f},{y1:.1f})->({x3:.1f},{y3:.1f})"
+                                f"{extra}"
+                            )
+                        )
+                    elif direct_seg_full_collision is not None:
+                        ctheta, ci, csteps = direct_seg_full_collision[2], direct_seg_full_collision[3], direct_seg_full_collision[4]
+                        extra = _collision_debug_details(direct_seg_full_collision[0], direct_seg_full_collision[1], ctheta)
+                        _log_rejection(
+                            f"D r{round_idx+1} i{index}",
+                            (
+                                f"direct full-footprint collision at ({direct_seg_full_collision[0]:.1f},{direct_seg_full_collision[1]:.1f}) "
+                                f"sample={ci}/{csteps} theta={math.degrees(ctheta):.1f}° "
+                                f"seg=({x1:.1f},{y1:.1f})->({x3:.1f},{y3:.1f})"
+                                f"{extra}"
+                            )
+                        )
+                    elif not end_rotation_ok:
+                        rot_hit = first_collision_on_rotation(x3, y3, chosen_direct_theta, t3)
+                        if rot_hit is not None:
+                            rtheta, ri, rchecks = rot_hit
+                            extra = _collision_debug_details(x3, y3, rtheta)
+                            details = (
+                                f"end rotation blocked at ({x3:.1f},{y3:.1f}) "
+                                f"theta={math.degrees(rtheta):.1f}° sample={ri}/{rchecks} "
+                                f"from={math.degrees(chosen_direct_theta):.1f}° to={math.degrees(t3):.1f}°"
+                                f"{extra}"
+                            )
+                        else:
+                            details = "end rotation blocked"
+                        _log_rejection(
+                            f"D r{round_idx+1} i{index}",
+                            details
+                        )
+                    elif not distance_ok:
+                        _log_rejection(
+                            f"D r{round_idx+1} i{index}",
+                            (
+                                f"added_distance={added_distance:.1f}mm > limit={max_added_distance_mm:.1f}mm "
+                                f"old={old_dist:.1f}mm new={new_dist:.1f}mm"
+                            )
+                        )
+
+                    index += 1
 
             total_removed_intersection += removed
             total_removed_direct += triple_removed
@@ -1001,7 +1255,10 @@ class HybridAStarNode(Node):
                 smoothed = self.optimize_path_with_intersections(
                     smoothed, 
                     grid_resolution=grid_resolution,
-                    max_added_distance_mm=1000.0  # Allow up to 1000mm extra distance for straighter paths
+                    max_added_distance_mm=1000.0,  # Allow up to 1000mm extra distance for straighter paths
+                    enable_direct_simplification=False,
+                    use_center_point_collision=True,
+                    enforce_full_footprint_on_segments=True,
                 )
 
                 # Post-optimization cleanup: remove waypoints that can be skipped
