@@ -69,6 +69,8 @@ class HybridAStarPathfinder:
         self.last_used_reverse_fallback = False
         self.last_start_escape_mode = 'none'
         self.last_start_escape_distance_mm = 0.0
+        self.last_used_bridge_fallback = False
+        self.last_bridge_point = None
         # Keep internal planner logs quiet by default.
         # Main ROS node already logs request/response summaries and waypoints.
         self.verbose = False
@@ -254,6 +256,321 @@ class HybridAStarPathfinder:
         candidates.sort(key=lambda item: (item[0], item[1]))
         best_distance_mm, _, best_direction, best_pose = candidates[0]
         return (best_pose, best_direction, best_distance_mm)
+
+    def _find_radial_escape_pose(
+        self,
+        start_pose: Tuple[float, float, float],
+        grid_resolution: float,
+        clearance_mm: float = 100.0,
+        step_mm: float = 50.0,
+        max_distance_mm: float = 2200.0,
+        preferred_min_y_mm: Optional[float] = 1500.0,
+    ) -> Optional[Tuple[Tuple[float, float, float], float, str]]:
+        """
+        Omnidirectional fallback escape for colliding starts.
+
+        Searches concentric rings around the original start and returns the first
+        collision-free pose that can generate at least one forward primitive.
+        Preference is given to candidates in y >= preferred_min_y_mm when provided.
+
+        Returns:
+            (pose, distance_mm, mode) where mode in {'radial_top', 'radial_any'}
+        """
+        sx, sy, stheta = start_pose
+
+        angle_count = 24
+        preferred_candidates: List[Tuple[float, Tuple[float, float, float]]] = []
+        fallback_candidates: List[Tuple[float, Tuple[float, float, float]]] = []
+
+        dist_mm = step_mm
+        while dist_mm <= max_distance_mm + 1e-6:
+            for i in range(angle_count):
+                a = (2.0 * math.pi * i) / angle_count
+                x = sx + dist_mm * math.cos(a)
+                y = sy + dist_mm * math.sin(a)
+
+                gx = int(x / grid_resolution)
+                gy = int(y / grid_resolution)
+                if gx < 0 or gx >= self.grid_width or gy < 0 or gy >= self.grid_height:
+                    continue
+
+                if self._is_collision_with_margin(x, y, stheta, grid_resolution, clearance_mm):
+                    continue
+
+                has_forward_move = False
+                for _ in self.get_motion_primitives(x, y, stheta, grid_resolution, is_forward=True):
+                    has_forward_move = True
+                    break
+
+                if not has_forward_move:
+                    continue
+
+                pose = (x, y, stheta)
+                if preferred_min_y_mm is not None and y >= preferred_min_y_mm:
+                    preferred_candidates.append((dist_mm, pose))
+                else:
+                    fallback_candidates.append((dist_mm, pose))
+
+            if preferred_candidates:
+                preferred_candidates.sort(key=lambda item: item[0])
+                best_dist, best_pose = preferred_candidates[0]
+                return (best_pose, best_dist, 'radial_top')
+
+            if fallback_candidates:
+                fallback_candidates.sort(key=lambda item: item[0])
+                best_dist, best_pose = fallback_candidates[0]
+                return (best_pose, best_dist, 'radial_any')
+
+            dist_mm += step_mm
+
+        return None
+
+    def _path_length_mm(self, path: List[Tuple[float, float, float]]) -> float:
+        if len(path) < 2:
+            return 0.0
+        total = 0.0
+        for i in range(len(path) - 1):
+            x1, y1, _ = path[i]
+            x2, y2, _ = path[i + 1]
+            total += math.hypot(x2 - x1, y2 - y1)
+        return total
+
+    def _generate_bridge_candidates(
+        self,
+        start_pose: Tuple[float, float, float],
+        goal_pose: Tuple[float, float, float],
+        grid_resolution: float,
+        min_region_y_mm: float = 1500.0,
+        stride_mm: float = 100.0,
+        max_candidates: int = 60,
+    ) -> List[Tuple[float, float, float]]:
+        """Generate collision-free intermediate points in region y >= min_region_y_mm."""
+        sx, sy, _ = start_pose
+        gx, gy, _ = goal_pose
+
+        map_width_mm = self.grid_width * grid_resolution
+        map_height_mm = self.grid_height * grid_resolution
+
+        x_min = grid_resolution
+        x_max = max(grid_resolution, map_width_mm - grid_resolution)
+        y_min = max(min_region_y_mm, grid_resolution)
+        y_max = max(grid_resolution, map_height_mm - grid_resolution)
+
+        if y_min > y_max:
+            return []
+
+        step = max(grid_resolution, stride_mm)
+
+        scored: List[Tuple[float, Tuple[float, float, float]]] = []
+
+        y = y_min
+        while y <= y_max + 1e-6:
+            x = x_min
+            while x <= x_max + 1e-6:
+                bridge_theta = math.atan2(gy - y, gx - x)
+
+                # Keep candidates clearly outside occupied areas.
+                if not self._is_collision_with_margin(x, y, bridge_theta, grid_resolution, margin_mm=50.0):
+                    score = math.hypot(x - sx, y - sy) + math.hypot(gx - x, gy - y)
+                    scored.append((score, (x, y, bridge_theta)))
+
+                x += step
+            y += step
+
+        scored.sort(key=lambda item: item[0])
+        return [pose for _, pose in scored[:max_candidates]]
+
+    def _find_path_core(
+        self,
+        start_pose: Tuple[float, float, float],
+        goal_pose: Tuple[float, float, float],
+        grid_resolution: float,
+        max_iterations: int,
+        allow_goal_collision: bool,
+    ) -> Optional[List[Tuple[float, float, float]]]:
+        """Core Hybrid A* search (assumes caller already handled start/goal validity policy)."""
+        start_x, start_y, _ = start_pose
+        goal_x, goal_y, goal_theta = goal_pose
+
+        # Priority queue: (f_score, counter, pose)
+        counter = 0
+        open_set = [(0, counter, start_pose)]
+        counter += 1
+
+        # Tracking
+        came_from = {}
+        g_score = {self.discretize_pose(*start_pose, grid_resolution): 0}
+        closed_set = set()
+
+        # Goal tolerance (relaxed for speed)
+        goal_tolerance = 50.0  # mm - increased for faster convergence
+
+        iterations = 0
+        while open_set and iterations < max_iterations:
+            iterations += 1
+
+            _, _, current = heapq.heappop(open_set)
+            current_x, current_y, current_theta = current
+            current_discrete = self.discretize_pose(current_x, current_y, current_theta, grid_resolution)
+
+            # Check if reached goal (position only, ignoring angle)
+            dist_to_goal = math.sqrt((current_x - goal_x)**2 + (current_y - goal_y)**2)
+
+            if dist_to_goal < goal_tolerance:
+                path = self._reconstruct_path(came_from, current)
+
+                # ALWAYS ensure final waypoint is at exact goal position
+                if len(path) > 0:
+                    last_x, last_y, last_theta = path[-1]
+                    final_dist = math.sqrt((last_x - goal_x)**2 + (last_y - goal_y)**2)
+
+                    # Always replace last waypoint with exact goal (even if < 5mm away)
+                    if final_dist > 0.1:  # Only if not already exactly at goal
+                        # Check if goal position is collision-free
+                        if not self.is_collision(goal_x, goal_y, goal_theta, grid_resolution):
+                            # Check if line from last waypoint to goal is collision-free
+                            if self._is_line_collision_free((last_x, last_y, last_theta),
+                                                           (goal_x, goal_y, goal_theta),
+                                                           grid_resolution):
+                                # Replace last waypoint with exact goal
+                                path[-1] = (goal_x, goal_y, goal_theta)
+                            else:
+                                # Path blocked - try adding as separate waypoint
+                                if len(path) > 1:
+                                    path[-1] = (goal_x, goal_y, goal_theta)
+                        elif allow_goal_collision:
+                            # Keep exact goal for overlap-allowed mode (batch pickup).
+                            path[-1] = (goal_x, goal_y, goal_theta)
+
+                return path
+
+            if current_discrete in closed_set:
+                continue
+            closed_set.add(current_discrete)
+
+            # Determine if robot should move forward or backward based on orientation to goal
+            dx_to_goal = goal_x - current_x
+            dy_to_goal = goal_y - current_y
+            angle_to_goal = math.atan2(dy_to_goal, dx_to_goal)
+
+            # Calculate angle difference (how much robot is facing away from goal)
+            angle_diff = angle_to_goal - current_theta
+            while angle_diff > math.pi:
+                angle_diff -= 2 * math.pi
+            while angle_diff < -math.pi:
+                angle_diff += 2 * math.pi
+
+            # If robot is facing significantly away from goal (> 90°), allow backward movement
+            allow_backward = abs(angle_diff) > math.radians(90)
+
+            # Expand both forward and (optionally) backward
+            directions = [True]
+            if allow_backward:
+                directions.append(False)
+
+            generated_neighbor = False
+
+            for is_forward in directions:
+                for new_x, new_y, new_theta, move_cost in self.get_motion_primitives(
+                    current_x, current_y, current_theta, grid_resolution, is_forward
+                ):
+                    new_pose = (new_x, new_y, new_theta)
+                    new_discrete = self.discretize_pose(new_x, new_y, new_theta, grid_resolution)
+
+                    if new_discrete in closed_set:
+                        continue
+
+                    tentative_g = g_score[current_discrete] + move_cost
+
+                    if new_discrete not in g_score or tentative_g < g_score[new_discrete]:
+                        came_from[new_pose] = current
+                        g_score[new_discrete] = tentative_g
+                        f_score = tentative_g + self.heuristic(new_x, new_y, goal_x, goal_y)
+                        heapq.heappush(open_set, (f_score, counter, new_pose))
+                        counter += 1
+                        generated_neighbor = True
+
+            # Fallback: if no forward neighbor was possible, try backward primitives.
+            if not generated_neighbor and not allow_backward:
+                for new_x, new_y, new_theta, move_cost in self.get_motion_primitives(
+                    current_x, current_y, current_theta, grid_resolution, False
+                ):
+                    new_pose = (new_x, new_y, new_theta)
+                    new_discrete = self.discretize_pose(new_x, new_y, new_theta, grid_resolution)
+
+                    if new_discrete in closed_set:
+                        continue
+
+                    tentative_g = g_score[current_discrete] + move_cost
+
+                    if new_discrete not in g_score or tentative_g < g_score[new_discrete]:
+                        came_from[new_pose] = current
+                        g_score[new_discrete] = tentative_g
+                        f_score = tentative_g + self.heuristic(new_x, new_y, goal_x, goal_y)
+                        heapq.heappush(open_set, (f_score, counter, new_pose))
+                        counter += 1
+
+        return None
+
+    def _find_two_stage_bridge_path(
+        self,
+        start_pose: Tuple[float, float, float],
+        goal_pose: Tuple[float, float, float],
+        grid_resolution: float,
+        max_iterations: int,
+        allow_goal_collision: bool,
+    ) -> Optional[List[Tuple[float, float, float]]]:
+        """Try planning through a bridge point in the top region (y >= 1500mm)."""
+        candidates = self._generate_bridge_candidates(
+            start_pose=start_pose,
+            goal_pose=goal_pose,
+            grid_resolution=grid_resolution,
+            min_region_y_mm=1500.0,
+            stride_mm=100.0,
+            max_candidates=60,
+        )
+
+        if not candidates:
+            return None
+
+        stage_iterations = max(5000, int(max_iterations // 2))
+        best_path = None
+        best_cost = float('inf')
+        best_bridge = None
+
+        for bridge_pose in candidates:
+            path1 = self._find_path_core(
+                start_pose=start_pose,
+                goal_pose=bridge_pose,
+                grid_resolution=grid_resolution,
+                max_iterations=stage_iterations,
+                allow_goal_collision=False,
+            )
+            if not path1:
+                continue
+
+            path2 = self._find_path_core(
+                start_pose=bridge_pose,
+                goal_pose=goal_pose,
+                grid_resolution=grid_resolution,
+                max_iterations=stage_iterations,
+                allow_goal_collision=allow_goal_collision,
+            )
+            if not path2:
+                continue
+
+            merged = path1 + path2[1:]
+            total_cost = self._path_length_mm(merged)
+            if total_cost < best_cost:
+                best_cost = total_cost
+                best_path = merged
+                best_bridge = bridge_pose
+
+        if best_path is not None:
+            self.last_used_bridge_fallback = True
+            self.last_bridge_point = best_bridge
+
+        return best_path
     
     def _precompute_footprints(self):
         """
@@ -713,10 +1030,14 @@ class HybridAStarPathfinder:
         self.last_used_reverse_fallback = False
         self.last_start_escape_mode = 'none'
         self.last_start_escape_distance_mm = 0.0
+        self.last_used_bridge_fallback = False
+        self.last_bridge_point = None
 
         start_x, start_y, start_theta = start_pose
         goal_x, goal_y, goal_theta = goal_pose
+        original_start_pose = start_pose
         effective_start_pose = start_pose
+        escape_prefix_path: Optional[List[Tuple[float, float, float]]] = None
         
         self._vprint(f"🚀 Starting Hybrid A* search...")
         self._vprint(f"   Start: ({start_x:.1f}, {start_y:.1f}, {math.degrees(start_theta):.1f}°)")
@@ -744,20 +1065,59 @@ class HybridAStarPathfinder:
                 clearance_mm=100.0,
             )
             if best_escape is None:
-                self._vprint("✗ Could not find forward/reverse escape pose with 100mm clearance")
-                return None
+                radial_escape = self._find_radial_escape_pose(
+                    start_pose,
+                    grid_resolution,
+                    clearance_mm=100.0,
+                    preferred_min_y_mm=1500.0,
+                )
+                if radial_escape is None:
+                    self._vprint("✗ Could not find any start escape pose (forward/reverse/radial)")
+                    return None
 
-            relocated, escape_mode, escape_distance_mm = best_escape
-            effective_start_pose = relocated
-            start_x, start_y, start_theta = relocated
-            self.last_used_start_fallback = True
-            self.last_used_reverse_fallback = (escape_mode == 'reverse')
-            self.last_start_escape_mode = escape_mode
-            self.last_start_escape_distance_mm = escape_distance_mm
-            self._vprint(
-                f"↪ Relocated start via {escape_mode} escape ({escape_distance_mm:.1f}mm): "
-                f"({start_x:.1f}, {start_y:.1f}, {math.degrees(start_theta):.1f}°)"
+                relocated, escape_distance_mm, escape_mode = radial_escape
+                effective_start_pose = relocated
+                start_x, start_y, start_theta = relocated
+                self.last_used_start_fallback = True
+                self.last_used_reverse_fallback = False
+                self.last_start_escape_mode = escape_mode
+                self.last_start_escape_distance_mm = escape_distance_mm
+                self._vprint(
+                    f"↪ Relocated start via {escape_mode} escape ({escape_distance_mm:.1f}mm): "
+                    f"({start_x:.1f}, {start_y:.1f}, {math.degrees(start_theta):.1f}°)"
+                )
+            else:
+                relocated, escape_mode, escape_distance_mm = best_escape
+                effective_start_pose = relocated
+                start_x, start_y, start_theta = relocated
+                self.last_used_start_fallback = True
+                self.last_used_reverse_fallback = (escape_mode == 'reverse')
+                self.last_start_escape_mode = escape_mode
+                self.last_start_escape_distance_mm = escape_distance_mm
+                self._vprint(
+                    f"↪ Relocated start via {escape_mode} escape ({escape_distance_mm:.1f}mm): "
+                    f"({start_x:.1f}, {start_y:.1f}, {math.degrees(start_theta):.1f}°)"
+                )
+
+            # Try to build a proper escape prefix path from the original (possibly
+            # colliding) start to the relocated free pose using planner primitives.
+            escape_prefix_path = self._find_path_core(
+                start_pose=original_start_pose,
+                goal_pose=effective_start_pose,
+                grid_resolution=grid_resolution,
+                max_iterations=max(3000, int(max_iterations // 3)),
+                allow_goal_collision=False,
             )
+
+            if escape_prefix_path is not None and len(escape_prefix_path) > 1:
+                self._vprint(
+                    f"✓ Planned escape prefix with {len(escape_prefix_path)} waypoint(s) to reach relocated start"
+                )
+            else:
+                escape_prefix_path = None
+                self._vprint(
+                    "⚠ Could not plan explicit escape prefix; executor may use direct first hop to relocated start"
+                )
         
         goal_collision = self.is_collision(goal_x, goal_y, goal_theta, grid_resolution)
         if goal_collision and not allow_goal_collision:
@@ -774,134 +1134,36 @@ class HybridAStarPathfinder:
         elif goal_collision and allow_goal_collision:
             self._vprint(f"⚠ Goal position ({goal_x:.1f}, {goal_y:.1f}) is in collision, but proceeding (batch pickup mode)")
         
-        # Priority queue: (f_score, counter, pose)
-        counter = 0
-        open_set = [(0, counter, effective_start_pose)]
-        counter += 1
-        
-        # Tracking
-        came_from = {}
-        g_score = {self.discretize_pose(*effective_start_pose, grid_resolution): 0}
-        closed_set = set()
-        
-        # Goal tolerance (relaxed for speed)
-        goal_tolerance = 50.0  # mm - increased for faster convergence
-        # angle_tolerance = math.radians(45)  # DISABLED - ignoring final angle
-        
-        iterations = 0
-        while open_set and iterations < max_iterations:
-            iterations += 1
-            
-            _, _, current = heapq.heappop(open_set)
-            current_x, current_y, current_theta = current
-            current_discrete = self.discretize_pose(current_x, current_y, current_theta, grid_resolution)
-            
-            # Check if reached goal (position only, ignoring angle)
-            dist_to_goal = math.sqrt((current_x - goal_x)**2 + (current_y - goal_y)**2)
-            # angle_diff = abs(math.atan2(math.sin(current_theta - goal_theta), 
-            #                            math.cos(current_theta - goal_theta)))
-            
-            if dist_to_goal < goal_tolerance:  # Only check position, not angle
-                self._vprint(f"✅ Path found in {iterations} iterations!")
-                path = self._reconstruct_path(came_from, current)
-                
-                # ALWAYS ensure final waypoint is at exact goal position
-                if len(path) > 0:
-                    last_x, last_y, last_theta = path[-1]
-                    final_dist = math.sqrt((last_x - goal_x)**2 + (last_y - goal_y)**2)
-                    
-                    # Always replace last waypoint with exact goal (even if < 5mm away)
-                    if final_dist > 0.1:  # Only if not already exactly at goal
-                        # Check if goal position is collision-free
-                        if not self.is_collision(goal_x, goal_y, goal_theta, grid_resolution):
-                            # Check if line from last waypoint to goal is collision-free
-                            if self._is_line_collision_free((last_x, last_y, last_theta), 
-                                                           (goal_x, goal_y, goal_theta), 
-                                                           grid_resolution):
-                                # Replace last waypoint with exact goal
-                                path[-1] = (goal_x, goal_y, goal_theta)
-                                self._vprint(f"✓ Set final waypoint to exact goal at ({goal_x:.1f}, {goal_y:.1f})")
-                            else:
-                                # Path blocked - try adding as separate waypoint
-                                if len(path) > 1:
-                                    path[-1] = (goal_x, goal_y, goal_theta)
-                                    self._vprint(f"⚠ Forced final waypoint to exact goal (path may need validation)")
-                        else:
-                            self._vprint(f"⚠ Goal position in collision, keeping approximate waypoint")
-                
-                return path
-            
-            if current_discrete in closed_set:
-                continue
-            closed_set.add(current_discrete)
-            
-            # Determine if robot should move forward or backward based on orientation to goal
-            # Calculate angle to goal from current position
-            dx_to_goal = goal_x - current_x
-            dy_to_goal = goal_y - current_y
-            angle_to_goal = math.atan2(dy_to_goal, dx_to_goal)
-            
-            # Calculate angle difference (how much robot is facing away from goal)
-            angle_diff = angle_to_goal - current_theta
-            # Normalize to [-pi, pi]
-            while angle_diff > math.pi:
-                angle_diff -= 2 * math.pi
-            while angle_diff < -math.pi:
-                angle_diff += 2 * math.pi
-            
-            # If robot is facing significantly away from goal (> 90°), allow backward movement
-            # This helps when starting at 180° from goal direction
-            allow_backward = abs(angle_diff) > math.radians(90)
-            
-            # Expand both forward and (optionally) backward
-            directions = [True]
-            if allow_backward:
-                directions.append(False)
+        # First try direct planning.
+        path = self._find_path_core(
+            start_pose=effective_start_pose,
+            goal_pose=(goal_x, goal_y, goal_theta),
+            grid_resolution=grid_resolution,
+            max_iterations=max_iterations,
+            allow_goal_collision=allow_goal_collision,
+        )
+        if path is not None:
+            if escape_prefix_path is not None:
+                path = escape_prefix_path + path[1:]
+            self._vprint("✅ Path found with direct planning")
+            return path
 
-            generated_neighbor = False
+        # Fallback: try two-stage planning through a top-region bridge point.
+        bridge_path = self._find_two_stage_bridge_path(
+            start_pose=effective_start_pose,
+            goal_pose=(goal_x, goal_y, goal_theta),
+            grid_resolution=grid_resolution,
+            max_iterations=max_iterations,
+            allow_goal_collision=allow_goal_collision,
+        )
+        if bridge_path is not None:
+            if escape_prefix_path is not None:
+                bridge_path = escape_prefix_path + bridge_path[1:]
+            bx, by, _ = self.last_bridge_point if self.last_bridge_point is not None else (float('nan'), float('nan'), 0.0)
+            self._vprint(f"✅ Path found via bridge fallback in y>=1500mm region (bridge=({bx:.1f}, {by:.1f}))")
+            return bridge_path
 
-            for is_forward in directions:
-                for new_x, new_y, new_theta, move_cost in self.get_motion_primitives(
-                    current_x, current_y, current_theta, grid_resolution, is_forward
-                ):
-                    new_pose = (new_x, new_y, new_theta)
-                    new_discrete = self.discretize_pose(new_x, new_y, new_theta, grid_resolution)
-
-                    if new_discrete in closed_set:
-                        continue
-
-                    tentative_g = g_score[current_discrete] + move_cost
-
-                    if new_discrete not in g_score or tentative_g < g_score[new_discrete]:
-                        came_from[new_pose] = current
-                        g_score[new_discrete] = tentative_g
-                        f_score = tentative_g + self.heuristic(new_x, new_y, goal_x, goal_y)
-                        heapq.heappush(open_set, (f_score, counter, new_pose))
-                        counter += 1
-                        generated_neighbor = True
-
-            # Fallback: if no forward neighbor was possible (e.g. tight local trap),
-            # still try backward primitives even when heading-to-goal rule disabled them.
-            if not generated_neighbor and not allow_backward:
-                for new_x, new_y, new_theta, move_cost in self.get_motion_primitives(
-                    current_x, current_y, current_theta, grid_resolution, False
-                ):
-                    new_pose = (new_x, new_y, new_theta)
-                    new_discrete = self.discretize_pose(new_x, new_y, new_theta, grid_resolution)
-
-                    if new_discrete in closed_set:
-                        continue
-
-                    tentative_g = g_score[current_discrete] + move_cost
-
-                    if new_discrete not in g_score or tentative_g < g_score[new_discrete]:
-                        came_from[new_pose] = current
-                        g_score[new_discrete] = tentative_g
-                        f_score = tentative_g + self.heuristic(new_x, new_y, goal_x, goal_y)
-                        heapq.heappush(open_set, (f_score, counter, new_pose))
-                        counter += 1
-        
-        self._vprint(f"✗ No path found after {iterations} iterations")
+        self._vprint("✗ No path found (direct + bridge fallback failed)")
         return None
     
     def _reconstruct_path(self, came_from: dict, current: Tuple[float, float, float]) -> List[Tuple[float, float, float]]:

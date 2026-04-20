@@ -786,11 +786,18 @@ class HybridAStarNode(Node):
             # If start escape fallback was required, report can_rotate=False.
             used_start_fallback = bool(getattr(self.pathfinder, 'last_used_start_fallback', False))
             start_escape_mode = str(getattr(self.pathfinder, 'last_start_escape_mode', 'unknown'))
+            used_bridge_fallback = bool(getattr(self.pathfinder, 'last_used_bridge_fallback', False))
+            bridge_point = getattr(self.pathfinder, 'last_bridge_point', None)
             if used_start_fallback:
                 response.can_rotate = False
             
             if path:
                 self.get_logger().info(f"✅ Found path: {len(path)} waypoints")
+                if used_bridge_fallback and bridge_point is not None:
+                    bx, by, _ = bridge_point
+                    self.get_logger().info(
+                        f"🧭 Bridge fallback used (y>=1500mm) via ({bx:.1f}, {by:.1f})"
+                    )
                 # Smooth path (always enabled, same as local script)
                 smoothed = self.pathfinder.smooth_path(path, grid_resolution)
                 reduction = 100 * (1 - len(smoothed) / len(path)) if len(path) > 0 else 0
