@@ -405,8 +405,6 @@ class HybridAStarNode(Node):
     max_added_distance_mm: float = 0.0,  # your threshold
     sample_step_mm: float = 10.0,  # Reduced from 50mm for better collision detection
     enable_direct_simplification: bool = False,
-    use_center_point_collision: bool = False,
-    enforce_full_footprint_on_segments: bool = True,
 ) -> list:
         """
         Simplify a path by replacing 4-point zig-zag segments with their line
@@ -422,14 +420,6 @@ class HybridAStarNode(Node):
         if len(path) < 3:
             return path
 
-        def center_point_collision(x: float, y: float) -> bool:
-            """Fast collision check using only robot center cell occupancy."""
-            gx = int(x / grid_resolution)
-            gy = int(y / grid_resolution)
-            if gx < 0 or gx >= self.pathfinder.grid_width or gy < 0 or gy >= self.pathfinder.grid_height:
-                return True
-            return bool(self.pathfinder.grid[gy, gx])
-
         def collision_check_segment(pose1, pose2):
             """
             Check collision along a straight segment by sampling points with interpolated orientation
@@ -444,33 +434,12 @@ class HybridAStarNode(Node):
                 x = x1 + t * (x2 - x1)
                 y = y1 + t * (y2 - y1)
                 theta = theta1 + t * (theta2 - theta1)  # Interpolate orientation
-                if use_center_point_collision:
-                    if center_point_collision(x, y):
-                        return True
-                elif self.pathfinder.is_collision(x, y, theta, grid_resolution):
+                if self.pathfinder.is_collision(x, y, theta, grid_resolution):
                     return True
             return False
 
         def first_collision_on_segment(pose1, pose2):
             """Return first collision sample (x, y, theta, i, steps) or None."""
-            x1, y1, theta1 = pose1
-            x2, y2, theta2 = pose2
-            dist = math.hypot(x2 - x1, y2 - y1)
-            steps = max(10, int(dist / sample_step_mm))
-            for i in range(steps + 1):
-                t = i / steps
-                x = x1 + t * (x2 - x1)
-                y = y1 + t * (y2 - y1)
-                theta = theta1 + t * (theta2 - theta1)
-                if use_center_point_collision:
-                    if center_point_collision(x, y):
-                        return (x, y, theta, i, steps)
-                elif self.pathfinder.is_collision(x, y, theta, grid_resolution):
-                    return (x, y, theta, i, steps)
-            return None
-
-        def first_collision_on_segment_full(pose1, pose2):
-            """Always use full-footprint collision check, regardless of mode."""
             x1, y1, theta1 = pose1
             x2, y2, theta2 = pose2
             dist = math.hypot(x2 - x1, y2 - y1)
@@ -501,10 +470,6 @@ class HybridAStarNode(Node):
 
         def rotation_safe_at_point(x, y, theta_from, theta_to):
             """Check if in-place rotation at one point is collision-free."""
-            if use_center_point_collision:
-                # With center-point mode, rotation does not change footprint occupancy.
-                return not center_point_collision(x, y)
-
             angle_diff = theta_to - theta_from
             while angle_diff > math.pi:
                 angle_diff -= 2 * math.pi
@@ -521,11 +486,6 @@ class HybridAStarNode(Node):
 
         def first_collision_on_rotation(x, y, theta_from, theta_to):
             """Return first colliding angle (theta, i, checks) or None."""
-            if use_center_point_collision:
-                if center_point_collision(x, y):
-                    return (theta_from, 0, 0)
-                return None
-
             angle_diff = theta_to - theta_from
             while angle_diff > math.pi:
                 angle_diff -= 2 * math.pi
@@ -641,20 +601,6 @@ class HybridAStarNode(Node):
 
                 translation_collision = (first_seg_collision is not None) or (chosen_second_seg_collision is not None)
 
-                # Optional safety gate: even in center-point mode, enforce
-                # full-footprint line checks for accepted simplifications.
-                first_seg_full_collision = None
-                second_seg_full_collision = None
-                if use_center_point_collision and enforce_full_footprint_on_segments:
-                    first_seg_full_collision = first_collision_on_segment_full(
-                        (x1, y1, first_theta),
-                        (px, py, first_theta),
-                    )
-                    second_seg_full_collision = first_collision_on_segment_full(
-                        (px, py, chosen_second_theta),
-                        (x4, y4, chosen_second_theta),
-                    )
-
                 old_dist = segment_distance((x1, y1), (x2, y2)) + segment_distance((x2, y2), (x3, y3)) + segment_distance((x3, y3), (x4, y4))
                 new_dist = segment_distance((x1, y1), (px, py)) + segment_distance((px, py), (x4, y4))
                 added_distance = new_dist - old_dist
@@ -663,8 +609,6 @@ class HybridAStarNode(Node):
 
                 if (
                     (not translation_collision)
-                    and (first_seg_full_collision is None)
-                    and (second_seg_full_collision is None)
                     and start_rotation_ok
                     and chosen_mid_rotation_ok
                     and chosen_end_rotation_ok
@@ -683,18 +627,6 @@ class HybridAStarNode(Node):
                         f"I r{round_idx+1} i{index}",
                         (
                             f"seg1 collision at ({first_seg_collision[0]:.1f},{first_seg_collision[1]:.1f}) "
-                            f"sample={ci}/{csteps} theta={math.degrees(ctheta):.1f}° "
-                            f"seg=({x1:.1f},{y1:.1f})->({px:.1f},{py:.1f})"
-                            f"{extra}"
-                        )
-                    )
-                elif first_seg_full_collision is not None:
-                    ctheta, ci, csteps = first_seg_full_collision[2], first_seg_full_collision[3], first_seg_full_collision[4]
-                    extra = _collision_debug_details(first_seg_full_collision[0], first_seg_full_collision[1], ctheta)
-                    _log_rejection(
-                        f"I r{round_idx+1} i{index}",
-                        (
-                            f"seg1 full-footprint collision at ({first_seg_full_collision[0]:.1f},{first_seg_full_collision[1]:.1f}) "
                             f"sample={ci}/{csteps} theta={math.degrees(ctheta):.1f}° "
                             f"seg=({x1:.1f},{y1:.1f})->({px:.1f},{py:.1f})"
                             f"{extra}"
@@ -724,18 +656,6 @@ class HybridAStarNode(Node):
                         f"I r{round_idx+1} i{index}",
                         (
                             f"seg2 collision at ({chosen_second_seg_collision[0]:.1f},{chosen_second_seg_collision[1]:.1f}) "
-                            f"sample={ci}/{csteps} theta={math.degrees(ctheta):.1f}° "
-                            f"seg=({px:.1f},{py:.1f})->({x4:.1f},{y4:.1f})"
-                            f"{extra}"
-                        )
-                    )
-                elif second_seg_full_collision is not None:
-                    ctheta, ci, csteps = second_seg_full_collision[2], second_seg_full_collision[3], second_seg_full_collision[4]
-                    extra = _collision_debug_details(second_seg_full_collision[0], second_seg_full_collision[1], ctheta)
-                    _log_rejection(
-                        f"I r{round_idx+1} i{index}",
-                        (
-                            f"seg2 full-footprint collision at ({second_seg_full_collision[0]:.1f},{second_seg_full_collision[1]:.1f}) "
                             f"sample={ci}/{csteps} theta={math.degrees(ctheta):.1f}° "
                             f"seg=({px:.1f},{py:.1f})->({x4:.1f},{y4:.1f})"
                             f"{extra}"
@@ -820,13 +740,6 @@ class HybridAStarNode(Node):
 
                     translation_collision = direct_seg_collision is not None
 
-                    direct_seg_full_collision = None
-                    if use_center_point_collision and enforce_full_footprint_on_segments:
-                        direct_seg_full_collision = first_collision_on_segment_full(
-                            (x1, y1, chosen_direct_theta),
-                            (x3, y3, chosen_direct_theta),
-                        )
-
                     old_dist = segment_distance((x1, y1), (x2, y2)) + segment_distance((x2, y2), (x3, y3))
                     new_dist = segment_distance((x1, y1), (x3, y3))
                     added_distance = new_dist - old_dist
@@ -835,7 +748,6 @@ class HybridAStarNode(Node):
 
                     if (
                         (not translation_collision)
-                        and (direct_seg_full_collision is None)
                         and end_rotation_ok
                         and distance_ok
                     ):
@@ -851,18 +763,6 @@ class HybridAStarNode(Node):
                             f"D r{round_idx+1} i{index}",
                             (
                                 f"direct segment collision at ({direct_seg_collision[0]:.1f},{direct_seg_collision[1]:.1f}) "
-                                f"sample={ci}/{csteps} theta={math.degrees(ctheta):.1f}° "
-                                f"seg=({x1:.1f},{y1:.1f})->({x3:.1f},{y3:.1f})"
-                                f"{extra}"
-                            )
-                        )
-                    elif direct_seg_full_collision is not None:
-                        ctheta, ci, csteps = direct_seg_full_collision[2], direct_seg_full_collision[3], direct_seg_full_collision[4]
-                        extra = _collision_debug_details(direct_seg_full_collision[0], direct_seg_full_collision[1], ctheta)
-                        _log_rejection(
-                            f"D r{round_idx+1} i{index}",
-                            (
-                                f"direct full-footprint collision at ({direct_seg_full_collision[0]:.1f},{direct_seg_full_collision[1]:.1f}) "
                                 f"sample={ci}/{csteps} theta={math.degrees(ctheta):.1f}° "
                                 f"seg=({x1:.1f},{y1:.1f})->({x3:.1f},{y3:.1f})"
                                 f"{extra}"
@@ -1257,8 +1157,6 @@ class HybridAStarNode(Node):
                     grid_resolution=grid_resolution,
                     max_added_distance_mm=1000.0,  # Allow up to 1000mm extra distance for straighter paths
                     enable_direct_simplification=False,
-                    use_center_point_collision=True,
-                    enforce_full_footprint_on_segments=True,
                 )
 
                 # Post-optimization cleanup: remove waypoints that can be skipped
