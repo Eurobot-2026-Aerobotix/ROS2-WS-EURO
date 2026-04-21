@@ -181,6 +181,11 @@ class StrategyManager(Node):
         """
         global n 
         global found_goal_batch
+
+        if bool(getattr(state, 'TIME_ENDED', False)):
+            self.get_logger().warning("🛑 path() blocked: TIME_ENDED is active")
+            self.end_game = True
+            return False
         
         if prepare:
             # PREPARE MODE: Generate path and store it, don't load to queue yet
@@ -405,6 +410,11 @@ class StrategyManager(Node):
         
         if not task:
             self.get_logger().error(f"Task '{task_name}' not found!")
+            return False
+
+        if bool(getattr(state, 'TIME_ENDED', False)):
+            self.get_logger().warning("🛑 load_task_to_queues blocked: TIME_ENDED is active")
+            self.end_game = True
             return False
         
         # Iterate through sequence and add to queues

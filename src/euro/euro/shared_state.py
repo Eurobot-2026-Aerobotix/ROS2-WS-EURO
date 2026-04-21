@@ -23,6 +23,7 @@ class _RobotState:
         self.STEAL_LOOP_RUNNING = False
         self.STEAL_REPEAT_COUNT = 30
         self.ESP_DISPATCH_EPOCH = 0
+        self.TIME_ENDED = False
 
 # Singleton instance of the robot state
 # This allows all modules to import and modify the same object.

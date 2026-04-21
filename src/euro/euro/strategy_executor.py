@@ -32,6 +32,28 @@ class Round:
 
 from euro.shared_state import state
 
+
+def _enforce_time_ended(strategy) -> bool:
+    """Return True when TIME_ENDED is active; clear queues once and block dispatch."""
+    if not bool(getattr(state, 'TIME_ENDED', False)):
+        return False
+
+    strategy.end_game = True
+
+    if not bool(getattr(strategy, '_time_ended_enforced', False)):
+        try:
+            strategy.queues['STM'].clear()
+            strategy.queues['ESP_front'].clear()
+            strategy.queues['ESP_back'].clear()
+            strategy.queues['PAMI'].clear()
+            strategy.queues['RASP_PI'].clear()
+        except Exception:
+            pass
+        strategy.get_logger().warning("🛑 TIME_ENDED active: cleared queues and blocked dispatch")
+        strategy._time_ended_enforced = True
+
+    return True
+
 def path_planning_task(strategy, lidar, round_timer, pneumatic_controller=None, front_controller=None, back_controller=None,stm32_controller=None):
     """Dedicated thread for handling return home at 90s"""
     strategy.get_logger().info("🏠 Return home monitor thread started")
@@ -424,6 +446,13 @@ def lidar_status(strategy, stm32, lidar, round_timer):
         # Update lidar with current round time
         elapsed_s = round_timer.time()
         lidar.set_round_time(elapsed_s)
+
+        if elapsed_s >= 100.0 and not bool(getattr(state, 'TIME_ENDED', False)):
+            state.TIME_ENDED = True
+            strategy.end_game = True
+            strategy.get_logger().warning("⏰ TIME_ENDED set by lidar_status at 100s")
+            _enforce_time_ended(strategy)
+            stm32.shutdown()
         
         # Check emergency stop from lidar
         old_emergency = state.EMERGENCY_STOP
@@ -593,6 +622,10 @@ def stm32_task(strategy, stm32,lidar):
     
     main_loop_count = 0
     while rclpy.ok() and not state.SHUTDOWN_REQUESTED:
+        if _enforce_time_ended(strategy):
+            time.sleep(0.05)
+            continue
+
         main_loop_count += 1
         
         # Log main loop status every 50 iterations (5 seconds)
@@ -1155,6 +1188,10 @@ def put_down(controller,pneumatic,strategy,front,params=None):
 def front_task(strategy, front_controller=None,pneumatic_controller=None):
     """Runs every 100ms to process ESP32_1 queue"""
     while rclpy.ok() and not state.SHUTDOWN_REQUESTED:
+        if _enforce_time_ended(strategy):
+            time.sleep(0.05)
+            continue
+
         # Check if there are commands in the queue
         if len(strategy.queues['ESP_front']) > 0:
             cmd = strategy.queues['ESP_front'][0]  # Peek at first command
@@ -1198,6 +1235,10 @@ def front_task(strategy, front_controller=None,pneumatic_controller=None):
 def back_task(strategy, back_controller=None,pneumatic_controller=None):
     """Runs every 100ms to process ESP32_1 queue"""
     while rclpy.ok() and not state.SHUTDOWN_REQUESTED:
+        if _enforce_time_ended(strategy):
+            time.sleep(0.05)
+            continue
+
         # Check if there are commands in the queue
         if len(strategy.queues['ESP_back']) > 0:
             cmd = strategy.queues['ESP_back'][0]  # Peek at first command
@@ -1243,6 +1284,10 @@ def pami_task(strategy, pami_controller=None):
     """Runs every 20ms to process PAMI queue without blocking other executors."""
 
     while rclpy.ok() and not state.SHUTDOWN_REQUESTED:
+        if _enforce_time_ended(strategy):
+            time.sleep(0.05)
+            continue
+
         if len(strategy.queues['PAMI']) > 0:
             cmd = strategy.queues['PAMI'][0]  # Peek
             command = cmd.get('command')
@@ -1278,6 +1323,10 @@ def pami_task(strategy, pami_controller=None):
 def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=None, front_controller=None, back_controller=None, pneumatic_controller=None, pami_controller=None):
     """Runs every 100ms to process RASP_PI queue"""
     while rclpy.ok() and not state.SHUTDOWN_REQUESTED:
+        if _enforce_time_ended(strategy):
+            time.sleep(0.05)
+            continue
+
         # Check if there are commands in the queue
         if len(strategy.queues['RASP_PI']) > 0:
             cmd = strategy.queues['RASP_PI'][0]  # Peek at first command
@@ -1310,6 +1359,7 @@ def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=No
                         strategy.get_logger().warning(f"⚠️ Failed to start pathfinder game timer: {message}")
                     # Start timer and map update FIRST (critical for robot operation)
                     round_timer.start_game()
+                    state.TIME_ENDED = False
                     strategy.get_logger().info(f"⏱️  Game timer started!")
                     _update_robot_color_in_map(strategy)
                     strategy.get_logger().info(f"🎨 Robot color synced to map: {strategy.color}")
