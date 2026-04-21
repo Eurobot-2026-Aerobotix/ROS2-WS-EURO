@@ -1048,6 +1048,8 @@ def put_down(controller,pneumatic,strategy,front,params=None):
         return
     
     params = params if isinstance(params, dict) else {}
+    use_putdown_angle = bool(params.get('use_putdown_angle', False))
+    putdown_theta_deg_param = params.get('putdown_theta_deg', None)
     insert_offset_mm = float(
         params.get('insert_distance_mm', params.get('putdown_insert_distance_mm', 0.0)) or 0.0
     )
@@ -1089,6 +1091,23 @@ def put_down(controller,pneumatic,strategy,front,params=None):
                 use_pose = True
             except Exception as e:
                 strategy.get_logger().warning(f"⚠️ Could not use latest_robot_pose for put_down: {e}")
+
+        if use_putdown_angle:
+            try:
+                desired_theta_deg = float(putdown_theta_deg_param)
+                if use_pose:
+                    theta_deg = desired_theta_deg
+                    strategy.get_logger().info(
+                        f"🧭 put_down using TaskScheduler angle: {theta_deg:.1f}°"
+                    )
+                else:
+                    strategy.get_logger().warning(
+                        "⚠️ put_down angle requested but pose unavailable; cannot apply requested angle"
+                    )
+            except (TypeError, ValueError):
+                strategy.get_logger().warning(
+                    f"⚠️ Invalid put_down angle in params: {putdown_theta_deg_param}"
+                )
 
         success, message, obstacle_ids = strategy.pathfinder.put_down(
             front=put_down_front,
