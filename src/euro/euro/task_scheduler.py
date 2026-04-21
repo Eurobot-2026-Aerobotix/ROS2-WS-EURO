@@ -32,11 +32,11 @@ class TaskScheduler:
     max_distance_for_predict_enemy_goal = 1500.0 # in mm
     drop_off_distance = 400.0
     retreat_distance = 250.0
-    distance_from_wall = 300.0
+    distance_from_wall = 450.0
     dropoff_min_clearance_to_sx = 420.0
     dropoff_min_clearance_to_fx = 330.0
     drop_off_enemy_clearance = 50.0
-    putdown_insert_distance = 175.0
+    putdown_insert_distance = 125.0
     putdown_retreat_distance = 250.0
     switch_distance=550.0
     retreat_distance=175.0
