@@ -499,6 +499,31 @@ class HybridAStarNode(Node):
                     return (check_theta, i, checks)
             return None
 
+        def project_line_to_valid_point(x_start: float, y_start: float, direction_x: float, direction_y: float, theta: float, max_distance_mm: float = 1500.0, step_mm: float = 25.0):
+            """
+            Project a line from (x_start, y_start) in direction (direction_x, direction_y) 
+            until finding a collision-free waypoint. Returns (x, y, distance) or None.
+            """
+            dist_mag = math.sqrt(direction_x**2 + direction_y**2)
+            if dist_mag < 1e-6:
+                return None
+            
+            dir_x_norm = direction_x / dist_mag
+            dir_y_norm = direction_y / dist_mag
+            
+            # Walk along the line in small steps
+            num_steps = int(max_distance_mm / step_mm)
+            for step in range(1, num_steps + 1):
+                test_dist = step * step_mm
+                test_x = x_start + dir_x_norm * test_dist
+                test_y = y_start + dir_y_norm * test_dist
+                
+                # Check collision at this point
+                if not self.pathfinder.is_collision(test_x, test_y, theta, grid_resolution):
+                    return (test_x, test_y, test_dist)
+            
+            return None
+
         optimized = path.copy()
         max_rounds = 6
         total_removed_intersection = 0
@@ -618,6 +643,114 @@ class HybridAStarNode(Node):
                     del optimized[index + 2]
                     removed += 1
                     continue
+
+                # Fallback: single-projection simplification
+                # Try p1->proj1->p4 and p1->proj2->p4, keep shortest valid one.
+                proj_old_dist = (
+                    segment_distance((x1, y1), (x2, y2))
+                    + segment_distance((x2, y2), (x3, y3))
+                    + segment_distance((x3, y3), (x4, y4))
+                )
+
+                candidate_paths = []
+                proj_reasons = []
+                map_width_mm = float(self.params['map']['width_mm'])
+                map_height_mm = float(self.params['map']['height_mm'])
+
+                def _scan_projection_candidate(label: str, x_start: float, y_start: float, dir_x: float, dir_y: float):
+                    mag = math.hypot(dir_x, dir_y)
+                    if mag < 1e-6:
+                        return None, f"{label} direction too small"
+
+                    ux = dir_x / mag
+                    uy = dir_y / mag
+                    step_mm = 25.0
+                    max_distance_mm = 1500.0
+                    num_steps = int(max_distance_mm / step_mm)
+                    last_reason = f"{label} no valid point within {max_distance_mm:.0f}mm"
+
+                    for step in range(1, num_steps + 1):
+                        travel_mm = step * step_mm
+                        px_cand = x_start + ux * travel_mm
+                        py_cand = y_start + uy * travel_mm
+
+                        if not (0.0 <= px_cand <= map_width_mm and 0.0 <= py_cand <= map_height_mm):
+                            last_reason = (
+                                f"{label} out of map at ({px_cand:.1f},{py_cand:.1f}) "
+                                f"bounds=(0..{map_width_mm:.0f},0..{map_height_mm:.0f})"
+                            )
+                            break
+
+                        theta1 = math.atan2(py_cand - y1, px_cand - x1)
+                        theta2 = math.atan2(y4 - py_cand, x4 - px_cand)
+
+                        start_ok = rotation_safe_at_point(x1, y1, t1, theta1)
+                        if not start_ok:
+                            last_reason = f"{label} start rotation blocked"
+                            continue
+
+                        seg1_col = first_collision_on_segment((x1, y1, theta1), (px_cand, py_cand, theta1))
+                        if seg1_col is not None:
+                            last_reason = f"{label} seg1 collision at ({seg1_col[0]:.1f},{seg1_col[1]:.1f})"
+                            continue
+
+                        seg2_col = first_collision_on_segment((px_cand, py_cand, theta2), (x4, y4, theta2))
+                        if seg2_col is not None:
+                            last_reason = f"{label} seg2 collision at ({seg2_col[0]:.1f},{seg2_col[1]:.1f})"
+                            continue
+
+                        end_ok = rotation_safe_at_point(x4, y4, theta2, t4)
+                        if not end_ok:
+                            last_reason = f"{label} end rotation blocked"
+                            continue
+
+                        new_dist = segment_distance((x1, y1), (px_cand, py_cand)) + segment_distance((px_cand, py_cand), (x4, y4))
+                        added_dist = new_dist - proj_old_dist
+                        if added_dist > max_added_distance_mm:
+                            last_reason = f"{label} added_dist={added_dist:.0f}mm > limit"
+                            continue
+
+                        return {
+                            'name': label,
+                            'x': px_cand,
+                            'y': py_cand,
+                            'theta': theta1,
+                            'travel_mm': travel_mm,
+                            'new_dist': new_dist,
+                            'added_dist': added_dist,
+                        }, None
+
+                    return None, last_reason
+
+                cand1, reason1 = _scan_projection_candidate("proj1", x1, y1, x2 - x1, y2 - y1)
+                cand2, reason2 = _scan_projection_candidate("proj2", x4, y4, x4 - x3, y4 - y3)
+
+                if cand1 is not None:
+                    candidate_paths.append(cand1)
+                elif reason1:
+                    proj_reasons.append(reason1)
+
+                if cand2 is not None:
+                    candidate_paths.append(cand2)
+                elif reason2:
+                    proj_reasons.append(reason2)
+
+                if candidate_paths:
+                    best = min(candidate_paths, key=lambda c: c['new_dist'])
+                    optimized[index + 1] = (best['x'], best['y'], best['theta'])
+                    del optimized[index + 2]
+                    removed += 1
+                    self.get_logger().info(
+                        f"✨ projection fallback [I r{round_idx+1} i{index}]: "
+                        f"used={best['name']} proj@{best['travel_mm']:.0f}mm "
+                        f"added={best['added_dist']:.0f}mm"
+                    )
+                    continue
+                else:
+                    _log_rejection(
+                        f"I-proj r{round_idx+1} i{index}",
+                        "; ".join(proj_reasons) if proj_reasons else "no valid projection path"
+                    )
 
                 # Log only the primary (first) rejection reason
                 if first_seg_collision is not None:
