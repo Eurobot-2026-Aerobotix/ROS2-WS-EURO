@@ -37,17 +37,41 @@ def path_planning_task(strategy, lidar, round_timer, pneumatic_controller=None, 
     strategy.get_logger().info("🏠 Return home monitor thread started")
     state.return_home_triggered = False
     reset_stm_triggered=False
-    while rclpy.ok() and not state.SHUTDOWN_REQUESTED:
-        # Check if only 10 seconds remain (90s elapsed out of 100s)
-        if round_timer.time()>=100.0 and not reset_stm_triggered:
-            strategy.get_logger().info("⏰ Game time reached 100s -    resetting stm")
-            stm32_controller.reset()
-            reset_stm_triggered=True
+
+    def _check_end_game_timeout() -> bool:
+        nonlocal reset_stm_triggered
+        if round_timer.time() >= 100.0 and not reset_stm_triggered:
+            strategy.get_logger().info("⏰ Game time reached 100s - resetting stm")
+            if stm32_controller is not None:
+                try:
+                    stm32_controller.reset()
+                except Exception as e:
+                    strategy.get_logger().warning(f"⚠️ Failed to reset STM at end-game timeout: {e}")
+            else:
+                strategy.get_logger().warning("⚠️ STM32 controller is None at end-game timeout")
+            reset_stm_triggered = True
             strategy.end_game = True
+            state.STEAL_LOOP_ACTIVE = False
+            state.STEAL_LOOP_RUNNING = False
+            state.STEAL_REPEAT_COUNT = 30
+            # Prevent any new dispatch after timeout.
+            try:
+                strategy.queues['STM'].clear()
+                strategy.queues['ESP_front'].clear()
+                strategy.queues['ESP_back'].clear()
+                strategy.queues['PAMI'].clear()
+                strategy.queues['RASP_PI'].clear()
+            except Exception:
+                pass
+            strategy.get_logger().warning("🛑 End-game timeout: cleared pending command queues")
+        return bool(strategy.end_game)
+
+    while rclpy.ok() and not state.SHUTDOWN_REQUESTED:
+        _check_end_game_timeout()
         # Run dynamic steal flow whenever it is armed.
         # This allows task-tracking to arm dynamic generation even if
         # EMERGENCY_STOP is already cleared by lidar.
-        if state.STEAL_LOOP_ACTIVE and not state.STEAL_LOOP_RUNNING:
+        if state.STEAL_LOOP_ACTIVE and not state.STEAL_LOOP_RUNNING and not strategy.end_game:
             state.STEAL_LOOP_RUNNING = True
             try:
                 repeat_count = max(1, int(state.STEAL_REPEAT_COUNT))
@@ -59,6 +83,12 @@ def path_planning_task(strategy, lidar, round_timer, pneumatic_controller=None, 
                     f"🏴‍☠️ Path-planning steal loop started ({repeat_count} time(s))"
                 )
                 for attempt in range(1, repeat_count + 1):
+                    if _check_end_game_timeout():
+                        strategy.get_logger().warning(
+                            "⏰ Stopping path-planning steal loop due to 100s timeout"
+                        )
+                        break
+
                     if not rclpy.ok() or state.SHUTDOWN_REQUESTED or strategy.end_game or state.return_home_triggered or not state.STEAL_LOOP_ACTIVE:
                         strategy.get_logger().warning(
                             "⚠️ Stopping path-planning steal loop due to shutdown/end-game"
@@ -72,6 +102,12 @@ def path_planning_task(strategy, lidar, round_timer, pneumatic_controller=None, 
                     # previous blocked target.
                     wait_gate_count = 0
                     while rclpy.ok() and not state.SHUTDOWN_REQUESTED and not strategy.end_game and state.STEAL_LOOP_ACTIVE:
+                        if _check_end_game_timeout():
+                            strategy.get_logger().warning(
+                                "⏰ Steal loop gate stopped due to 100s timeout"
+                            )
+                            break
+
                         path_replan_requested = bool(getattr(lidar, 'generate_path', 0) == 1)
                         ready_for_steal = bool(state.IDLE) and (not state.EMERGENCY_STOP or path_replan_requested)
                         if ready_for_steal:
@@ -109,6 +145,13 @@ def path_planning_task(strategy, lidar, round_timer, pneumatic_controller=None, 
                     success = strategy.handle_steal_command(params=[repeat_count, 0], wait=True)
                     # Add a small delay to allow other threads to update their state
                     time.sleep(0.2)
+
+                    if _check_end_game_timeout():
+                        strategy.get_logger().info(
+                            f"🏁 End-game reached during path-planning steal loop at attempt {attempt}/{repeat_count}"
+                        )
+                        break
+
                     if not success:
                         strategy.get_logger().warning(
                             f"⚠️ Path-planning steal attempt {attempt}/{repeat_count} failed"
@@ -558,7 +601,7 @@ def stm32_task(strategy, stm32,lidar):
         
         # Check if there are commands in the queue and robot is idle.
         # In steal-only emergency flow, do not dispatch commands while emergency is active.
-        if len(strategy.queues['STM']) > 0 and state.IDLE and not state.EMERGENCY_STOP:
+        if len(strategy.queues['STM']) > 0 and state.IDLE and not state.EMERGENCY_STOP and not strategy.end_game:
             cmd = strategy.queues['STM'][0]  # Peek at first command
             command = cmd.get('command')
             params = cmd.get('params', {})
@@ -718,6 +761,8 @@ def stm32_task(strategy, stm32,lidar):
                     strategy.get_logger().info("⏸️  STM queue empty - waiting for commands")
                 elif not state.IDLE:
                     strategy.get_logger().info(f"⏸️  Robot not IDLE - waiting (IDLE={state.IDLE}, IDLE_FOR_SYSTEMS={state.IDLE_FOR_SYSTEMS}, EMERGENCY_STOP={state.EMERGENCY_STOP})")
+                elif strategy.end_game:
+                    strategy.get_logger().info("🏁 End-game active - STM dispatch blocked")
         
         time.sleep(0.1)  # 100ms
 def handle_color_pattner(strategy,front):
