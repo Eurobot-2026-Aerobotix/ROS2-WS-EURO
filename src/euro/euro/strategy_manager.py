@@ -34,7 +34,7 @@ class StrategyManager(Node):
         super().__init__(node_name)
 
         # Minimum delay between pick_up and following put_down on the same ESP device.
-        self.min_pickup_putdown_gap_s = 3.0
+        self.min_pickup_putdown_gap_s = 4.0
         
         # Task storage - simple list
         self.tasks = []
@@ -44,7 +44,6 @@ class StrategyManager(Node):
         
         # Strategy name from YAML
         self.strategy_name = None
-        
         # Device queues
         self.queues = {
             'STM': deque(),
