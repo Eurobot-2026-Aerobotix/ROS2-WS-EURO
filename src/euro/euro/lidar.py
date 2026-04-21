@@ -382,7 +382,7 @@ class Lidar(Node):
             return
         
         # After 10 checks (1 second total), set generate_path flag
-        if self._recheck_count >= 10:
+        if self._recheck_count >= 5:
             if self._recheck_timer is not None:
                 self._recheck_timer.cancel()
                 self._recheck_timer = None

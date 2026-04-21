@@ -16,7 +16,9 @@ Features:
 
 import math
 import threading
-from typing import Dict, List, Optional, Tuple
+from copy import deepcopy
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple
 from geometry_msgs.msg import Point
 import time
 
@@ -70,6 +72,304 @@ PUTDOWN_POSES = {
 }
 
 
+@dataclass(frozen=True)
+class BatchRecord:
+    """Immutable batch entry stored in the registry."""
+    known_id: str
+    available: bool
+    color: Optional[str]
+    batch_type: str
+    pickup_poses: Tuple[Dict[str, Any], ...]
+    putdown_pose: Optional[Dict[str, Any]]
+    fx_subtype: Optional[str]
+    last_seen: float
+    confidence: float
+    version: int
+    member_count: int
+    direction: str
+    center: Point
+    quality: float
+
+
+class BatchRegistry:
+    """
+    Thread-safe single source of truth for active batches.
+
+    Provides immutable snapshot reads (deep-copied dicts) so decision logic can
+    safely consume data without holding locks.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._records: Dict[str, BatchRecord] = {}
+        self._version: int = 0
+        self._stale: bool = False
+        self._last_error: Optional[str] = None
+        self._last_success_update: float = 0.0
+
+    @staticmethod
+    def _clone_point(point: Point) -> Point:
+        p = Point()
+        p.x = point.x
+        p.y = point.y
+        p.z = point.z
+        return p
+
+    @staticmethod
+    def _normalize_base_known_id(known_id: str) -> str:
+        return known_id.upper().replace('_WEB', '')
+
+    @staticmethod
+    def _normalize_fx_zone_key(known_id: str) -> Optional[str]:
+        base = known_id.lower().replace('_web', '')
+        if base.startswith('fx'):
+            return base
+        if base.startswith('f') and base[1:].isdigit():
+            return f'fx{base[1:]}'
+        return None
+
+    @staticmethod
+    def _safe_ratio(value: float, max_value: float) -> float:
+        if max_value <= 0:
+            return 0.0
+        return max(0.0, min(1.0, value / max_value))
+
+    def _resolve_pickup_poses(self, known_id: str, batch_type: str) -> Tuple[Dict[str, Any], ...]:
+        if batch_type != 'sx':
+            return tuple()
+        base_id = self._normalize_base_known_id(known_id)
+        poses = PICKUP_POSES.get(base_id, [])
+        return tuple(deepcopy(poses))
+
+    def _resolve_putdown_pose_and_fx_subtype(self, known_id: str, batch_type: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        if batch_type != 'fx':
+            return None, None
+        zone_key = self._normalize_fx_zone_key(known_id)
+        if zone_key is None:
+            return None, None
+        pose = PUTDOWN_POSES.get(zone_key)
+        if pose is None:
+            return None, None
+        pose_copy = deepcopy(pose)
+        return pose_copy, pose_copy.get('type')
+
+    def update_from_batch_info(self, batch_info: Dict[str, List[Any]]) -> int:
+        """Replace current registry content from pathfinder active batch arrays."""
+        required = ['known_ids', 'batch_types', 'member_counts', 'directions', 'centers', 'qualities']
+        for key in required:
+            if key not in batch_info:
+                raise KeyError(f'Missing key "{key}" in batch_info')
+
+        known_ids = batch_info['known_ids']
+        batch_types = batch_info['batch_types']
+        member_counts = batch_info['member_counts']
+        directions = batch_info['directions']
+        centers = batch_info['centers']
+        qualities = batch_info['qualities']
+
+        n = min(
+            len(known_ids),
+            len(batch_types),
+            len(member_counts),
+            len(directions),
+            len(centers),
+            len(qualities)
+        )
+
+        now = time.time()
+
+        with self._lock:
+            self._version += 1
+            version = self._version
+            next_records: Dict[str, BatchRecord] = {}
+
+            for i in range(n):
+                known_id = str(known_ids[i])
+                batch_type = str(batch_types[i]).lower()
+                member_count = int(member_counts[i])
+                direction = str(directions[i])
+                center = self._clone_point(centers[i])
+                quality = float(qualities[i])
+                confidence = self._safe_ratio(quality, 100.0)
+
+                pickup_poses = self._resolve_pickup_poses(known_id, batch_type)
+                putdown_pose, fx_subtype = self._resolve_putdown_pose_and_fx_subtype(known_id, batch_type)
+
+                next_records[known_id] = BatchRecord(
+                    known_id=known_id,
+                    available=member_count > 0,
+                    color=None,
+                    batch_type=batch_type,
+                    pickup_poses=pickup_poses,
+                    putdown_pose=putdown_pose,
+                    fx_subtype=fx_subtype,
+                    last_seen=now,
+                    confidence=confidence,
+                    version=version,
+                    member_count=member_count,
+                    direction=direction,
+                    center=center,
+                    quality=quality,
+                )
+
+            self._records = next_records
+            self._stale = False
+            self._last_error = None
+            self._last_success_update = now
+
+            return len(next_records)
+
+    def mark_stale(self, error_message: str):
+        with self._lock:
+            self._stale = True
+            self._last_error = error_message
+
+    def get_snapshot(self) -> Dict[str, Dict[str, Any]]:
+        """Return deep-copied immutable snapshot data for decision logic reads."""
+        with self._lock:
+            records = list(self._records.values())
+
+        snapshot: Dict[str, Dict[str, Any]] = {}
+        for record in records:
+            snapshot[record.known_id] = {
+                'known_id': record.known_id,
+                'available': record.available,
+                'color': record.color,
+                'batch_type': record.batch_type,
+                'pickup_poses': [deepcopy(p) for p in record.pickup_poses],
+                'putdown_pose': deepcopy(record.putdown_pose) if record.putdown_pose is not None else None,
+                'fx_subtype': record.fx_subtype,
+                'last_seen': record.last_seen,
+                'confidence': record.confidence,
+                'version': record.version,
+                # Backward-compat fields used by existing decision logic
+                'member_count': record.member_count,
+                'direction': record.direction,
+                'center': self._clone_point(record.center),
+                'quality': record.quality,
+            }
+        return snapshot
+
+    def metadata(self) -> Dict[str, Any]:
+        with self._lock:
+            return {
+                'version': self._version,
+                'stale': self._stale,
+                'last_error': self._last_error,
+                'last_success_update': self._last_success_update,
+                'size': len(self._records),
+            }
+
+
+class MapUpdater:
+    """Background updater with independent rates for map refresh and active-batch refresh."""
+
+    def __init__(
+        self,
+        strategy_manager,
+        pathfinder_client,
+        batch_registry: BatchRegistry,
+        map_update_hz: float = 1.0,
+        active_batches_hz: float = 2.0,
+    ):
+        self.strategy = strategy_manager
+        self.pathfinder = pathfinder_client
+        self.registry = batch_registry
+        self.map_update_hz = max(0.2, min(5.0, float(map_update_hz)))
+        self.active_batches_hz = max(0.2, min(10.0, float(active_batches_hz)))
+
+        self._stop_event = threading.Event()
+        self._update_lock = threading.Lock()
+        self._thread: Optional[threading.Thread] = None
+
+        self._enabled = True
+        self._last_state_log_s = 0.0
+        self._warned_missing_update_map = False
+        self._last_update_map_call_s = 0.0
+        self._last_get_active_batches_call_s = 0.0
+
+    def start(self):
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._run, name='decision-maker-map-updater', daemon=True)
+        self._thread.start()
+        self.strategy.get_logger().info(
+            f'🛰️ MapUpdater started: update_map={self.map_update_hz:.1f}Hz, '
+            f'get_active_batches={self.active_batches_hz:.1f}Hz'
+        )
+
+    def stop(self):
+        self._stop_event.set()
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=0.5)
+
+    def set_enabled(self, enabled: bool):
+        self._enabled = enabled
+
+    def _run(self):
+        # Drive loop at the highest requested rate.
+        period_s = 1.0 / max(self.map_update_hz, self.active_batches_hz)
+        while not self._stop_event.is_set():
+            loop_start = time.perf_counter()
+            if self._enabled:
+                self.update_once()
+            elapsed = time.perf_counter() - loop_start
+            sleep_s = max(0.0, period_s - elapsed)
+            self._stop_event.wait(timeout=sleep_s)
+
+    def update_once(self):
+        """Single non-overlapping update attempt; keeps last good snapshot on failures."""
+        if not self._update_lock.acquire(blocking=False):
+            return
+
+        try:
+            now_mono = time.perf_counter()
+            do_update_map = (now_mono - self._last_update_map_call_s) >= (1.0 / self.map_update_hz)
+            do_get_active = (now_mono - self._last_get_active_batches_call_s) >= (1.0 / self.active_batches_hz)
+
+            # Some adapters (e.g. web PathfinderAdapter) do not expose update_map().
+            # In that case, rely on get_active_batches() only.
+            update_map_fn = getattr(self.pathfinder, 'update_map', None)
+            if do_update_map and callable(update_map_fn):
+                map_success, map_message = update_map_fn()
+                self._last_update_map_call_s = now_mono
+                if not map_success:
+                    self.registry.mark_stale(f'update_map failed: {map_message}')
+                    self.strategy.get_logger().warning(f'⚠️ Background update_map failed: {map_message}')
+            elif do_update_map and not self._warned_missing_update_map:
+                self.strategy.get_logger().warning(
+                    '⚠️ Pathfinder has no update_map(); background updater will refresh via get_active_batches only'
+                )
+                self._warned_missing_update_map = True
+
+            if not do_get_active:
+                return
+
+            batch_info = self.pathfinder.get_active_batches()
+            self._last_get_active_batches_call_s = now_mono
+            if batch_info is None:
+                self.registry.mark_stale('get_active_batches returned None')
+                self.strategy.get_logger().warning('⚠️ Background get_active_batches failed')
+                return
+
+            updated_count = self.registry.update_from_batch_info(batch_info)
+
+            now = time.time()
+            if now - self._last_state_log_s >= 2.0:
+                meta = self.registry.metadata()
+                self.strategy.get_logger().info(
+                    f'🧠 Registry sync: {updated_count} batches (version={meta["version"]}, stale={meta["stale"]})'
+                )
+                self._last_state_log_s = now
+
+        except Exception as exc:
+            self.registry.mark_stale(f'exception: {exc}')
+            self.strategy.get_logger().error(f'❌ Background map updater exception: {exc}')
+        finally:
+            self._update_lock.release()
+
+
 class DecisionMaker:
     """
     Decision maker that generates dynamic tasks to steal batches
@@ -93,9 +393,18 @@ class DecisionMaker:
         # Cache for available batches
         self.available_batches = {}
         self.last_batch_update = 0.0
-        self.last_update_map_second = -1
-        self.update_map_period_s = 2
-        self._update_map_lock = threading.Lock()
+        self._last_registry_version = -1
+        self._last_batch_sync_log_s = 0.0
+        self.batch_registry = BatchRegistry()
+        self.map_updater = MapUpdater(
+            strategy_manager=self.strategy,
+            pathfinder_client=self.pathfinder,
+            batch_registry=self.batch_registry,
+            map_update_hz=1.0,
+            active_batches_hz=2.0,
+        )
+        self.map_updater.set_enabled(True)
+        self.map_updater.start()
 
         # Enemy proximity thresholds (in mm)
         # - hard_block_radius_mm: batch is rejected if enemy is this close
@@ -107,44 +416,37 @@ class DecisionMaker:
         
         self.strategy.get_logger().info('🧠 Decision Maker initialized')
 
+    def __del__(self):
+        try:
+            if hasattr(self, 'map_updater') and self.map_updater is not None:
+                self.map_updater.stop()
+        except Exception:
+            pass
+
     def _log_duration_ms(self, label: str, start_time: float):
         """Log elapsed duration in milliseconds for profiling decision flow."""
         elapsed_ms = (time.perf_counter() - start_time) * 1000.0
         self.strategy.get_logger().info(f'⏱️ {label}: {elapsed_ms:.1f}ms')
 
     def _update_map_during_round(self):
-        """Refresh the map once per elapsed game second until the round reaches 100s."""
+        """Keep background updater enabled; optionally stop after round timeout if available."""
         round_timer = getattr(self.strategy, 'round', None)
-        if round_timer is None or not round_timer.has_started():
+        if round_timer is None:
+            # Web/simulation mode often has no round timer: keep updater active.
+            self.map_updater.set_enabled(True)
+            return
+
+        if not round_timer.has_started():
+            self.map_updater.set_enabled(True)
             return
 
         elapsed = round_timer.time()
         if elapsed >= 100.0:
+            # Preserve previous behavior near end of match.
+            self.map_updater.set_enabled(False)
             return
 
-        current_second = int(elapsed)
-        if current_second <= self.last_update_map_second:
-            return
-
-        # Throttle map updates to reduce service contention
-        if (current_second % self.update_map_period_s) != 0:
-            return
-
-        if not self._update_map_lock.acquire(blocking=False):
-            return
-
-        try:
-            if current_second <= self.last_update_map_second:
-                return
-
-            self.last_update_map_second = current_second
-            success, message = self.pathfinder.update_map()
-            if not success:
-                self.strategy.get_logger().warning(
-                    f'⚠️ Periodic update_map failed at t={current_second}s: {message}'
-                )
-        finally:
-            self._update_map_lock.release()
+        self.map_updater.set_enabled(True)
 
     def _get_enemy_position_mm(self) -> Optional[Tuple[float, float]]:
         """Get latest enemy position from pathfinder in mm, or None if unavailable."""
@@ -321,41 +623,79 @@ class DecisionMaker:
         
         return None
     
-    def update_available_batches(self):
+    def update_available_batches(self, force_refresh: bool = False):
         """Update list of available batches from pathfinder/map"""
         try:
-            # Get active batches from pathfinder service
-            batch_info = self.pathfinder.get_active_batches()
-            
-            if batch_info is None:
-                self.strategy.get_logger().warning('⚠️ Failed to get active batches from pathfinder')
+            meta = self.batch_registry.metadata()
+            registry_version = int(meta.get('version', -1))
+            registry_stale = bool(meta.get('stale', False))
+
+            # Fast path: no new registry version and local cache already populated.
+            if (
+                not force_refresh
+                and self.available_batches
+                and not registry_stale
+                and registry_version == self._last_registry_version
+            ):
                 return
-            
-            # Convert arrays to dictionary indexed by known_id
-            self.available_batches.clear()
-            
-            for i in range(len(batch_info['known_ids'])):
-                known_id = batch_info['known_ids'][i]
-                self.available_batches[known_id] = {
-                    'known_id': known_id,
-                    'batch_type': batch_info['batch_types'][i],
-                    'member_count': batch_info['member_counts'][i],
-                    'direction': batch_info['directions'][i],
-                    'center': batch_info['centers'][i],
-                    'quality': batch_info['qualities'][i]
-                }
-            
+
+            snapshot = self.batch_registry.get_snapshot()
+
+            # Fallback once if snapshot is empty (e.g. very first cycle before background thread updates)
+            if not snapshot:
+                batch_info = self.pathfinder.get_active_batches()
+                if batch_info is not None:
+                    self.batch_registry.update_from_batch_info(batch_info)
+                    snapshot = self.batch_registry.get_snapshot()
+                    meta = self.batch_registry.metadata()
+                    registry_version = int(meta.get('version', -1))
+                    registry_stale = bool(meta.get('stale', False))
+
+            if not snapshot:
+                self.strategy.get_logger().warning('⚠️ Failed to get active batches from registry/pathfinder')
+                return
+
+            self.available_batches = snapshot
             self.last_batch_update = time.time()
-            
+            self._last_registry_version = registry_version
+
+            # Throttle logs to avoid flooding in hot decision loop
+            now = time.time()
+            if now - self._last_batch_sync_log_s < 1.0 and not force_refresh:
+                return
+
             fx_count = sum(1 for b in self.available_batches.values() if b['batch_type'] == 'fx')
             sx_count = sum(1 for b in self.available_batches.values() if b['batch_type'] == 'sx')
+            stale_suffix = f', stale={registry_stale}'
+            if meta.get('last_error'):
+                stale_suffix += f', last_error={meta["last_error"]}'
+
             self.strategy.get_logger().info(
                 f'🧠 Batch list updated: {len(self.available_batches)} batches '
-                f'(FX={fx_count}, SX={sx_count})'
+                f'(FX={fx_count}, SX={sx_count}, version={registry_version}{stale_suffix})'
             )
+            self._log_available_batches()
+            self._last_batch_sync_log_s = now
         
         except Exception as e:
             self.strategy.get_logger().error(f'❌ Error updating batch list: {e}')
+
+    def _log_available_batches(self):
+        """Log the currently available batches in a compact, readable format."""
+        if not self.available_batches:
+            self.strategy.get_logger().info('📦 Available batches: none')
+            return
+
+        ordered = sorted(self.available_batches.values(), key=lambda b: str(b.get('known_id', '')))
+        parts = []
+        for batch in ordered:
+            known_id = batch.get('known_id', '?')
+            batch_type = batch.get('batch_type', '?')
+            members = batch.get('member_count', '?')
+            quality = float(batch.get('quality', 0.0))
+            parts.append(f'{known_id}[{batch_type}] m={members} q={quality:.0f}')
+
+        self.strategy.get_logger().info(f'📦 Available batches: {", ".join(parts)}')
     
     def get_pickup_poses(self, known_id: str) -> Optional[List[Dict]]:
         """
@@ -474,6 +814,25 @@ class DecisionMaker:
             f'📍 Chose pickup pose for {known_id}: x={best_pose["x"]}, y={best_pose["y"]} '
             f'(distance: {distance(best_pose):.0f}mm)'
         )
+        return best_pose
+
+    @staticmethod
+    def _choose_best_pickup_pose_fast(poses: List[Dict], robot_x_mm: float, robot_y_mm: float) -> Optional[Dict]:
+        """Fast pickup pose selection without extra ROS reads/logs in hot loop."""
+        if not poses:
+            return None
+        if len(poses) == 1:
+            return poses[0]
+
+        best_pose = None
+        best_dist_sq = float('inf')
+        for pose in poses:
+            dx = float(pose['x']) - robot_x_mm
+            dy = float(pose['y']) - robot_y_mm
+            d2 = dx * dx + dy * dy
+            if d2 < best_dist_sq:
+                best_dist_sq = d2
+                best_pose = pose
         return best_pose
     
     def choose_best_putdown_zone(self, reference_x: float = None, reference_y: float = None) -> Optional[Tuple[str, Dict]]:
@@ -620,7 +979,16 @@ class DecisionMaker:
         batches_with_poses = []
         for batch in batches:
             known_id = batch['known_id']
-            pickup_pose = self.choose_best_pickup_pose(known_id)
+
+            # Prefer pre-resolved pickup poses from registry snapshot (fast path)
+            pickup_pose = None
+            poses = batch.get('pickup_poses')
+            if poses:
+                pickup_pose = self._choose_best_pickup_pose_fast(poses, robot_x_mm, robot_y_mm)
+            else:
+                # Fallback for compatibility with legacy/non-registry data
+                pickup_pose = self.choose_best_pickup_pose(known_id)
+
             if pickup_pose:
                 batches_with_poses.append({
                     'batch': batch,

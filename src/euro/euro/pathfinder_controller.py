@@ -6,7 +6,7 @@ from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped, Point,Vector3
 from nav_msgs.msg import Path
 
-from hybrid_astar.srv import ComputePath, GetBatchColorPattern, DeleteBatch, GetActiveBatches, PutDown
+from hybrid_astar.srv import ComputePath, GetBatchColorPattern, DeleteBatch, GetActiveBatches, PutDown, SetTeamColor
 from std_srvs.srv import Trigger
 
 class PathfinderClient(Node):
@@ -49,6 +49,11 @@ class PathfinderClient(Node):
             '/clear_map'
         )
         
+        self.start_game_client = self.create_client(
+            Trigger,
+            '/start_game'
+        )
+        
         self.get_active_batches_client = self.create_client(
             GetActiveBatches,
             '/pathfinder/get_active_batches'
@@ -59,7 +64,10 @@ class PathfinderClient(Node):
             '/put_down'
         )
 
-        # Don't block on wait_for_service - it will timeout if service isn't available
+        self.set_team_color_client = self.create_client(
+            SetTeamColor,
+            '/set_team_color'
+        )
         self.get_logger().info('Waiting for /compute_path service...')
         if not self.path_client.wait_for_service(timeout_sec=5.0):
             self.get_logger().warning('⚠️  /compute_path service not available after 5 seconds')
@@ -96,11 +104,23 @@ class PathfinderClient(Node):
         else:
             self.get_logger().info('✅ /clear_map service is ready')
 
+        self.get_logger().info('Waiting for /start_game service...')
+        if not self.start_game_client.wait_for_service(timeout_sec=5.0):
+            self.get_logger().warning('⚠️  /start_game service not available after 5 seconds')
+        else:
+            self.get_logger().info('✅ /start_game service is ready')
+
         self.get_logger().info('Waiting for /put_down service...')
         if not self.put_down_client.wait_for_service(timeout_sec=5.0):
             self.get_logger().warning('⚠️  /put_down service not available after 5 seconds')
         else:
             self.get_logger().info('✅ /put_down service is ready')
+
+        self.get_logger().info('Waiting for /set_team_color service...')
+        if not self.set_team_color_client.wait_for_service(timeout_sec=5.0):
+            self.get_logger().warning('⚠️  /set_team_color service not available after 5 seconds')
+        else:
+            self.get_logger().info('✅ /set_team_color service is ready')
 
         # Goal storage
         self.goal_x = None
@@ -113,6 +133,8 @@ class PathfinderClient(Node):
 
         # Batch known_ids to ignore as obstacles during path computation
         self.untracked_batches = []
+        # Last planner diagnostic flag from ComputePath response
+        self.last_can_rotate = True
 
         # Robot pose storage
         self.latest_robot_pose_x = None
@@ -180,6 +202,32 @@ class PathfinderClient(Node):
     # =========================================================
     # PATH PLANNING
     # =========================================================
+    def path_full(
+        self,
+        target_x: float,
+        target_y: float,
+        target_theta: float,
+        start_x: float = None,
+        start_y: float = None,
+        start_theta: float = None,
+    ):
+        """
+        Plan a path with explicit target and optional explicit start.
+
+        Args:
+            target_x: Target X in meters
+            target_y: Target Y in meters
+            target_theta: Target yaw in radians
+            start_x: Optional start X in meters
+            start_y: Optional start Y in meters
+            start_theta: Optional start yaw in radians
+
+        Returns:
+            stm32_commands (list[str]), success (bool)
+        """
+        self.set_goal(float(target_x), float(target_y), float(target_theta))
+        return self.path(start_x=start_x, start_y=start_y, start_theta=start_theta)
+
     def path(self, start_x=None, start_y=None, start_theta=None):
         """
         Plan a path from current robot position to stored goal position
@@ -224,7 +272,7 @@ class PathfinderClient(Node):
         start_pose.pose.position.x = resolved_start_x
         start_pose.pose.position.y = resolved_start_y
         start_pose.pose.position.z = 0.0
-        start_pose.pose.orientation = self._yaw_to_quaternion(resolved_start_theta)
+        start_pose.pose.orientation = self._yaw_to_quaternion(self._coerce_yaw_radians(resolved_start_theta))
         
         # Create goal pose from stored goal
         goal_pose = PoseStamped()
@@ -233,7 +281,7 @@ class PathfinderClient(Node):
         goal_pose.pose.position.x = self.goal_x
         goal_pose.pose.position.y = self.goal_y
         goal_pose.pose.position.z = 0.0
-        goal_pose.pose.orientation = self._yaw_to_quaternion(self.goal_angle)
+        goal_pose.pose.orientation = self._yaw_to_quaternion(self._coerce_yaw_radians(self.goal_angle))
         
         # Get path
         stm32_commands, success = self.get_path(start_pose, goal_pose)
@@ -252,6 +300,27 @@ class PathfinderClient(Node):
         quat.w = math.cos(yaw / 2.0)
         return quat
 
+    def _coerce_yaw_radians(self, yaw: float) -> float:
+        """
+        Coerce yaw input to radians.
+        Accepts either radians or degrees (auto-detected).
+        """
+        import math
+
+        y = float(yaw)
+        # If magnitude is clearly larger than a radian-wrapped angle,
+        # treat input as degrees.
+        if abs(y) > (2.0 * math.pi + 1e-6):
+            y = math.radians(y)
+
+        # Normalize to [-pi, pi]
+        while y > math.pi:
+            y -= 2.0 * math.pi
+        while y <= -math.pi:
+            y += 2.0 * math.pi
+
+        return y
+
     # =========================================================
     # 1️⃣ GET PATH
     # =========================================================
@@ -267,6 +336,7 @@ class PathfinderClient(Node):
         # Check if service is available
         if not self.path_client.service_is_ready():
             self.get_logger().error('❌ /compute_path service is not available!')
+            self.last_can_rotate = True
             return [], False
 
         self.get_logger().info(f'📍 Requesting path from ({start_pose.pose.position.x:.3f}, {start_pose.pose.position.y:.3f}) to ({goal_pose.pose.position.x:.3f}, {goal_pose.pose.position.y:.3f})')
@@ -283,19 +353,24 @@ class PathfinderClient(Node):
         
         if not future.done():
             self.get_logger().error('❌ Path service call timed out after 30s')
+            self.last_can_rotate = True
             return [], False
 
         if not future.result():
             self.get_logger().error('❌ Path service call failed - no response received')
+            self.last_can_rotate = True
             return [], False
 
         response = future.result()
+        self.last_can_rotate = bool(getattr(response, 'can_rotate', True))
 
         if response.success:
-            self.get_logger().info(f'✅ Path found with {len(response.stm32_commands)} commands')
+            self.get_logger().info(
+                f'✅ Path found with {len(response.stm32_commands)} commands (can_rotate={self.last_can_rotate})'
+            )
             return response.stm32_commands, True
         else:
-            self.get_logger().warning(f'⚠ Path failed: {response.message}')
+            self.get_logger().warning(f'⚠ Path failed: {response.message} (can_rotate={self.last_can_rotate})')
             return [], False
 
     def add_untracked_batch(self, known_id: str):
@@ -441,8 +516,91 @@ class PathfinderClient(Node):
             self.get_logger().warning(f'⚠️ Map clear failed: {response.message}')
             return False, response.message
 
+    # =========================================================    # START GAME
     # =========================================================
-    # 3️⃣ GET BATCH COLOR
+    def start_game(self):
+        """
+        Start the game timer for periodic map updates.
+        Locks baselines and begins automatic batch updates.
+        
+        Returns:
+            success (bool): Whether the start_game call succeeded
+            message (str): Status message
+        """
+        # Check if service is available
+        if not self.start_game_client.service_is_ready():
+            self.get_logger().error('❌ /start_game service is not available!')
+            return False, 'Service not available'
+
+        self.get_logger().info('🎮 Starting game timer...')
+
+        request = Trigger.Request()
+        future = self.start_game_client.call_async(request)
+        
+        # Wait for future to complete with proper spinning
+        rclpy.spin_until_future_complete(self, future, timeout_sec=10.0)
+        
+        if not future.done():
+            self.get_logger().error('❌ Start game service call timed out after 10s')
+            return False, 'Timeout'
+
+        if not future.result():
+            self.get_logger().error('❌ Start game service call failed - no response received')
+            return False, 'No response'
+
+        response = future.result()
+
+        if response.success:
+            self.get_logger().info(f'✅ Game started: {response.message}')
+            return True, response.message
+        else:
+            self.get_logger().warning(f'⚠️ Game start failed: {response.message}')
+            return False, response.message
+
+    def set_team_color(self, color: str):
+        """
+        Send team color to hybrid_astar for dynamic wall placement symmetry.
+        
+        Args:
+            color (str): Team color - 'blue' or 'yellow'
+        
+        Returns:
+            success (bool): Whether the set_team_color call succeeded
+            message (str): Status message
+        """
+        # Check if service is available
+        if not self.set_team_color_client.service_is_ready():
+            self.get_logger().error(f'❌ /set_team_color service is not available!')
+            return False, 'Service not available'
+
+        self.get_logger().info(f'🎨 Setting team color to {color}...')
+
+        request = SetTeamColor.Request()
+        request.color = str(color).strip().lower()
+        
+        future = self.set_team_color_client.call_async(request)
+        
+        # Wait for future to complete with proper spinning
+        rclpy.spin_until_future_complete(self, future, timeout_sec=5.0)
+        
+        if not future.done():
+            self.get_logger().error('❌ Set team color service call timed out after 5s')
+            return False, 'Timeout'
+
+        if not future.result():
+            self.get_logger().error('❌ Set team color service call failed - no response received')
+            return False, 'No response'
+
+        response = future.result()
+
+        if response.success:
+            self.get_logger().info(f'✅ Team color set: {response.message}')
+            return True, response.message
+        else:
+            self.get_logger().warning(f'⚠️ Team color setting failed: {response.message}')
+            return False, response.message
+
+    # =========================================================    # 3️⃣ GET BATCH COLOR
     # =========================================================
     def get_batch_color(self, known_id: str, pos: Point):
         """
@@ -531,6 +689,8 @@ class PathfinderClient(Node):
                 'batch_types': List[str],  # 'fx', 'sx', 'gx'
                 'member_counts': List[int],
                 'directions': List[str],  # 'horizontal', 'vertical', or ''
+                'patterns': List[str],    # e.g., 'ybyb'
+                'theta_degrees': List[float],
                 'centers': List[Point],
                 'qualities': List[int]
             }
@@ -573,6 +733,8 @@ class PathfinderClient(Node):
             'batch_types': list(response.batch_types),
             'member_counts': list(response.member_counts),
             'directions': list(response.directions),
+            'patterns': list(response.patterns),
+            'theta_degrees': list(response.theta_degrees),
             'centers': list(response.centers),
             'qualities': list(response.qualities)
         }
@@ -592,13 +754,26 @@ class PathfinderClient(Node):
     # =========================================================
     # 4️⃣ PUT DOWN BATCH (4 crates)
     # =========================================================
-    def put_down(self, front: int = 1, color: str = 'yellow'):
+    def put_down(
+        self,
+        front: int = 1,
+        color: str = 'yellow',
+        use_pose: bool = False,
+        x_mm: float = 0.0,
+        y_mm: float = 0.0,
+        theta_deg: float = 0.0,
+        insert_offset_mm: float = 0.0,
+    ):
         """
         Request /put_down to add a 4-member placed batch near robot pose.
 
         Args:
             front: 1 => front, 0 => back
             color: 'yellow' or 'blue'
+            use_pose: when True, use provided (x_mm, y_mm, theta_deg)
+            x_mm: robot x in mm (used when use_pose=True)
+            y_mm: robot y in mm (used when use_pose=True)
+            theta_deg: robot heading in degrees (used when use_pose=True)
 
         Returns:
             success (bool), message (str), obstacle_ids (list[str])
@@ -618,6 +793,11 @@ class PathfinderClient(Node):
         request = PutDown.Request()
         request.direction = direction
         request.color = normalized_color
+        request.use_pose = bool(use_pose)
+        request.x_mm = float(x_mm)
+        request.y_mm = float(y_mm)
+        request.theta_deg = float(theta_deg)
+        request.insert_offset_mm = float(insert_offset_mm)
 
         future = self.put_down_client.call_async(request)
         rclpy.spin_until_future_complete(self, future, timeout_sec=5.0)

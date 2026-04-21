@@ -37,10 +37,10 @@ from visualization_msgs.msg import Marker, MarkerArray
 from tf2_ros import Buffer, TransformListener, LookupException, ConnectivityException, ExtrapolationException
 
 # Custom messages (will be generated)
-from hybrid_astar.msg import Obstacle, ObstacleArray, ColorCommand
+from hybrid_astar.msg import Obstacle, ObstacleArray, ColorCommand, ActiveBatches
 from aruco_mapper_msgs.msg import ArucoMapperState, Batch, BatchMember
 from aruco_mapper_msgs.srv import GetStableBatches
-from hybrid_astar.srv import ComputePath, GetBatchColorPattern, DeleteBatch, GetActiveBatches, PutDown
+from hybrid_astar.srv import ComputePath, GetBatchColorPattern, DeleteBatch, GetActiveBatches, PutDown, SetTeamColor
 
 # Import the pathfinding algorithm
 from hybrid_astar.hybrid_astar import HybridAStarPathfinder
@@ -74,6 +74,7 @@ class HybridAStarNode(Node):
         # Log deduplication - track last N messages to prevent spam
         self._last_log_messages = []
         self._max_log_history = 5
+        self._last_active_batches_signature = None
         
         # Load all parameters
         self.load_parameters()
@@ -133,10 +134,24 @@ class HybridAStarNode(Node):
         self.get_active_batches_service_alias = self.create_service(
             GetActiveBatches, '/get_active_batches', self.handle_get_active_batches,
             callback_group=self.reentrant_group)
+
+        # Set team color used for timed 85s PAMI wall symmetry behavior.
+        self.set_team_color_service = self.create_service(
+            SetTeamColor, '/set_team_color', self.map_manager.handle_set_team_color,
+            callback_group=self.reentrant_group)
+
+        # Topic publisher for active batches (same payload fields as GetActiveBatches response)
+        self.active_batches_pub = self.create_publisher(ActiveBatches, '/active_obstacles', 10)
+        self.active_batches_timer = self.create_timer(1.0, self.publish_active_batches_topic)
         
         # Delegate update_map service to MapManager
         self.update_map_service = self.create_service(
             Trigger, '/update_map', self.map_manager.handle_update_map,
+            callback_group=self.reentrant_group)
+
+        # Start game flow: begin periodic update_map only after baseline lock completes
+        self.start_game_service = self.create_service(
+            Trigger, '/start_game', self.map_manager.handle_start_game,
             callback_group=self.reentrant_group)
         
         # Delegate clear_map service to MapManager
@@ -388,7 +403,8 @@ class HybridAStarNode(Node):
     path: list,
     grid_resolution: float,
     max_added_distance_mm: float = 0.0,  # your threshold
-    sample_step_mm: float = 10.0  # Reduced from 50mm for better collision detection
+    sample_step_mm: float = 10.0,  # Reduced from 50mm for better collision detection
+    enable_direct_simplification: bool = False,
 ) -> list:
         """
         Simplify a path by replacing 4-point zig-zag segments with their line
@@ -483,11 +499,56 @@ class HybridAStarNode(Node):
                     return (check_theta, i, checks)
             return None
 
+        def project_line_to_valid_point(x_start: float, y_start: float, direction_x: float, direction_y: float, theta: float, max_distance_mm: float = 1500.0, step_mm: float = 25.0):
+            """
+            Project a line from (x_start, y_start) in direction (direction_x, direction_y) 
+            until finding a collision-free waypoint. Returns (x, y, distance) or None.
+            """
+            dist_mag = math.sqrt(direction_x**2 + direction_y**2)
+            if dist_mag < 1e-6:
+                return None
+            
+            dir_x_norm = direction_x / dist_mag
+            dir_y_norm = direction_y / dist_mag
+            
+            # Walk along the line in small steps
+            num_steps = int(max_distance_mm / step_mm)
+            for step in range(1, num_steps + 1):
+                test_dist = step * step_mm
+                test_x = x_start + dir_x_norm * test_dist
+                test_y = y_start + dir_y_norm * test_dist
+                
+                # Check collision at this point
+                if not self.pathfinder.is_collision(test_x, test_y, theta, grid_resolution):
+                    return (test_x, test_y, test_dist)
+            
+            return None
+
         optimized = path.copy()
         max_rounds = 6
         total_removed_intersection = 0
         total_removed_direct = 0
         rounds_used = 0
+        rejection_logs_left = 30
+
+        def _log_rejection(prefix: str, details: str):
+            nonlocal rejection_logs_left
+            if rejection_logs_left <= 0:
+                return
+            self.get_logger().info(f"🚫 simplify reject [{prefix}]: {details}")
+            rejection_logs_left -= 1
+
+        def _collision_debug_details(x: float, y: float, theta: float) -> str:
+            """Return compact collision debug info for a pose."""
+            try:
+                hits = self.pathfinder.get_collision_debug_info(
+                    x, y, theta, grid_resolution, max_items=2
+                )
+                if not hits:
+                    return ""
+                return f" | debug={'; '.join(str(h) for h in hits)}"
+            except Exception:
+                return ""
 
         for round_idx in range(max_rounds):
             rounds_used = round_idx + 1
@@ -504,6 +565,10 @@ class HybridAStarNode(Node):
                 # Compute intersection of (p1,p2) with (p3,p4)
                 den = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
                 if abs(den) < 1e-6:
+                    _log_rejection(
+                        f"I r{round_idx+1} i{index}",
+                        "segments nearly parallel (no stable intersection)"
+                    )
                     index += 1
                     continue
 
@@ -579,53 +644,290 @@ class HybridAStarNode(Node):
                     removed += 1
                     continue
 
-                index += 1
+                # Fallback: single-projection simplification
+                # Try p1->proj1->p4 and p1->proj2->p4, keep shortest valid one.
+                proj_old_dist = (
+                    segment_distance((x1, y1), (x2, y2))
+                    + segment_distance((x2, y2), (x3, y3))
+                    + segment_distance((x3, y3), (x4, y4))
+                )
 
-            # Second pass: simplify 3-point bends (A->B->C => A->C)
-            triple_removed = 0
-            index = 0
-            while index <= len(optimized) - 3:
-                x1, y1, t1 = optimized[index]
-                x2, y2, _ = optimized[index + 1]
-                x3, y3, t3 = optimized[index + 2]
+                candidate_paths = []
+                proj_reasons = []
+                map_width_mm = float(self.params['map']['width_mm'])
+                map_height_mm = float(self.params['map']['height_mm'])
 
-                direct_theta_base = math.atan2(y3 - y1, x3 - x1)
-                chosen_direct_theta = None
-                direct_seg_collision = None
-                end_rotation_ok = False
+                def _scan_projection_candidate(label: str, x_start: float, y_start: float, dir_x: float, dir_y: float):
+                    mag = math.hypot(dir_x, dir_y)
+                    if mag < 1e-6:
+                        return None, f"{label} direction too small"
 
-                for direct_theta in heading_candidates(direct_theta_base):
-                    candidate_seg_collision = first_collision_on_segment(
-                        (x1, y1, direct_theta),
-                        (x3, y3, direct_theta)
+                    ux = dir_x / mag
+                    uy = dir_y / mag
+                    step_mm = 25.0
+                    max_distance_mm = 1500.0
+                    num_steps = int(max_distance_mm / step_mm)
+                    last_reason = f"{label} no valid point within {max_distance_mm:.0f}mm"
+
+                    for step in range(1, num_steps + 1):
+                        travel_mm = step * step_mm
+                        px_cand = x_start + ux * travel_mm
+                        py_cand = y_start + uy * travel_mm
+
+                        if not (0.0 <= px_cand <= map_width_mm and 0.0 <= py_cand <= map_height_mm):
+                            last_reason = (
+                                f"{label} out of map at ({px_cand:.1f},{py_cand:.1f}) "
+                                f"bounds=(0..{map_width_mm:.0f},0..{map_height_mm:.0f})"
+                            )
+                            break
+
+                        theta1 = math.atan2(py_cand - y1, px_cand - x1)
+                        theta2 = math.atan2(y4 - py_cand, x4 - px_cand)
+
+                        start_ok = rotation_safe_at_point(x1, y1, t1, theta1)
+                        if not start_ok:
+                            last_reason = f"{label} start rotation blocked"
+                            continue
+
+                        seg1_col = first_collision_on_segment((x1, y1, theta1), (px_cand, py_cand, theta1))
+                        if seg1_col is not None:
+                            last_reason = f"{label} seg1 collision at ({seg1_col[0]:.1f},{seg1_col[1]:.1f})"
+                            continue
+
+                        seg2_col = first_collision_on_segment((px_cand, py_cand, theta2), (x4, y4, theta2))
+                        if seg2_col is not None:
+                            last_reason = f"{label} seg2 collision at ({seg2_col[0]:.1f},{seg2_col[1]:.1f})"
+                            continue
+
+                        end_ok = rotation_safe_at_point(x4, y4, theta2, t4)
+                        if not end_ok:
+                            last_reason = f"{label} end rotation blocked"
+                            continue
+
+                        new_dist = segment_distance((x1, y1), (px_cand, py_cand)) + segment_distance((px_cand, py_cand), (x4, y4))
+                        added_dist = new_dist - proj_old_dist
+                        if added_dist > max_added_distance_mm:
+                            last_reason = f"{label} added_dist={added_dist:.0f}mm > limit"
+                            continue
+
+                        return {
+                            'name': label,
+                            'x': px_cand,
+                            'y': py_cand,
+                            'theta': theta1,
+                            'travel_mm': travel_mm,
+                            'new_dist': new_dist,
+                            'added_dist': added_dist,
+                        }, None
+
+                    return None, last_reason
+
+                cand1, reason1 = _scan_projection_candidate("proj1", x1, y1, x2 - x1, y2 - y1)
+                cand2, reason2 = _scan_projection_candidate("proj2", x4, y4, x4 - x3, y4 - y3)
+
+                if cand1 is not None:
+                    candidate_paths.append(cand1)
+                elif reason1:
+                    proj_reasons.append(reason1)
+
+                if cand2 is not None:
+                    candidate_paths.append(cand2)
+                elif reason2:
+                    proj_reasons.append(reason2)
+
+                if candidate_paths:
+                    best = min(candidate_paths, key=lambda c: c['new_dist'])
+                    optimized[index + 1] = (best['x'], best['y'], best['theta'])
+                    del optimized[index + 2]
+                    removed += 1
+                    self.get_logger().info(
+                        f"✨ projection fallback [I r{round_idx+1} i{index}]: "
+                        f"used={best['name']} proj@{best['travel_mm']:.0f}mm "
+                        f"added={best['added_dist']:.0f}mm"
                     )
-                    candidate_end_rotation_ok = rotation_safe_at_point(x3, y3, direct_theta, t3)
-
-                    if candidate_seg_collision is None and candidate_end_rotation_ok:
-                        chosen_direct_theta = direct_theta
-                        direct_seg_collision = candidate_seg_collision
-                        end_rotation_ok = candidate_end_rotation_ok
-                        break
-
-                    if chosen_direct_theta is None:
-                        chosen_direct_theta = direct_theta
-                        direct_seg_collision = candidate_seg_collision
-                        end_rotation_ok = candidate_end_rotation_ok
-
-                translation_collision = direct_seg_collision is not None
-
-                old_dist = segment_distance((x1, y1), (x2, y2)) + segment_distance((x2, y2), (x3, y3))
-                new_dist = segment_distance((x1, y1), (x3, y3))
-                added_distance = new_dist - old_dist
-
-                distance_ok = added_distance <= max_added_distance_mm
-
-                if (not translation_collision) and end_rotation_ok and distance_ok:
-                    del optimized[index + 1]
-                    triple_removed += 1
                     continue
+                else:
+                    _log_rejection(
+                        f"I-proj r{round_idx+1} i{index}",
+                        "; ".join(proj_reasons) if proj_reasons else "no valid projection path"
+                    )
+
+                # Log only the primary (first) rejection reason
+                if first_seg_collision is not None:
+                    ctheta, ci, csteps = first_seg_collision[2], first_seg_collision[3], first_seg_collision[4]
+                    extra = _collision_debug_details(first_seg_collision[0], first_seg_collision[1], ctheta)
+                    _log_rejection(
+                        f"I r{round_idx+1} i{index}",
+                        (
+                            f"seg1 collision at ({first_seg_collision[0]:.1f},{first_seg_collision[1]:.1f}) "
+                            f"sample={ci}/{csteps} theta={math.degrees(ctheta):.1f}° "
+                            f"seg=({x1:.1f},{y1:.1f})->({px:.1f},{py:.1f})"
+                            f"{extra}"
+                        )
+                    )
+                elif not start_rotation_ok:
+                    rot_hit = first_collision_on_rotation(x1, y1, t1, first_theta)
+                    if rot_hit is not None:
+                        rtheta, ri, rchecks = rot_hit
+                        extra = _collision_debug_details(x1, y1, rtheta)
+                        details = (
+                            f"start rotation blocked at ({x1:.1f},{y1:.1f}) "
+                            f"theta={math.degrees(rtheta):.1f}° sample={ri}/{rchecks} "
+                            f"from={math.degrees(t1):.1f}° to={math.degrees(first_theta):.1f}°"
+                            f"{extra}"
+                        )
+                    else:
+                        details = "start rotation blocked"
+                    _log_rejection(
+                        f"I r{round_idx+1} i{index}",
+                        details
+                    )
+                elif chosen_second_seg_collision is not None:
+                    ctheta, ci, csteps = chosen_second_seg_collision[2], chosen_second_seg_collision[3], chosen_second_seg_collision[4]
+                    extra = _collision_debug_details(chosen_second_seg_collision[0], chosen_second_seg_collision[1], ctheta)
+                    _log_rejection(
+                        f"I r{round_idx+1} i{index}",
+                        (
+                            f"seg2 collision at ({chosen_second_seg_collision[0]:.1f},{chosen_second_seg_collision[1]:.1f}) "
+                            f"sample={ci}/{csteps} theta={math.degrees(ctheta):.1f}° "
+                            f"seg=({px:.1f},{py:.1f})->({x4:.1f},{y4:.1f})"
+                            f"{extra}"
+                        )
+                    )
+                elif not chosen_mid_rotation_ok:
+                    rot_hit = first_collision_on_rotation(px, py, first_theta, chosen_second_theta)
+                    if rot_hit is not None:
+                        rtheta, ri, rchecks = rot_hit
+                        extra = _collision_debug_details(px, py, rtheta)
+                        details = (
+                            f"intersection rotation blocked at ({px:.1f},{py:.1f}) "
+                            f"theta={math.degrees(rtheta):.1f}° sample={ri}/{rchecks} "
+                            f"from={math.degrees(first_theta):.1f}° to={math.degrees(chosen_second_theta):.1f}°"
+                            f"{extra}"
+                        )
+                    else:
+                        details = "intersection rotation blocked"
+                    _log_rejection(
+                        f"I r{round_idx+1} i{index}",
+                        details
+                    )
+                elif not chosen_end_rotation_ok:
+                    rot_hit = first_collision_on_rotation(x4, y4, chosen_second_theta, t4)
+                    if rot_hit is not None:
+                        rtheta, ri, rchecks = rot_hit
+                        extra = _collision_debug_details(x4, y4, rtheta)
+                        details = (
+                            f"end rotation blocked at ({x4:.1f},{y4:.1f}) "
+                            f"theta={math.degrees(rtheta):.1f}° sample={ri}/{rchecks} "
+                            f"from={math.degrees(chosen_second_theta):.1f}° to={math.degrees(t4):.1f}°"
+                            f"{extra}"
+                        )
+                    else:
+                        details = "end rotation blocked"
+                    _log_rejection(
+                        f"I r{round_idx+1} i{index}",
+                        details
+                    )
+                elif not distance_ok:
+                    _log_rejection(
+                        f"I r{round_idx+1} i{index}",
+                        (
+                            f"added_distance={added_distance:.1f}mm > limit={max_added_distance_mm:.1f}mm "
+                            f"old={old_dist:.1f}mm new={new_dist:.1f}mm"
+                        )
+                    )
 
                 index += 1
+
+            # Second pass (optional): simplify 3-point bends (A->B->C => A->C)
+            triple_removed = 0
+            if enable_direct_simplification:
+                index = 0
+                while index <= len(optimized) - 3:
+                    x1, y1, t1 = optimized[index]
+                    x2, y2, _ = optimized[index + 1]
+                    x3, y3, t3 = optimized[index + 2]
+
+                    direct_theta_base = math.atan2(y3 - y1, x3 - x1)
+                    chosen_direct_theta = None
+                    direct_seg_collision = None
+                    end_rotation_ok = False
+
+                    for direct_theta in heading_candidates(direct_theta_base):
+                        candidate_seg_collision = first_collision_on_segment(
+                            (x1, y1, direct_theta),
+                            (x3, y3, direct_theta)
+                        )
+                        candidate_end_rotation_ok = rotation_safe_at_point(x3, y3, direct_theta, t3)
+
+                        if candidate_seg_collision is None and candidate_end_rotation_ok:
+                            chosen_direct_theta = direct_theta
+                            direct_seg_collision = candidate_seg_collision
+                            end_rotation_ok = candidate_end_rotation_ok
+                            break
+
+                        if chosen_direct_theta is None:
+                            chosen_direct_theta = direct_theta
+                            direct_seg_collision = candidate_seg_collision
+                            end_rotation_ok = candidate_end_rotation_ok
+
+                    translation_collision = direct_seg_collision is not None
+
+                    old_dist = segment_distance((x1, y1), (x2, y2)) + segment_distance((x2, y2), (x3, y3))
+                    new_dist = segment_distance((x1, y1), (x3, y3))
+                    added_distance = new_dist - old_dist
+
+                    distance_ok = added_distance <= max_added_distance_mm
+
+                    if (
+                        (not translation_collision)
+                        and end_rotation_ok
+                        and distance_ok
+                    ):
+                        del optimized[index + 1]
+                        triple_removed += 1
+                        continue
+
+                    # Log only the primary (first) rejection reason
+                    if translation_collision and direct_seg_collision is not None:
+                        ctheta, ci, csteps = direct_seg_collision[2], direct_seg_collision[3], direct_seg_collision[4]
+                        extra = _collision_debug_details(direct_seg_collision[0], direct_seg_collision[1], ctheta)
+                        _log_rejection(
+                            f"D r{round_idx+1} i{index}",
+                            (
+                                f"direct segment collision at ({direct_seg_collision[0]:.1f},{direct_seg_collision[1]:.1f}) "
+                                f"sample={ci}/{csteps} theta={math.degrees(ctheta):.1f}° "
+                                f"seg=({x1:.1f},{y1:.1f})->({x3:.1f},{y3:.1f})"
+                                f"{extra}"
+                            )
+                        )
+                    elif not end_rotation_ok:
+                        rot_hit = first_collision_on_rotation(x3, y3, chosen_direct_theta, t3)
+                        if rot_hit is not None:
+                            rtheta, ri, rchecks = rot_hit
+                            extra = _collision_debug_details(x3, y3, rtheta)
+                            details = (
+                                f"end rotation blocked at ({x3:.1f},{y3:.1f}) "
+                                f"theta={math.degrees(rtheta):.1f}° sample={ri}/{rchecks} "
+                                f"from={math.degrees(chosen_direct_theta):.1f}° to={math.degrees(t3):.1f}°"
+                                f"{extra}"
+                            )
+                        else:
+                            details = "end rotation blocked"
+                        _log_rejection(
+                            f"D r{round_idx+1} i{index}",
+                            details
+                        )
+                    elif not distance_ok:
+                        _log_rejection(
+                            f"D r{round_idx+1} i{index}",
+                            (
+                                f"added_distance={added_distance:.1f}mm > limit={max_added_distance_mm:.1f}mm "
+                                f"old={old_dist:.1f}mm new={new_dist:.1f}mm"
+                            )
+                        )
+
+                    index += 1
 
             total_removed_intersection += removed
             total_removed_direct += triple_removed
@@ -700,6 +1002,7 @@ class HybridAStarNode(Node):
         Uses the same advanced pathfinding logic as the local test script.
         """
         start_time = time.time()
+        response.can_rotate = True
         
         # Extract start and goal (convert m to mm)
         start_x = request.start_pose.pose.position.x * 1000.0
@@ -765,10 +1068,23 @@ class HybridAStarNode(Node):
                 max_iterations=self.params['pathfinding']['max_iterations'],
                 allow_goal_collision=allow_goal_collision
             )
+
+            # can_rotate is enabled by default.
+            # If start escape fallback was required, report can_rotate=False.
+            used_start_fallback = bool(getattr(self.pathfinder, 'last_used_start_fallback', False))
+            start_escape_mode = str(getattr(self.pathfinder, 'last_start_escape_mode', 'unknown'))
+            used_bridge_fallback = bool(getattr(self.pathfinder, 'last_used_bridge_fallback', False))
+            bridge_point = getattr(self.pathfinder, 'last_bridge_point', None)
+            if used_start_fallback:
+                response.can_rotate = False
             
             if path:
                 self.get_logger().info(f"✅ Found path: {len(path)} waypoints")
-                
+                if used_bridge_fallback and bridge_point is not None:
+                    bx, by, _ = bridge_point
+                    self.get_logger().info(
+                        f"🧭 Bridge fallback used (y>=1500mm) via ({bx:.1f}, {by:.1f})"
+                    )
                 # Smooth path (always enabled, same as local script)
                 smoothed = self.pathfinder.smooth_path(path, grid_resolution)
                 reduction = 100 * (1 - len(smoothed) / len(path)) if len(path) > 0 else 0
@@ -972,7 +1288,8 @@ class HybridAStarNode(Node):
                 smoothed = self.optimize_path_with_intersections(
                     smoothed, 
                     grid_resolution=grid_resolution,
-                    max_added_distance_mm=1000.0  # Allow up to 1000mm extra distance for straighter paths
+                    max_added_distance_mm=1000.0,  # Allow up to 1000mm extra distance for straighter paths
+                    enable_direct_simplification=False,
                 )
 
                 # Post-optimization cleanup: remove waypoints that can be skipped
@@ -1070,6 +1387,21 @@ class HybridAStarNode(Node):
 
                     smoothed = aligned
 
+                if used_start_fallback and len(smoothed) > 0:
+                    # Keep the robot's requested start pose as waypoint[0] in the
+                    # returned path when start escape fallback was required.
+                    first_x, first_y, first_theta = smoothed[0]
+                    same_start = (
+                        abs(first_x - start_x) < 1e-6
+                        and abs(first_y - start_y) < 1e-6
+                        and abs(first_theta - start_theta) < 1e-9
+                    )
+                    if not same_start:
+                        smoothed = [(start_x, start_y, start_theta)] + smoothed
+                        self.get_logger().info(
+                            f"↪ Start escape fallback ({start_escape_mode}) used: prepended original start pose as first waypoint"
+                        )
+
                 # Calculate path length
                 total_dist = 0
                 for i in range(len(smoothed) - 1):
@@ -1092,6 +1424,7 @@ class HybridAStarNode(Node):
                 response.num_waypoints = len(smoothed)
                 response.path_length_m = total_dist / 1000.0
                 response.message = f"Path found: {len(smoothed)} waypoints, {response.path_length_m:.2f}m"
+                response.message += f" (can_rotate={str(response.can_rotate).lower()})"
                 
                 # Add STM32 go_to commands to response
                 response.stm32_commands = self.waypoints_to_stm32_go_to_commands(smoothed, speed=100)
@@ -1103,7 +1436,49 @@ class HybridAStarNode(Node):
             else:
                 response.success = False
                 response.message = "No path found - start/goal in collision or blocked"
+                response.message += f" (can_rotate={str(response.can_rotate).lower()})"
                 self.get_logger().warn(f"❌ {response.message}")
+                start_collision = self.pathfinder.is_collision(start_x, start_y, start_theta, grid_resolution)
+                goal_collision = self.pathfinder.is_collision(goal_x, goal_y, goal_theta, grid_resolution)
+
+                self.get_logger().warn(
+                    "   Failure diagnostics: "
+                    f"start_collision={start_collision}, "
+                    f"goal_collision={goal_collision}, "
+                    f"allow_goal_collision={allow_goal_collision}"
+                )
+
+                if start_collision:
+                    self.get_logger().warn(
+                        f"   Start pose in collision: ({start_x:.1f}, {start_y:.1f}, {math.degrees(start_theta):.1f}°)"
+                    )
+                    start_hits = self.pathfinder.get_collision_debug_info(
+                        start_x, start_y, start_theta, grid_resolution, max_items=8
+                    )
+                    for idx, hit in enumerate(start_hits, start=1):
+                        self.get_logger().warn(f"      start_collision[{idx}]: {hit}")
+
+                if goal_collision and not allow_goal_collision:
+                    self.get_logger().warn(
+                        f"   Goal pose in collision: ({goal_x:.1f}, {goal_y:.1f}, {math.degrees(goal_theta):.1f}°)"
+                    )
+                    goal_hits = self.pathfinder.get_collision_debug_info(
+                        goal_x, goal_y, goal_theta, grid_resolution, max_items=8
+                    )
+                    for idx, hit in enumerate(goal_hits, start=1):
+                        self.get_logger().warn(f"      goal_collision[{idx}]: {hit}")
+
+                if goal_collision and allow_goal_collision:
+                    self.get_logger().warn(
+                        "   Goal is in collision but overlap is allowed for this request (goal on batch)."
+                    )
+
+                if (not start_collision) and ((not goal_collision) or allow_goal_collision):
+                    self.get_logger().warn(
+                        "   Start/goal are collision-free under current rules; failure is likely blocked connectivity "
+                        "(obstacle layout, corridor width, or search limits)."
+                    )
+
                 self.get_logger().warn("Possible issues:")
                 self.get_logger().warn("  - Start or goal in collision with obstacles")
                 self.get_logger().warn("  - Path blocked by obstacles")
@@ -1112,6 +1487,7 @@ class HybridAStarNode(Node):
         except Exception as e:
             response.success = False
             response.message = f"Error: {str(e)}"
+            response.can_rotate = True
             self.get_logger().error(f"❌ Planning failed: {e}")
             import traceback
             self.get_logger().error(traceback.format_exc())
@@ -1153,6 +1529,7 @@ class HybridAStarNode(Node):
         Request:
           - direction: 1 (front) or 0 (back)
           - color: 'yellow' or 'blue'
+                    - use_pose: if true, use (x_mm, y_mm, theta_deg) from request
         """
         direction = int(request.direction)
         if direction not in (0, 1):
@@ -1168,20 +1545,27 @@ class HybridAStarNode(Node):
             response.obstacle_ids = []
             return response
 
-        robot_pose = self._get_robot_pose_for_put_down()
-        if robot_pose is None:
-            response.success = False
-            response.message = "Robot pose unavailable (no TF and no previous start pose)"
-            response.obstacle_ids = []
-            return response
+        if bool(request.use_pose):
+            robot_x_mm = float(request.x_mm)
+            robot_y_mm = float(request.y_mm)
+            robot_theta = math.radians(float(request.theta_deg))
+            self.last_robot_pose_mm = (robot_x_mm, robot_y_mm, robot_theta)
+        else:
+            robot_pose = self._get_robot_pose_for_put_down()
+            if robot_pose is None:
+                response.success = False
+                response.message = "Robot pose unavailable (no TF and no previous start pose)"
+                response.obstacle_ids = []
+                return response
 
-        robot_x_mm, robot_y_mm, robot_theta = robot_pose
+            robot_x_mm, robot_y_mm, robot_theta = robot_pose
 
         # Geometry requested by user
         crate_length_mm = 150.0
+        insert_offset_mm = float(getattr(request, 'insert_offset_mm', 0.0) or 0.0)
 
         # Forward offset: 150mm + 50mm, then center by +half crate length
-        robot_to_batch_face_mm = 150.0 + 50.0
+        robot_to_batch_face_mm = 150.0 + 50.0 + insert_offset_mm
         center_forward_offset_mm = robot_to_batch_face_mm + (crate_length_mm / 2.0)
         if direction == 0:
             center_forward_offset_mm *= -1.0
@@ -1385,7 +1769,7 @@ class HybridAStarNode(Node):
     def handle_get_active_batches(self, request: GetActiveBatches.Request, response: GetActiveBatches.Response) -> GetActiveBatches.Response:
         """
         Service handler: Get information about all active batches
-        Returns arrays of batch information (known_id, batch_type, member_count, direction, center, quality)
+        Returns arrays of batch information (known_id, batch_type, member_count, direction, pattern, theta_degrees, center, quality)
         """
         try:
             # Get batch info from map manager
@@ -1396,13 +1780,30 @@ class HybridAStarNode(Node):
             response.batch_types = batch_info['batch_types']
             response.member_counts = batch_info['member_counts']
             response.directions = batch_info['directions']
+            response.patterns = batch_info['patterns']
+            response.theta_degrees = batch_info['theta_degrees']
             response.centers = batch_info['centers']
             response.qualities = batch_info['qualities']
             
-            self.get_logger().info(
-                f"📊 Active batches query: {len(response.known_ids)} batches "
-                f"(FX: {response.batch_types.count('fx')}, SX: {response.batch_types.count('sx')})"
+            signature = (
+                len(response.known_ids),
+                response.batch_types.count('fx'),
+                response.batch_types.count('sx'),
             )
+            if signature != self._last_active_batches_signature:
+                self.get_logger().info(
+                    f"📊 Active batches query: {signature[0]} batches "
+                    f"(FX: {signature[1]}, SX: {signature[2]})"
+                )
+                self._last_active_batches_signature = signature
+            else:
+                self.get_logger().debug(
+                    f"📊 Active batches query unchanged: {signature[0]} batches "
+                    f"(FX: {signature[1]}, SX: {signature[2]})"
+                )
+
+            # Mirror to topic so consumers can subscribe instead of polling service.
+            self.publish_active_batches_topic(batch_info=batch_info)
             
         except Exception as e:
             self.get_logger().error(f"❌ Error getting active batches: {e}")
@@ -1411,10 +1812,31 @@ class HybridAStarNode(Node):
             response.batch_types = []
             response.member_counts = []
             response.directions = []
+            response.patterns = []
+            response.theta_degrees = []
             response.centers = []
             response.qualities = []
         
         return response
+
+    def publish_active_batches_topic(self, batch_info: Optional[Dict[str, list]] = None) -> None:
+        """Publish active batches on /active_obstacles using ActiveBatches message."""
+        try:
+            if batch_info is None:
+                batch_info = self.map_manager.get_active_batches_info()
+
+            msg = ActiveBatches()
+            msg.centers = batch_info.get('centers', [])
+            msg.known_ids = batch_info.get('known_ids', [])
+            msg.batch_types = batch_info.get('batch_types', [])
+            msg.member_counts = batch_info.get('member_counts', [])
+            msg.directions = batch_info.get('directions', [])
+            msg.patterns = batch_info.get('patterns', [])
+            msg.theta_degrees = batch_info.get('theta_degrees', [])
+            msg.qualities = batch_info.get('qualities', [])
+            self.active_batches_pub.publish(msg)
+        except Exception as e:
+            self.get_logger().debug(f"Active batches topic publish skipped: {e}")
     
     def handle_delete_batch(self, request, response):
         """

@@ -26,11 +26,13 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/ObstacleArray.msg"
   "msg/ObstacleIDArray.msg"
   "msg/ColorCommand.msg"
+  "msg/ActiveBatches.msg"
   "srv/ComputePath.srv"
   "srv/PutDown.srv"
   "srv/GetBatchColorPattern.srv"
   "srv/DeleteBatch.srv"
   "srv/GetActiveBatches.srv"
+  "srv/SetTeamColor.srv"
   DEPENDENCIES std_msgs geometry_msgs nav_msgs builtin_interfaces aruco_mapper_msgs
 )
 

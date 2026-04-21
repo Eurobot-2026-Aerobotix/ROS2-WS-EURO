@@ -5,7 +5,8 @@ Manages dynamic obstacles from ArUco mapper and enemy detection
 """
 
 import math
-from typing import Dict, List, Optional
+import time
+from typing import Dict, List, Optional, Tuple
 from threading import Lock
 
 import rclpy
@@ -20,6 +21,7 @@ from visualization_msgs.msg import Marker, MarkerArray
 
 # Custom messages
 from hybrid_astar.msg import Obstacle, ObstacleArray
+from hybrid_astar.srv import SetTeamColor
 from aruco_mapper_msgs.msg import ArucoMapperState, Batch, BatchMember
 from aruco_mapper_msgs.srv import GetStableBatches
 
@@ -87,6 +89,10 @@ class MapManager:
         # Using known_id as key to avoid overwrites when batch_id is reused
         self.batches_fx: Dict[str, Batch] = {}
         self.batches_sx: Dict[str, Batch] = {}
+        # Optional FX status type extracted from mapper state suffixes:
+        #   TRACKING_P / EMERGING_P   -> 'P'
+        #   TRACKING_NP / EMERGING_NP -> 'NP'
+        self.batches_fx_status_type: Dict[str, str] = {}
         self.batches_lock = Lock()
         
         # Static obstacles - using permanent area instead of JSON file
@@ -99,10 +105,13 @@ class MapManager:
         self.first_update_map = True
         self.first_update_empty_retry_count = 0
         self.first_update_empty_retry_max = 6
+        self.first_update_empty_reported = False
+        self.first_update_start_logged = False
         
         # Flag to track if we've locked the baseline patterns
         self.baselines_locked = False
         self.locked_baseline_batch_ids: set = set()
+        self.locked_baseline_all_batch_ids: set = set()
         self.pending_baseline_lock_ids: set = set()
 
         # Only the first normal update_map flow is allowed to trigger baseline locking.
@@ -116,6 +125,12 @@ class MapManager:
         
         # Set to track currently active batch known_ids (from last update)
         self.active_batch_ids: set = set()
+
+        # Debounce repeated per-SX locked-baseline requests when source is flapping.
+        self.baseline_request_cooldown_sec = float(
+            params.get('rates', {}).get('baseline_request_cooldown_sec', 1.5)
+        )
+        self._last_locked_baseline_request_s: Dict[str, float] = {}
         
         # Set to track batches that already have obstacles created (prevents duplicates)
         self.batches_with_obstacles: set = set()
@@ -129,21 +144,42 @@ class MapManager:
         self.retry_client = None
         self.retry_service_name = ""
 
+        # Automatic source handover guard (web -> aruco)
+        self.source_switch_in_progress = False
+
         # Short-pattern retry: re-check batches whose locked pattern has < 4 elements
         self.short_pattern_ids: set = set()
         self.short_pattern_retry_timer = None
         self.short_pattern_retry_active = False
         self.short_pattern_retry_interval_sec = params.get('rates', {}).get('short_pattern_retry_sec', 2.0)
 
+        # Game-start driven periodic update_map flow
+        self.start_game_requested = False
+        self.game_update_timer_active = False
+        self.game_update_pending = 0
+        self.game_update_interval_sec = params.get('rates', {}).get('start_game_update_map_sec', 1.0)
+        self.game_start_time_ns: Optional[int] = None
+        self.game_85s_triggered = False
+        self.game_timeout_stop_sec = float(params.get('rates', {}).get('start_game_timeout_sec', 105.0))
+        self.game_timeout_stopped = False
+
         # Enemy obstacle freshness management (/obstacle_relative)
         self.enemy_obstacle_timeout_sec = params.get('rates', {}).get('enemy_obstacle_timeout_sec', 1.0)
         self.last_enemy_update_ns: Optional[int] = None
         self.enemy_from_web: bool = False
+
+        # Team color used to mirror 85s timed PAMI walls.
+        # yellow: default coordinates, blue: mirrored on x-axis (y mirrored around horizontal center axis).
+        self.team_color: str = 'yellow'
+        field_width = float(params.get('map', {}).get('width_mm', 3000.0))
+        field_height = float(params.get('map', {}).get('height_mm', 2000.0))
+        self._symmetry_axis_y_mm = 1500.0  # Horizontal center axis for y-symmetry
         
         # Create publishers
         self.current_obs_pub = node.create_publisher(
             ObstacleArray, '/obstacles/current', 10)
-        
+
+        # Dedicated stream for active batch obstacles (sx_/fx_ only)
         self.path_viz_pub = node.create_publisher(
             MarkerArray, '/path_visualization', 10)
         
@@ -177,6 +213,11 @@ class MapManager:
         self.short_pattern_retry_timer = self.node.create_timer(
             short_retry_interval, self._short_pattern_retry_callback
         )
+
+        game_update_interval = max(self.game_update_interval_sec, 0.1)
+        self.game_update_timer = self.node.create_timer(
+            game_update_interval, self._game_update_timer_callback
+        )
         
         self.node.get_logger().info('🗺️  Map Manager initialized')
 
@@ -185,6 +226,75 @@ class MapManager:
         msg.data = int(value)
         self.beacon_status_pub.publish(msg)
         self.node.get_logger().info(f"📡 Published beacon status from map manager: {msg.data}")
+
+    def _all_active_batches_baseline_locked(self) -> bool:
+        """Return True when all active non-manual batches have locked baselines."""
+        required_locked_ids = {
+            bid for bid in self.active_batch_ids
+            if bid not in self.manual_putdown_batch_ids
+        }
+        return required_locked_ids.issubset(self.locked_baseline_all_batch_ids)
+
+    def _try_publish_beacon_ready(self) -> None:
+        """Publish beacon-ready only once, after baseline locking is fully stable."""
+        if self.beacon_ready_published:
+            return
+
+        if not self.baselines_locked:
+            return
+
+        if self.known_ids_to_retry or self.pending_baseline_lock_ids or self.short_pattern_ids:
+            return
+
+        if not self._all_active_batches_baseline_locked():
+            self.node.get_logger().info(
+                "⏳ Beacon ready not published yet: waiting for all active batches to be baseline locked"
+            )
+            return
+
+        self._publish_beacon_status(1)
+        self.beacon_ready_published = True
+
+    def _invalidate_sx_baseline_lock(self, known_id: str, state: str) -> None:
+        """Clear SX baseline-lock markers when mapper state regresses.
+
+        This allows requesting locked baseline again for the same known_id.
+        """
+        if not known_id.startswith('s'):
+            return
+
+        was_locked = (
+            known_id in self.locked_baseline_batch_ids
+            or known_id in self.locked_baseline_all_batch_ids
+        )
+
+        self.locked_baseline_batch_ids.discard(known_id)
+        self.locked_baseline_all_batch_ids.discard(known_id)
+        self.pending_baseline_lock_ids.discard(known_id)
+
+        if was_locked:
+            self.node.get_logger().warn(
+                f"⚠️  SX '{known_id}' regressed to {state}; clearing baseline lock markers so it can be re-locked"
+            )
+
+    @staticmethod
+    def _parse_batch_state(state_value: str) -> Tuple[str, str]:
+        """
+        Parse mapper batch state and extract optional FX status suffix.
+
+        Examples:
+          TRACKING      -> (TRACKING, '')
+          TRACKING_NP   -> (TRACKING, 'NP')
+          EMERGING_P    -> (EMERGING, 'P')
+        """
+        normalized = str(state_value or "").strip().upper()
+        if not normalized:
+            return "", ""
+        if normalized.endswith("_NP"):
+            return normalized[:-3], "NP"
+        if normalized.endswith("_P"):
+            return normalized[:-2], "P"
+        return normalized, ""
     
     def handle_clear_all(self, msg: Empty):
         """Clear all obstacles"""
@@ -228,6 +338,7 @@ class MapManager:
             sx_count = len(self.batches_sx)
             self.batches_fx.clear()
             self.batches_sx.clear()
+            self.batches_fx_status_type.clear()
             self.batches_with_obstacles.clear()  # Clear tracking
             self.manual_putdown_batch_ids.clear()
         
@@ -237,8 +348,14 @@ class MapManager:
         self.baselines_locked = False
         self.beacon_ready_published = False
         self.locked_baseline_batch_ids.clear()
+        self.locked_baseline_all_batch_ids.clear()
         self.pending_baseline_lock_ids.clear()
         self.baseline_lock_pending = False
+        self.start_game_requested = False
+        self.game_start_time_ns = None
+        self.game_85s_triggered = False
+        self.game_timeout_stopped = False
+        self._stop_game_update_timer()
         self.known_ids_to_retry.clear()
         self.deleted_batch_ids.clear()
         self.active_batch_ids.clear()
@@ -289,6 +406,7 @@ class MapManager:
         with self.batches_lock:
             if known_id in self.batches_fx:
                 del self.batches_fx[known_id]
+                self.batches_fx_status_type.pop(known_id, None)
                 deleted = True
                 self.node.get_logger().info(f"  ✅ Removed FX batch '{known_id}'")
             if known_id in self.batches_sx:
@@ -489,8 +607,34 @@ class MapManager:
                 self.obstacle_sources[obs.id] = 'put_down'
                 created_ids.append(obs.id)
 
+            # Add safety zone obstacle (17cm x 17cm square) centered at putdown zone position
+            # Only add on first registration (existing_count == 0), not on appends
+            if existing_count == 0:
+                safety_zone_size_mm = 170.0  # 17cm x 17cm
+                putdown_center_x_mm = self.putdown_fx_positions_mm[known_id]['x']
+                putdown_center_y_mm = self.putdown_fx_positions_mm[known_id]['y']
+                
+                safety_obs = Obstacle()
+                safety_obs.id = f"fx_{known_id}_safety"
+                safety_obs.type = 'safety_zone'
+                safety_obs.color = 'wall'  # Use wall color for visualization
+                safety_obs.width_mm = safety_zone_size_mm
+                safety_obs.height_mm = safety_zone_size_mm
+                safety_obs.pose.x = putdown_center_x_mm
+                safety_obs.pose.y = putdown_center_y_mm
+                safety_obs.pose.theta = 0.0
+                safety_obs.detected_at = stamp
+                self.obstacles.append(safety_obs)
+                self.obstacle_sources[safety_obs.id] = 'put_down_safety'
+                created_ids.append(safety_obs.id)
+                
+                self.node.get_logger().info(
+                    f"🛡️ Added safety zone for {known_id}: 170mm x 170mm square at ({putdown_center_x_mm:.1f}, {putdown_center_y_mm:.1f})mm"
+                )
+
         with self.batches_lock:
             self.batches_fx[known_id] = batch
+            self.batches_fx_status_type.pop(known_id, None)
             self.batches_with_obstacles.add(known_id)
             self.manual_putdown_batch_ids.add(known_id)
             self.active_batch_ids.add(known_id)
@@ -502,8 +646,8 @@ class MapManager:
 
     def _reconcile_manual_putdown_batches(self, received_batch_ids: set, lost_batch_ids: set) -> set:
         """
-        Keep manual put-down FX batches unless the beacon explicitly reports
-        that known_id with state LOST.
+        Keep manual put-down FX batches even if beacon reports LOST.
+        Beacon updates must not remove/overwrite manual put_down batches.
 
         Returns:
             Set of manual put-down known_ids that should be preserved this cycle.
@@ -511,31 +655,14 @@ class MapManager:
         with self.batches_lock:
             manual_ids = set(self.manual_putdown_batch_ids)
 
-        # Preserve manual batches by default, and only remove if explicitly LOST.
+        # Preserve manual batches by default, including when beacon reports LOST.
+        # Requirement: if batch was put down manually by us, do not update/remove it.
         retained_manual_ids = set(manual_ids)
         lost_manual_ids = manual_ids & lost_batch_ids
 
         if lost_manual_ids:
-            with self.obstacles_lock:
-                self.obstacles = [
-                    obs for obs in self.obstacles
-                    if not any(obs.id.startswith(f"fx_{bid}_") for bid in lost_manual_ids)
-                ]
-                self.obstacle_sources = {
-                    k: v for k, v in self.obstacle_sources.items()
-                    if not any(k.startswith(f"fx_{bid}_") for bid in lost_manual_ids)
-                }
-
-            with self.batches_lock:
-                for bid in lost_manual_ids:
-                    self.batches_fx.pop(bid, None)
-                    self.batches_with_obstacles.discard(bid)
-                    self.manual_putdown_batch_ids.discard(bid)
-                    self.active_batch_ids.discard(bid)
-                    retained_manual_ids.discard(bid)
-
             self.node.get_logger().info(
-                f"🗑️  Removed {len(lost_manual_ids)} manual put_down batches reported LOST by beacon: {lost_manual_ids}"
+                f"📌 Ignoring LOST for manual put_down batches (preserved): {lost_manual_ids}"
             )
 
         if retained_manual_ids:
@@ -544,6 +671,73 @@ class MapManager:
             )
 
         return retained_manual_ids
+
+    def _remove_lost_batches(self, batch_ids: set, reason: str = "reported LOST") -> None:
+        """Hard-remove lost batches (except manually preserved ones handled elsewhere)."""
+        if not batch_ids:
+            return
+
+        # Ignore no-op LOST sets to avoid flapping logs like
+        # "obstacles_removed=0" for already-removed batches.
+        with self.batches_lock:
+            tracked_batch_ids = (
+                set(self.batches_fx.keys())
+                | set(self.batches_sx.keys())
+                | set(self.batches_with_obstacles)
+                | set(self.locked_baseline_batch_ids)
+                | set(self.locked_baseline_all_batch_ids)
+                | set(self.pending_baseline_lock_ids)
+                | set(self.short_pattern_ids)
+                | set(self.active_batch_ids)
+                | set(self.known_ids_to_retry)
+            )
+
+        relevant_batch_ids = set(batch_ids) & tracked_batch_ids
+        if not relevant_batch_ids:
+            with self.obstacles_lock:
+                for obs in self.obstacles:
+                    obs_id = str(obs.id)
+                    if not (obs_id.startswith('fx_') or obs_id.startswith('sx_')):
+                        continue
+                    parts = obs_id.split('_', 2)
+                    if len(parts) >= 3 and parts[1] in batch_ids:
+                        relevant_batch_ids.add(parts[1])
+
+        if not relevant_batch_ids:
+            return
+
+        with self.obstacles_lock:
+            old_count = len(self.obstacles)
+            self.obstacles = [
+                obs for obs in self.obstacles
+                if not any(
+                    obs.id.startswith(f"fx_{bid}_") or obs.id.startswith(f"sx_{bid}_")
+                    for bid in relevant_batch_ids
+                )
+            ]
+            removed_obs = old_count - len(self.obstacles)
+            self.obstacle_sources = {
+                k: v for k, v in self.obstacle_sources.items()
+                if not any(k.startswith(f"fx_{bid}_") or k.startswith(f"sx_{bid}_") for bid in relevant_batch_ids)
+            }
+
+        with self.batches_lock:
+            for bid in relevant_batch_ids:
+                self.batches_fx.pop(bid, None)
+                self.batches_fx_status_type.pop(bid, None)
+                self.batches_sx.pop(bid, None)
+                self.batches_with_obstacles.discard(bid)
+                self.locked_baseline_batch_ids.discard(bid)
+                self.locked_baseline_all_batch_ids.discard(bid)
+                self.pending_baseline_lock_ids.discard(bid)
+                self.short_pattern_ids.discard(bid)
+                self.active_batch_ids.discard(bid)
+                self.known_ids_to_retry.discard(bid)
+                self._last_locked_baseline_request_s.pop(bid, None)
+
+        self.node.get_logger().info(
+            f"🗑️  Removed {len(relevant_batch_ids)} batch(es) {reason}: {relevant_batch_ids} (obstacles_removed={removed_obs})"
+        )
     
     def handle_obstacle_relative(self, msg: PoseStamped):
         """Handle incoming obstacle from /obstacle_relative topic (only keeps one enemy)"""
@@ -631,6 +825,7 @@ class MapManager:
             msg.header.frame_id = "map"
             msg.obstacles = list(self.obstacles)
             self.current_obs_pub.publish(msg)
+
         # Also publish obstacle visualization for RViz
         self.publish_obstacles(self.get_active_obstacles())
 
@@ -696,7 +891,7 @@ class MapManager:
         delete_marker.action = Marker.DELETEALL
         marker_array.markers.append(delete_marker)
         
-        crates = [obs for obs in obstacles if obs['color'] != 'wall']
+        crates = list(obstacles)
         
         marker_id = 1
         # Visualize CRATES (small, colored, on ground)
@@ -713,13 +908,19 @@ class MapManager:
             # Position (on ground level) - x/y are centers
             crate_marker.pose.position.x = obs['x'] / 1000.0
             crate_marker.pose.position.y = obs['y'] / 1000.0
-            crate_marker.pose.position.z = 0.03  # 30mm high (half of 150mm)
+            if obs['color'] == 'wall':
+                crate_marker.pose.position.z = 0.15  # make wall easier to see
+            else:
+                crate_marker.pose.position.z = 0.03  # 30mm high (half of 150mm)
             crate_marker.pose.orientation = self.yaw_to_quaternion(obs.get('theta', 0.0))
             
-            # Size: small crates
+            # Size
             crate_marker.scale.x = obs['width'] / 1000.0
             crate_marker.scale.y = obs['height'] / 1000.0
-            crate_marker.scale.z = 0.15  # 150mm tall crates
+            if obs['color'] == 'wall':
+                crate_marker.scale.z = 0.30
+            else:
+                crate_marker.scale.z = 0.15  # 150mm tall crates
             
             # Color based on crate color
             if obs['color'] == 'yellow':
@@ -732,6 +933,11 @@ class MapManager:
                 crate_marker.color.g = 0.5
                 crate_marker.color.b = 1.0
                 crate_marker.color.a = 0.8
+            elif obs['color'] == 'wall':
+                crate_marker.color.r = 0.5
+                crate_marker.color.g = 0.5
+                crate_marker.color.b = 0.5
+                crate_marker.color.a = 0.9
             else:  # red or other
                 crate_marker.color.r = 1.0
                 crate_marker.color.g = 0.0
@@ -751,10 +957,215 @@ class MapManager:
         
         Priority: Try web service first (for simulation), then fall back to aruco_mapper (for real robot)
         """
-        # Try web service first if available
+        success, message, _service_name = self._trigger_update_map_async(can_lock_baseline=True)
+        response.success = success
+        response.message = message
+        return response
+
+    def handle_start_game(self, request: Trigger.Request, response: Trigger.Response) -> Trigger.Response:
+        """
+        Service handler: arm game flow and start periodic update_map only after
+        baseline lock is complete.
+        """
+        self.start_game_requested = True
+        # Start/restart game-time counting from this request.
+        now = self.node.get_clock().now()
+        self.game_start_time_ns = int(now.nanoseconds)
+        self.game_85s_triggered = False
+        self.game_timeout_stopped = False
+
+        if self.game_update_timer_active:
+            # Reset and restart the timer
+            self._stop_game_update_timer()
+            self._start_game_update_timer()
+            response.success = True
+            response.message = (
+                f"Game timer restarted: update_map every {max(self.game_update_interval_sec, 0.1):.1f}s"
+            )
+            return response
+
+        # If already locked, start immediately.
+        if self.baselines_locked:
+            self._start_game_update_timer()
+            response.success = True
+            response.message = (
+                f"Game started: periodic update_map enabled every {max(self.game_update_interval_sec, 0.1):.1f}s"
+            )
+            return response
+
+        # Otherwise trigger initial update flow; timer starts automatically once locked.
+        success, message, _service_name = self._trigger_update_map_async(can_lock_baseline=True)
+        if not success:
+            response.success = False
+            response.message = f"start_game failed to trigger initial update_map: {message}"
+            return response
+
+        response.success = True
+        response.message = (
+            "start_game accepted: initial update_map triggered; timer will start after baseline lock completes"
+        )
+        return response
+
+    def _start_game_update_timer(self):
+        if self.game_timeout_stopped:
+            self.node.get_logger().warn(
+                f"⏹️ Game update timer start ignored: game already timed out at {self.game_timeout_stop_sec:.1f}s"
+            )
+            return
+        if self.game_update_timer_active:
+            return
+        self.game_update_timer_active = True
+        self.node.get_logger().info(
+            f"🎮 Game update timer started: update_map every {max(self.game_update_interval_sec, 0.1):.1f}s"
+        )
+
+    def _stop_game_update_timer(self):
+        if not self.game_update_timer_active:
+            return
+        self.game_update_timer_active = False
+        self.game_update_pending = 0
+        self.node.get_logger().info("🛑 Game update timer stopped")
+
+    def handle_set_team_color(self, request: SetTeamColor.Request, response: SetTeamColor.Response) -> SetTeamColor.Response:
+        """Service handler to set active team color for timed PAMI wall symmetry."""
+        color = str(getattr(request, 'color', '') or '').strip().lower()
+        if color not in ('yellow', 'blue'):
+            response.success = False
+            response.message = "Invalid color. Use 'yellow' or 'blue'."
+            return response
+
+        self.team_color = color
+        response.success = True
+        response.message = f"Team color set to {self.team_color}"
+        self.node.get_logger().info(
+            f"🎨 Team color updated: {self.team_color} (85s wall symmetry axis y={self._symmetry_axis_y_mm:.1f}mm)"
+        )
+        return response
+
+    def _add_wall_sima_obstacle(self) -> None:
+        """Add/update a timed game obstacle used to block a busy zone."""
+        wall_id = 'wall_sima'
+        wall_id_2 = 'wall_sima_2'
+
+        # Requested values:
+        # - center in mm
+        # - width/height provided in meters
+        center_x_mm = 1500.0
+        center_y_mm = 800.0
+        width_mm = 600.0
+        height_mm = 1500.0
+
+        # Second requested wall
+        center2_x_mm = 550.0
+        center2_y_mm = 1250.0
+        width2_mm = 300.0
+        height2_mm = 300.0
+
+        # For blue, apply x-axis symmetry: mirror y around horizontal center axis.
+        if self.team_color == 'blue':
+            center_y_mm = (2.0 * self._symmetry_axis_y_mm) - center_y_mm
+            center2_y_mm = (2.0 * self._symmetry_axis_y_mm) - center2_y_mm
+
+        with self.obstacles_lock:
+            # Remove any previous instance with same id so we can re-add cleanly.
+            self.obstacles = [obs for obs in self.obstacles if obs.id not in (wall_id, wall_id_2)]
+
+            obs = Obstacle()
+            obs.id = wall_id
+            obs.type = 'wall'
+            obs.color = 'wall'
+            obs.pose.x = center_x_mm
+            obs.pose.y = center_y_mm
+            obs.pose.theta = 0.0
+            obs.width_mm = width_mm
+            obs.height_mm = height_mm
+            obs.detected_at = self.node.get_clock().now().to_msg()
+
+            self.obstacles.append(obs)
+            self.obstacle_sources[wall_id] = 'game_zone'
+
+            obs2 = Obstacle()
+            obs2.id = wall_id_2
+            obs2.type = 'wall'
+            obs2.color = 'wall'
+            obs2.pose.x = center2_x_mm
+            obs2.pose.y = center2_y_mm
+            obs2.pose.theta = 0.0
+            obs2.width_mm = width2_mm
+            obs2.height_mm = height2_mm
+            obs2.detected_at = self.node.get_clock().now().to_msg()
+
+            self.obstacles.append(obs2)
+            self.obstacle_sources[wall_id_2] = 'game_zone'
+
+        self.node.get_logger().info(
+            f"🧱 Added timed obstacle 'wall_sima' at 85s for {self.team_color} "
+            f"(center=({center_x_mm:.1f}, {center_y_mm:.1f})mm, size={width_mm:.1f}x{height_mm:.1f}mm)"
+        )
+        self.node.get_logger().info(
+            f"🧱 Added timed obstacle 'wall_sima_2' at 85s for {self.team_color} "
+            f"(center=({center2_x_mm:.1f}, {center2_y_mm:.1f})mm, size={width2_mm:.1f}x{height2_mm:.1f}mm)"
+        )
+
+    def _check_game_time_events(self) -> None:
+        """Check elapsed game time and fire one-shot hooks (e.g., at 85s)."""
+        if not self.start_game_requested:
+            return
+        if self.game_start_time_ns is None:
+            return
+
+        elapsed_s = (int(self.node.get_clock().now().nanoseconds) - int(self.game_start_time_ns)) / 1e9
+
+        # One-shot event at 85s (hook placeholder for future actions).
+        if (not self.game_85s_triggered) and elapsed_s >= 85.0:
+            self.game_85s_triggered = True
+            self._add_wall_sima_obstacle()
+            self.node.get_logger().info("⏱️ Game reached 85s (wall_sima added)")
+
+        # Hard stop for periodic game updates.
+        if (not self.game_timeout_stopped) and elapsed_s >= self.game_timeout_stop_sec:
+            self.game_timeout_stopped = True
+            self.start_game_requested = False
+            self._stop_game_update_timer()
+            self.node.get_logger().info(
+                f"⏱️ Game reached {elapsed_s:.1f}s (>= {self.game_timeout_stop_sec:.1f}s) - stopped periodic update_map"
+            )
+
+    def _game_update_timer_callback(self):
+        """Periodic callback that performs the same async flow as /update_map."""
+        self._check_game_time_events()
+
+        if not self.game_update_timer_active:
+            return
+        if not self.baselines_locked:
+            return
+        if self.game_update_pending > 0:
+            return
+
+        success, message, service_name = self._trigger_update_map_async(can_lock_baseline=False)
+        if not success:
+            self.node.get_logger().warn(f"⚠️ Game timer update_map skipped: {message}")
+            return
+
+        self.game_update_pending += 1
+        self.node.get_logger().debug(
+            f"🔄 Game timer update_map triggered from {service_name}: {message}"
+        )
+
+    def _trigger_update_map_async(self, can_lock_baseline: bool = True) -> tuple[bool, str, str]:
+        """Trigger the same asynchronous GetStableBatches flow as /update_map."""
+        # If we are currently using simulation batches and ArUco service becomes available,
+        # migrate source by running: clear_map -> reset(rrr) -> update_map.
+        if self.retry_service_name == "/aruco_mapper/get_stable_batches_web" and self.get_stable_batches_client.service_is_ready():
+            if self.source_switch_in_progress:
+                return True, "Source switch web->aruco already in progress", "/aruco_mapper/get_stable_batches"
+
+            if self._switch_from_web_to_aruco_async():
+                return True, "Switching source web->aruco (clear_map -> reset(rrr) -> update_map)", "/aruco_mapper/get_stable_batches"
+
         client_to_use = None
         service_name = ""
-        
+
         if self.get_stable_batches_client.service_is_ready():
             client_to_use = self.get_stable_batches_client
             service_name = "/aruco_mapper/get_stable_batches"
@@ -763,34 +1174,94 @@ class MapManager:
             service_name = "/aruco_mapper/get_stable_batches_web"
         else:
             self.node.get_logger().error("❌ No GetStableBatches service available")
-            response.success = False
-            response.message = "No batch service available"
-            return response
+            return False, "No batch service available", service_name
 
         # Remember service for auto-retry timer
         self.retry_client = client_to_use
         self.retry_service_name = service_name
-        
-        # Always get all batches with 'sfg' filter (for both first and subsequent calls)
-        # The difference is that first call clears everything, subsequent calls do incremental updates
+
         if self.first_update_map:
-            self.node.get_logger().info("🔄 First update_map call - requesting all batches (unlocked)")
-            self.baseline_lock_pending = True
-        
+            if not self.first_update_start_logged:
+                self.node.get_logger().info("🔄 First update_map call - requesting all batches (unlocked)")
+                self.first_update_start_logged = True
+            if can_lock_baseline:
+                self.baseline_lock_pending = True
+
         stable_request = GetStableBatches.Request()
-        stable_request.batch_types_filter = "sfg"  # Get all stable batches
-        stable_request.specific_known_id = ""  # Get all batches matching the filter
-        stable_request.only_locked_baselines = False  # Always False for update_map - lock call happens after all TRACKING
-        
-        # Call service asynchronously
+        stable_request.batch_types_filter = "sfg"
+        stable_request.specific_known_id = ""
+        stable_request.only_locked_baselines = False
+
         future = client_to_use.call_async(stable_request)
         future.add_done_callback(lambda f: self._handle_get_stable_batches_response(
-            f, response, client_to_use, service_name, None, False, True))
-        
-        response.success = True
+            f, None, client_to_use, service_name, None, False, can_lock_baseline))
+
         message_type = "First" if self.first_update_map else "Incremental"
-        response.message = f"{message_type} map update triggered from {service_name} (processing asynchronously)"
+        return True, f"{message_type} map update triggered from {service_name} (processing asynchronously)", service_name
         return response
+
+    def _switch_from_web_to_aruco_async(self) -> bool:
+        """Switch active batch source from web simulation to ArUco when ArUco becomes available.
+
+        Flow: clear_map -> reset_map with 'rrr' filter (on ArUco) -> normal update_map flow.
+        """
+        if self.source_switch_in_progress:
+            return False
+
+        if not self.get_stable_batches_client.service_is_ready():
+            return False
+
+        self.source_switch_in_progress = True
+        self.node.get_logger().info(
+            "🔁 ArUco service is now available while using WEB source - switching source: clear_map -> reset(rrr) -> update_map"
+        )
+
+        # 1) Clear current map/state first
+        clear_req = Trigger.Request()
+        clear_resp = Trigger.Response()
+        clear_resp = self.handle_clear_map(clear_req, clear_resp)
+        if not clear_resp.success:
+            self.node.get_logger().error("❌ Source switch aborted: clear_map failed")
+            self.source_switch_in_progress = False
+            return False
+
+        # 2) Reset with rrr filter on ArUco service
+        self.retry_client = self.get_stable_batches_client
+        self.retry_service_name = "/aruco_mapper/get_stable_batches"
+
+        stable_request = GetStableBatches.Request()
+        stable_request.batch_types_filter = "rrr"
+        stable_request.specific_known_id = ""
+        stable_request.only_locked_baselines = False
+
+        future = self.retry_client.call_async(stable_request)
+        future.add_done_callback(self._handle_source_switch_reset_done)
+        return True
+
+    def _handle_source_switch_reset_done(self, future):
+        """Finalize web->aruco source switch after reset(rrr), then trigger normal update_map."""
+        try:
+            # Process reset response through normal map-update processing pipeline
+            self._handle_get_stable_batches_response(
+                future,
+                None,
+                self.retry_client,
+                self.retry_service_name,
+                None,
+                False,
+                False,
+            )
+
+            # 3) Continue with the usual update_map flow
+            success, message, _service_name = self._trigger_update_map_async(can_lock_baseline=True)
+            if success:
+                self.node.get_logger().info(f"✅ Source switch completed: {message}")
+            else:
+                self.node.get_logger().warn(f"⚠️ Source switch follow-up update_map failed: {message}")
+        except Exception as e:
+            self.node.get_logger().error(f"❌ Source switch reset callback failed: {e}")
+        finally:
+            self.source_switch_in_progress = False
 
     def handle_reset_map(self, request: Trigger.Request, response: Trigger.Response) -> Trigger.Response:
         """
@@ -823,7 +1294,13 @@ class MapManager:
         self.baseline_lock_pending = False
         self.beacon_ready_published = False
         self.locked_baseline_batch_ids.clear()
+        self.locked_baseline_all_batch_ids.clear()
         self.pending_baseline_lock_ids.clear()
+        self.start_game_requested = False
+        self.game_start_time_ns = None
+        self.game_85s_triggered = False
+        self.game_timeout_stopped = False
+        self._stop_game_update_timer()
         self.known_ids_to_retry.clear()
         self.short_pattern_ids.clear()
         self._stop_retry_timer()
@@ -869,8 +1346,16 @@ class MapManager:
             lost_batch_ids = {
                 batch.known_id
                 for batch in aruco_state.batches
-                if batch.state.upper() == 'LOST'
+                if self._parse_batch_state(batch.state)[0] == 'LOST'
             }
+
+            # Remove LOST batches immediately, except manual put_down batches
+            # which are preserved and must not be updated/removed from beacon input.
+            with self.batches_lock:
+                manual_putdown_ids = set(self.manual_putdown_batch_ids)
+            lost_non_manual_ids = set(lost_batch_ids) - manual_putdown_ids
+            if lost_non_manual_ids:
+                self._remove_lost_batches(lost_non_manual_ids, reason="reported LOST by beacon")
             
             # Initialize variables that may be used in final summary
             disappeared_ids = set()
@@ -885,10 +1370,14 @@ class MapManager:
                     self.first_update_empty_retry_count += 1
                     attempt = self.first_update_empty_retry_count
                     self.baseline_lock_pending = True
-                    self.node.get_logger().warn(
+                    retry_msg = (
                         f"⚠️ First update_map returned 0 batches, retrying as first update "
                         f"({attempt}/{self.first_update_empty_retry_max})"
                     )
+                    if attempt == 1:
+                        self.node.get_logger().warn(retry_msg)
+                    else:
+                        self.node.get_logger().debug(retry_msg)
 
                     retry_client = client if client is not None else self.retry_client
                     if retry_client and retry_client.service_is_ready():
@@ -909,11 +1398,20 @@ class MapManager:
                         )
                     return
 
-                self.node.get_logger().error(
+                exhausted_msg = (
                     f"❌ First update_map still returned 0 batches after "
                     f"{self.first_update_empty_retry_max} retries"
                 )
+                if not self.first_update_empty_reported:
+                    self.node.get_logger().error(exhausted_msg)
+                    self.first_update_empty_reported = True
+                else:
+                    self.node.get_logger().debug(exhausted_msg)
                 return
+
+            if is_first_update and num_batches > 0:
+                self.first_update_empty_reported = False
+                self.first_update_start_logged = False
             
             # Filter batches based on update type
             if is_first_update:
@@ -924,7 +1422,12 @@ class MapManager:
                 skipped_count = 0
                 
                 for batch in aruco_state.batches:
-                    state = batch.state.upper()
+                    state, _ = self._parse_batch_state(batch.state)
+                    if state == 'LOST':
+                        # LOST batches are removed immediately and must not be processed further.
+                        self.known_ids_to_retry.discard(batch.known_id)
+                        skipped_count += 1
+                        continue
                     if state != 'EMERGING':
                         # Accept all non-EMERGING batches (TRACKING, DEGRADED, etc.)
                         filtered_batches.append(batch)
@@ -932,6 +1435,7 @@ class MapManager:
                     else:
                         # Only retry EMERGING SX batches
                         if batch.known_id.startswith('s'):
+                            self._invalidate_sx_baseline_lock(batch.known_id, state)
                             emerging_ids.add(batch.known_id)
                             self.node.get_logger().info(f"  ⏳ [SX] '{batch.known_id}': {state} → will retry")
                         else:
@@ -963,10 +1467,18 @@ class MapManager:
                 skipped_count = 0
                 
                 for batch in aruco_state.batches:
-                    state = batch.state.upper()
+                    state, _ = self._parse_batch_state(batch.state)
                     is_fx = batch.known_id.startswith('f') or not (batch.known_id.startswith('s') or batch.known_id.startswith('g'))
                     is_sx = batch.known_id.startswith('s')
                     batch_type = 'FX' if is_fx else ('SX' if batch.known_id.startswith('s') else 'GX')
+
+                    if state == 'LOST':
+                        # LOST batches are removed immediately and must not be processed further.
+                        if batch.known_id in self.known_ids_to_retry:
+                            self.known_ids_to_retry.discard(batch.known_id)
+                            self.node.get_logger().info(f"  🗑️  [{batch_type}] '{batch.known_id}': LOST → removed from retry")
+                        skipped_count += 1
+                        continue
                     
                     if state != 'EMERGING':
                         # Accept all non-EMERGING batches (TRACKING, DEGRADED, etc.)
@@ -986,6 +1498,7 @@ class MapManager:
                             skipped_count += 1
                         elif is_sx:
                             # EMERGING SX: Add to retry queue (log only on first add)
+                            self._invalidate_sx_baseline_lock(batch.known_id, state)
                             if batch.known_id not in emerging_ids and batch.known_id not in self.known_ids_to_retry:
                                 self.node.get_logger().info(f"  ⏭️  [{batch_type}] '{batch.known_id}': EMERGING → added to retry")
                             emerging_ids.add(batch.known_id)
@@ -1012,9 +1525,17 @@ class MapManager:
                 filtered_batches = []
                 
                 for batch in aruco_state.batches:
-                    state = batch.state.upper()
+                    state, _ = self._parse_batch_state(batch.state)
                     is_fx = batch.known_id.startswith('f') or not (batch.known_id.startswith('s') or batch.known_id.startswith('g'))
                     batch_type = 'FX' if is_fx else ('SX' if batch.known_id.startswith('s') else 'GX')
+
+                    if state == 'LOST':
+                        # LOST batches are removed immediately and must not be processed further.
+                        self.known_ids_to_retry.discard(batch.known_id)
+                        self.node.get_logger().info(
+                            f"  🗑️  [{batch_type}] '{batch.known_id}': {state} ({len(batch.members)} members) → LOST, removing from retry"
+                        )
+                        continue
                     
                     if state != 'EMERGING':
                         # Accept non-EMERGING batches
@@ -1029,6 +1550,7 @@ class MapManager:
                         self.node.get_logger().info(f"  🗑️  [{batch_type}] '{batch.known_id}': {state} ({len(batch.members)} members) → LOST, removing from retry")
                     else:
                         # Still EMERGING
+                        self._invalidate_sx_baseline_lock(batch.known_id, state)
                         self.node.get_logger().info(f"  ⏳ [{batch_type}] '{batch.known_id}': {state} ({len(batch.members)} members) → still EMERGING, keeping in retry")
                 
                 if specific_known_id and len(filtered_batches) == 0:
@@ -1062,7 +1584,7 @@ class MapManager:
             
             filtered_batches = list(deduplicated_batches.values())
             if duplicates_found:
-                self.node.get_logger().info(f"✅ After deduplication: {len(filtered_batches)} unique batches")
+                self.node.get_logger().debug(f"✅ After deduplication: {len(filtered_batches)} unique batches")
             
             # Get known_ids from current response
             received_batch_ids = {batch.known_id for batch in filtered_batches}
@@ -1098,6 +1620,7 @@ class MapManager:
                         # Clear both batch dictionaries
                         with self.batches_lock:
                             self.batches_fx.clear()
+                            self.batches_fx_status_type.clear()
                             self.batches_sx.clear()
                             self.batches_with_obstacles.clear()  # Clear tracking
                             self.locked_baseline_batch_ids.clear()
@@ -1137,14 +1660,17 @@ class MapManager:
                                 for bid in disappeared_ids:
                                     # Remove disappeared batches from storage
                                     self.batches_fx.pop(bid, None)
+                                    self.batches_fx_status_type.pop(bid, None)
                                     self.batches_sx.pop(bid, None)
                                     self.batches_with_obstacles.discard(bid)  # Remove from tracking
                                     self.locked_baseline_batch_ids.discard(bid)
+                                    self.locked_baseline_all_batch_ids.discard(bid)
                                     self.pending_baseline_lock_ids.discard(bid)
                                     self.short_pattern_ids.discard(bid)
                                 for bid in fx_batches_ids:
                                     # Remove FX batches for refresh (they'll be re-added)
                                     self.batches_fx.pop(bid, None)
+                                    self.batches_fx_status_type.pop(bid, None)
                                     self.batches_with_obstacles.discard(bid)  # Remove from tracking
                             
                             # Log removal
@@ -1157,7 +1683,7 @@ class MapManager:
                                     f"🗑️  Removed {removed} obstacles from {len(disappeared_ids)} disappeared batches: {disappeared_ids}"
                                 )
                             elif fx_batches_ids:
-                                self.node.get_logger().info(
+                                self.node.get_logger().debug(
                                     f"🔄 Refreshing {len(fx_batches_ids)} FX batches (removed {removed} old obstacles)"
                                 )
                     else:
@@ -1192,7 +1718,7 @@ class MapManager:
                                    if b.known_id not in self.active_batch_ids or b.known_id.startswith('f')]
                     if len(new_batches) < len(filtered_batches):
                         kept_count = len(filtered_batches) - len(new_batches)
-                        self.node.get_logger().info(
+                        self.node.get_logger().debug(
                             f"♻️  Keeping {kept_count} existing SX/GX batches, adding {len(new_batches)} new/FX ones"
                         )
                     filtered_batches = new_batches
@@ -1204,7 +1730,8 @@ class MapManager:
                     for batch in filtered_batches:
                         if batch.known_id == specific_known_id:
                             # Remove obstacles only if TRACKING (upgrade) or if we have members (new data)
-                            if batch.state.upper() == 'TRACKING' or (batch.members and len(batch.members) > 0):
+                            parsed_state, _ = self._parse_batch_state(batch.state)
+                            if parsed_state == 'TRACKING' or (batch.members and len(batch.members) > 0):
                                 should_update = True
                                 with self.obstacles_lock:
                                     old_count = len(self.obstacles)
@@ -1306,7 +1833,7 @@ class MapManager:
                         f"📦 Map updated: FX={fx_count}, SX={sx_count}, Enemy={enemy_count}, Untracked={untracked_count}, Total={len(self.obstacles)}"
                     )
                 else:
-                    self.node.get_logger().info(
+                    self.node.get_logger().debug(
                         f"📦 Map updated: FX={fx_count}, SX={sx_count}, Enemy={enemy_count}, Total={len(self.obstacles)}"
                     )
             
@@ -1319,6 +1846,8 @@ class MapManager:
                 self.retry_pending = max(0, self.retry_pending - 1)
                 if self.retry_pending == 0 and not self.known_ids_to_retry:
                     self._stop_retry_timer()
+            elif self.game_update_pending > 0:
+                self.game_update_pending = max(0, self.game_update_pending - 1)
 
     def _start_retry_timer(self):
         """Start periodic retries until all EMERGING batches become non-EMERGING (stable)."""
@@ -1363,12 +1892,21 @@ class MapManager:
         future = self.retry_client.call_async(stable_request)
         future.add_done_callback(self._handle_lock_baseline_response)
 
-    def _request_locked_baseline_for_sx(self, known_id: str):
-        """Request locked baseline for a single SX batch when it appears after initial lock."""
+    def _request_locked_baseline_for_sx(self, known_id: str) -> bool:
+        """Request locked baseline for a single SX batch when it appears after initial lock.
+
+        Returns True when a request is already pending or newly sent.
+        Returns False when skipped (cooldown/service unavailable/not SX/already locked).
+        """
         if not known_id.startswith('s'):
-            return
+            return False
         if known_id in self.locked_baseline_batch_ids or known_id in self.pending_baseline_lock_ids:
-            return
+            return True
+
+        now_s = time.monotonic()
+        last_req_s = float(self._last_locked_baseline_request_s.get(known_id, 0.0))
+        if now_s - last_req_s < max(self.baseline_request_cooldown_sec, 0.0):
+            return False
 
         client = None
         if self.retry_client and self.retry_client.service_is_ready():
@@ -1385,9 +1923,10 @@ class MapManager:
             self.node.get_logger().warn(
                 f"⚠️ Cannot request locked baseline for '{known_id}': batch service not ready"
             )
-            return
+            return False
 
         self.pending_baseline_lock_ids.add(known_id)
+        self._last_locked_baseline_request_s[known_id] = now_s
         self.node.get_logger().info(
             f"🔒 Requesting locked baseline for SX batch '{known_id}'"
         )
@@ -1400,6 +1939,7 @@ class MapManager:
         future.add_done_callback(
             lambda f, kid=known_id: self._handle_single_locked_sx_response(f, kid)
         )
+        return True
 
     def _handle_single_locked_sx_response(self, future, known_id: str):
         """Handle locked-baseline response for a single SX batch."""
@@ -1418,13 +1958,14 @@ class MapManager:
                     break
 
             if target_batch is None:
-                self.node.get_logger().info(
+                self.node.get_logger().debug(
                     f"⏳ Locked baseline not available yet for '{known_id}'"
                 )
                 return
 
             pattern = target_batch.pattern if target_batch.pattern else ""
             self.locked_baseline_batch_ids.add(known_id)
+            self.locked_baseline_all_batch_ids.add(known_id)
             with self.batches_lock:
                 self.batches_sx[known_id] = target_batch
                 self.batches_with_obstacles.discard(known_id)
@@ -1468,6 +2009,7 @@ class MapManager:
             self.node.get_logger().error(traceback.format_exc())
         finally:
             self.pending_baseline_lock_ids.discard(known_id)
+            self._try_publish_beacon_ready()
     
     def _handle_lock_baseline_response(self, future):
         """Handle response from locked baseline patterns request."""
@@ -1479,9 +2021,8 @@ class MapManager:
                 self.baseline_lock_pending = False
                 self.node.get_logger().info(f"✅ Baseline patterns locked! Received {num_batches} locked batches")
 
-                if not self.beacon_ready_published:
-                    self._publish_beacon_status(1)
-                    self.beacon_ready_published = True
+                if self.start_game_requested and not self.game_update_timer_active:
+                    self._start_game_update_timer()
                 
                 # Track the locked batch IDs
                 locked_batch_ids = set()
@@ -1498,25 +2039,34 @@ class MapManager:
                             if len(batch.pattern or "") >= 4:
                                 sx_batches_ready_for_obstacles.append(batch)
                         elif batch.known_id.startswith('f'):
+                            if batch.known_id in self.manual_putdown_batch_ids:
+                                self.node.get_logger().info(
+                                    f"📌 Keeping manual put_down pose for '{batch.known_id}' (skip baseline FX overwrite)"
+                                )
+                                continue
                             self.batches_fx[batch.known_id] = batch
+                            _, status_type = self._parse_batch_state(batch.state)
+                            if status_type:
+                                self.batches_fx_status_type[batch.known_id] = status_type
+                            else:
+                                self.batches_fx_status_type.pop(batch.known_id, None)
                             self.node.get_logger().info(f"   🔒 Locked FX pattern: {batch.known_id} = '{batch.pattern}'")
                 
                 # CRITICAL: Add locked batches to active_batch_ids to prevent them from being removed
                 self.active_batch_ids.update(locked_batch_ids)
+                self.locked_baseline_all_batch_ids.update(locked_batch_ids)
                 self.node.get_logger().info(f"   📌 Added {len(locked_batch_ids)} locked batches to active tracking")
 
                 # Detect SX batches with short patterns (< 4 elements) and schedule re-checks
                 for batch in response.stable_state.batches:
                     pattern = batch.pattern if batch.pattern else ""
                     if batch.known_id.startswith('s') and len(pattern) < 4:
-                        self.short_pattern_ids.add(batch.known_id)
                         self.node.get_logger().warn(
                             f"⚠️  Short pattern after baseline lock for '{batch.known_id}': "
-                            f"'{pattern}' ({len(pattern)} elements, expected 4) — will re-check"
+                            f"'{pattern}' ({len(pattern)} elements, expected 4) — keeping first lock, no re-check"
                         )
 
-                if self.short_pattern_ids:
-                    self._start_short_pattern_retry_timer()
+                self._try_publish_beacon_ready()
 
                 if sx_batches_ready_for_obstacles:
                     with self.batches_lock:
@@ -1667,6 +2217,7 @@ class MapManager:
                     )
 
                     self.locked_baseline_batch_ids.add(known_id)
+                    self.locked_baseline_all_batch_ids.add(known_id)
 
                     with self.batches_lock:
                         self.batches_sx[known_id] = batch
@@ -1696,6 +2247,8 @@ class MapManager:
                     self.short_pattern_ids.discard(known_id)
                     if not self.short_pattern_ids:
                         self._stop_short_pattern_retry_timer()
+
+                    self._try_publish_beacon_ready()
 
                 elif len(new_pattern) > len(old_pattern):
                     self.node.get_logger().info(
@@ -1732,8 +2285,16 @@ class MapManager:
                     continue
 
                 if source == 'fx':
+                    with self.batches_lock:
+                        if batch.known_id in self.manual_putdown_batch_ids:
+                            self.node.get_logger().debug(
+                                f"📌 Keeping manual put_down pose for '{batch.known_id}' (ignore non-LOST beacon update)"
+                            )
+                            continue
+
+                if source == 'fx':
                     member_count = len(batch.members) if batch.members else 0
-                    self.node.get_logger().info(
+                    self.node.get_logger().debug(
                         f"📦 FX batch '{batch.known_id}' received with {member_count} members"
                     )
                     if not batch.members:
@@ -1742,6 +2303,11 @@ class MapManager:
                 with self.batches_lock:
                     if source == 'fx':
                         self.batches_fx[batch.known_id] = batch
+                        _, status_type = self._parse_batch_state(batch.state)
+                        if status_type:
+                            self.batches_fx_status_type[batch.known_id] = status_type
+                        else:
+                            self.batches_fx_status_type.pop(batch.known_id, None)
                     elif source == 'sx':
                         self.batches_sx[batch.known_id] = batch
 
@@ -1772,7 +2338,7 @@ class MapManager:
 
                     if batch_known_id not in self.locked_baseline_batch_ids:
                         self._request_locked_baseline_for_sx(batch_known_id)
-                        self.node.get_logger().info(
+                        self.node.get_logger().debug(
                             f"⏳ Deferring SX obstacles for '{batch_known_id}' until its baseline is locked"
                         )
                         continue
@@ -1902,6 +2468,7 @@ class MapManager:
             
             if known_id in self.batches_fx:
                 del self.batches_fx[known_id]
+                self.batches_fx_status_type.pop(known_id, None)
                 deleted_from_fx = True
                 self.node.get_logger().info(f"🗑️  Deleted batch '{known_id}' from FX storage")
             
@@ -1913,9 +2480,16 @@ class MapManager:
             # Remove from obstacle creation tracking
             self.batches_with_obstacles.discard(known_id)
             self.locked_baseline_batch_ids.discard(known_id)
+            self.locked_baseline_all_batch_ids.discard(known_id)
             self.pending_baseline_lock_ids.discard(known_id)
             self.short_pattern_ids.discard(known_id)
             self.manual_putdown_batch_ids.discard(known_id)
+            self.active_batch_ids.discard(known_id)
+            self.known_ids_to_retry.discard(known_id)
+
+            # Persist manual deletion so beacon updates do not re-add this batch
+            # (and therefore do not trigger new baseline-lock requests).
+            self.deleted_batch_ids.add(known_id)
             
             if not (deleted_from_fx or deleted_from_sx):
                 self.node.get_logger().warn(f"⚠️  Batch '{known_id}' not found in FX or SX storage")
@@ -1944,6 +2518,10 @@ class MapManager:
         
         # Republish obstacles to update visualization
         self.publish_current_obstacles()
+
+        self.node.get_logger().info(
+            f"🚫 Batch '{known_id}' marked deleted (will be ignored in updates): {self.deleted_batch_ids}"
+        )
         
         return True
     
@@ -1965,16 +2543,27 @@ class MapManager:
             - batch_types: List of batch types ('fx', 'sx', 'gx')
             - member_counts: List of member counts
             - directions: List of directions ('horizontal', 'vertical', or '')
+            - patterns: List of color patterns ('ybyb', etc.)
+            - theta_degrees: List of batch orientations in degrees
             - centers: List of Point objects (batch centers)
-            - qualities: List of quality indicators (all 1 for now)
+            - qualities: List of quality tags (FX: 'P'/'NP' when available, otherwise '')
         """
         with self.batches_lock:
             known_ids = []
             batch_types = []
             member_counts = []
             directions = []
+            patterns = []
+            theta_degrees = []
             centers = []
             qualities = []
+
+            def _theta_from_direction(direction: str) -> float:
+                if direction == 'horizontal':
+                    return 0.0
+                if direction == 'vertical':
+                    return 90.0
+                return 0.0
             
             # Process FX batches
             for known_id, batch in self.batches_fx.items():
@@ -1983,9 +2572,12 @@ class MapManager:
                     known_ids.append(known_id)
                     batch_types.append('fx')
                     member_counts.append(len(batch.members) if batch.members else 0)
-                    directions.append(batch.direction if batch.direction else '')
+                    direction = batch.direction if batch.direction else ''
+                    directions.append(direction)
+                    patterns.append(batch.pattern.lower() if getattr(batch, 'pattern', None) else '')
+                    theta_degrees.append(_theta_from_direction(direction))
                     centers.append(batch.center)
-                    qualities.append(1)  # Always 1 for now
+                    qualities.append(str(self.batches_fx_status_type.get(known_id, '')))
             
             # Process SX batches
             for known_id, batch in self.batches_sx.items():
@@ -1994,15 +2586,20 @@ class MapManager:
                     known_ids.append(known_id)
                     batch_types.append('sx')
                     member_counts.append(len(batch.members) if batch.members else 0)
-                    directions.append(batch.direction if batch.direction else '')
+                    direction = batch.direction if batch.direction else ''
+                    directions.append(direction)
+                    patterns.append(batch.pattern.lower() if getattr(batch, 'pattern', None) else '')
+                    theta_degrees.append(_theta_from_direction(direction))
                     centers.append(batch.center)
-                    qualities.append(1)  # Always 1 for now
+                    qualities.append('')
             
             return {
                 'known_ids': known_ids,
                 'batch_types': batch_types,
                 'member_counts': member_counts,
                 'directions': directions,
+                'patterns': patterns,
+                'theta_degrees': theta_degrees,
                 'centers': centers,
                 'qualities': qualities
             }
