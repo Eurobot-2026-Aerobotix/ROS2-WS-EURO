@@ -1231,10 +1231,27 @@ class TaskScheduler:
                 })
                 first_added = True
             last_cmd = cmd
+
+        # Add a small extra insertion past pickup point (+5cm)
+        # along the same approach direction.
+        extra_pickup_mm = 70.0
+        approach_dx = float(pickup_x) - float(approach_x)
+        approach_dy = float(pickup_y) - float(approach_y)
+        approach_norm = math.hypot(approach_dx, approach_dy)
+        if approach_norm > 1e-6:
+            ux = approach_dx / approach_norm
+            uy = approach_dy / approach_norm
+        else:
+            ux = math.cos(theta_rad)
+            uy = math.sin(theta_rad)
+
+        pickup_target_x = float(pickup_x) + extra_pickup_mm * ux
+        pickup_target_y = float(pickup_y) + extra_pickup_mm * uy
+
         task_sequence.append({
             'device': 'STM',
             'command': stm_command,
-            'params': [pickup_x, pickup_y, 1100.0, 1.0, {'from_pathfinding': True, 'from_pickup_task': True}],
+            'params': [pickup_target_x, pickup_target_y, 1100.0, 1.0, {'from_pathfinding': True, 'from_pickup_task': True}],
             'wait': False
         })
         task_sequence.append({
