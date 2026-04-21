@@ -5,7 +5,7 @@ try:
 except ImportError:
     # Fallback for direct execution in development contexts.
     from simple_map import Map, Pose2D
-from typing import Any, List, Dict, Optional, Tuple
+from typing import Any, List, Dict, Optional, Tuple, Set
 from dataclasses import dataclass, field
 
 
@@ -32,7 +32,7 @@ class TaskScheduler:
     max_distance_for_predict_enemy_goal = 1500.0 # in mm
     drop_off_distance = 400.0
     retreat_distance = 250.0
-    distance_from_wall = 230.0
+    distance_from_wall = 300.0
     dropoff_min_clearance_to_sx = 420.0
     dropoff_min_clearance_to_fx = 330.0
     drop_off_enemy_clearance = 50.0
@@ -62,6 +62,8 @@ class TaskScheduler:
         self.rpi_queue: List[Dict[str, Any]] = []
         self.tracked_task: Task = None
         self.tracked_task_invalid = False
+        self.impossible_batches: Set[str] = set()
+        self._non_skipped_pop_streak = 0
         self._map_qos = 10
         self._loop_period_s = float(loop_period_s)
         self._loop_timer = None
@@ -115,8 +117,46 @@ class TaskScheduler:
         if self.task_queue:
             task = self.task_queue.pop(0)
             self.track_task(task)
+            self._non_skipped_pop_streak += 1
+            if self._non_skipped_pop_streak >= 2 and self.impossible_batches:
+                self.impossible_batches.clear()
+                if self.ros_node is not None:
+                    self.ros_node.get_logger().info(
+                        "♻️ Cleared impossible batches after two consecutive non-skipped popped tasks"
+                    )
             return task
         return None
+
+    def skip_task(self) -> bool:
+        """
+        Skip the currently tracked task.
+
+        The tracked task target is marked as impossible and will not be generated
+        until two consecutive tasks are popped without another skip in between.
+        """
+        if self.tracked_task is None:
+            return False
+
+        target_id = str(getattr(self.tracked_task, 'target_id', '') or '').lower().strip()
+        if not target_id:
+            self.untrack_task()
+            self._non_skipped_pop_streak = 0
+            return False
+
+        self.impossible_batches.add(target_id)
+        self.task_queue = [t for t in self.task_queue if str(t.target_id).lower() != target_id]
+        self.untrack_task()
+        self.tracked_task_invalid = False
+        self._non_skipped_pop_streak = 0
+
+        if self.ros_node is not None:
+            self.ros_node.get_logger().warning(
+                f"⏭️ Skipped tracked task and marked target as impossible: {target_id}"
+            )
+        else:
+            print(f"[TaskScheduler] Skipped tracked task and marked target as impossible: {target_id}")
+
+        return True
     
     def track_task(self, task: Task) -> None:
         """Track the specified task."""
@@ -481,7 +521,7 @@ class TaskScheduler:
                     pickup_pos,
                     key=lambda p: self.map.distance_from(self.map.enemy_absolute, p),
                 )
-            else:
+            if self.map.distance_from(self.map.enemy_absolute, pickup_pos[0]) > 600.0:
                 selected_pos = min(
                     pickup_pos,
                     key=lambda p: self.map.distance_from(self.map.robot_position, p),
@@ -763,12 +803,14 @@ class TaskScheduler:
         queue = []
         skip_stats: Dict[str, int] = {
             'pickup_fx_disabled': 0,
+            'pickup_impossible': 0,
             'pickup_reserved_center': 0,
             'pickup_invalid_or_own_color': 0,
             'pickup_phi_mismatch': 0,
             'pickup_time_guard': 0,
             'pickup_choose_side_failed': 0,
             'dropoff_not_empty': 0,
+            'dropoff_impossible': 0,
             'dropoff_time_guard': 0,
             'dropoff_choose_side_failed': 0,
             'filtered_tracked_target': 0,
@@ -782,6 +824,14 @@ class TaskScheduler:
         # generate pickup tasks if we have space in the robot
         if self.map.robot_front_empty or self.map.robot_back_empty:
             for batch_id, batch in batches_snapshot:
+                normalized_batch_id = str(batch_id).lower()
+                if normalized_batch_id in self.impossible_batches:
+                    skip_stats['pickup_impossible'] += 1
+                    if self.ros_node is not None:
+                        self.ros_node.get_logger().debug(
+                            f"⏭️ Skip pickup {batch_id}: target marked impossible"
+                        )
+                    continue
                 if (self.allow_fx == False) and (batch_id[0] == "f"):
                     skip_stats['pickup_fx_disabled'] += 1
                     if self.ros_node is not None:
@@ -860,6 +910,14 @@ class TaskScheduler:
         # generate dropoff tasks if we have crates in the robot
         if not self.map.robot_front_empty or not self.map.robot_back_empty:
             for dropoff_id, dropoff in dropoffs_snapshot:
+                normalized_dropoff_id = str(dropoff_id).lower()
+                if normalized_dropoff_id in self.impossible_batches:
+                    skip_stats['dropoff_impossible'] += 1
+                    if self.ros_node is not None:
+                        self.ros_node.get_logger().debug(
+                            f"⏭️ Skip dropoff {dropoff_id}: target marked impossible"
+                        )
+                    continue
                 if (dropoff_id not in ["f3", "f5", "f8"]) and (dropoff["status"] != "empty"):
                     skip_stats['dropoff_not_empty'] += 1
                     continue
@@ -1934,6 +1992,8 @@ class TaskScheduler:
             'time_left_s': time_left_s,
             'front_empty': bool(getattr(self.map, 'robot_front_empty', True)),
             'back_empty': bool(getattr(self.map, 'robot_back_empty', True)),
+            'impossible_batches': sorted(self.impossible_batches),
+            'non_skipped_pop_streak': int(self._non_skipped_pop_streak),
             'tracked_task': tracked_task,
             'queue_size': int(len(self.task_queue)),
             'queue': queue_items,
