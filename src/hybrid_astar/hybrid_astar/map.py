@@ -93,6 +93,10 @@ class MapManager:
         #   TRACKING_P / EMERGING_P   -> 'P'
         #   TRACKING_NP / EMERGING_NP -> 'NP'
         self.batches_fx_status_type: Dict[str, str] = {}
+        # Optional SX locked-baseline status suffix:
+        #   *_T -> tentative locked-baseline, keep retrying only_locked_baselines
+        #   *_C -> confirmed locked-baseline, safe to finalize obstacles
+        self.batches_sx_baseline_status_type: Dict[str, str] = {}
         self.batches_lock = Lock()
         
         # Static obstacles - using permanent area instead of JSON file
@@ -149,6 +153,7 @@ class MapManager:
 
         # Short-pattern retry: re-check batches whose locked pattern has < 4 elements
         self.short_pattern_ids: set = set()
+        self.tentative_baseline_ids: set = set()
         self.short_pattern_retry_timer = None
         self.short_pattern_retry_active = False
         self.short_pattern_retry_interval_sec = params.get('rates', {}).get('short_pattern_retry_sec', 2.0)
@@ -243,7 +248,7 @@ class MapManager:
         if not self.baselines_locked:
             return
 
-        if self.known_ids_to_retry or self.pending_baseline_lock_ids or self.short_pattern_ids:
+        if self.known_ids_to_retry or self.pending_baseline_lock_ids or self.short_pattern_ids or self.tentative_baseline_ids:
             return
 
         if not self._all_active_batches_baseline_locked():
@@ -280,20 +285,22 @@ class MapManager:
     @staticmethod
     def _parse_batch_state(state_value: str) -> Tuple[str, str]:
         """
-        Parse mapper batch state and extract optional FX status suffix.
+        Parse mapper batch state and extract optional status suffix.
 
         Examples:
           TRACKING      -> (TRACKING, '')
           TRACKING_NP   -> (TRACKING, 'NP')
           EMERGING_P    -> (EMERGING, 'P')
+          TRACKING_T    -> (TRACKING, 'T')
+          TRACKING_C    -> (TRACKING, 'C')
         """
         normalized = str(state_value or "").strip().upper()
         if not normalized:
             return "", ""
-        if normalized.endswith("_NP"):
-            return normalized[:-3], "NP"
-        if normalized.endswith("_P"):
-            return normalized[:-2], "P"
+        if '_' in normalized:
+            base, suffix = normalized.rsplit('_', 1)
+            if suffix in ('NP', 'P', 'T', 'C'):
+                return base, suffix
         return normalized, ""
     
     def handle_clear_all(self, msg: Empty):
@@ -339,6 +346,7 @@ class MapManager:
             self.batches_fx.clear()
             self.batches_sx.clear()
             self.batches_fx_status_type.clear()
+            self.batches_sx_baseline_status_type.clear()
             self.batches_with_obstacles.clear()  # Clear tracking
             self.manual_putdown_batch_ids.clear()
         
@@ -360,6 +368,7 @@ class MapManager:
         self.deleted_batch_ids.clear()
         self.active_batch_ids.clear()
         self.short_pattern_ids.clear()
+        self.tentative_baseline_ids.clear()
         self._stop_short_pattern_retry_timer()
         
         # Publish empty obstacle visualization
@@ -726,11 +735,13 @@ class MapManager:
                 self.batches_fx.pop(bid, None)
                 self.batches_fx_status_type.pop(bid, None)
                 self.batches_sx.pop(bid, None)
+                self.batches_sx_baseline_status_type.pop(bid, None)
                 self.batches_with_obstacles.discard(bid)
                 self.locked_baseline_batch_ids.discard(bid)
                 self.locked_baseline_all_batch_ids.discard(bid)
                 self.pending_baseline_lock_ids.discard(bid)
                 self.short_pattern_ids.discard(bid)
+                self.tentative_baseline_ids.discard(bid)
                 self.active_batch_ids.discard(bid)
                 self.known_ids_to_retry.discard(bid)
                 self._last_locked_baseline_request_s.pop(bid, None)
@@ -1303,6 +1314,8 @@ class MapManager:
         self._stop_game_update_timer()
         self.known_ids_to_retry.clear()
         self.short_pattern_ids.clear()
+        self.tentative_baseline_ids.clear()
+        self.batches_sx_baseline_status_type.clear()
         self._stop_retry_timer()
         self._stop_short_pattern_retry_timer()
 
@@ -1622,6 +1635,7 @@ class MapManager:
                             self.batches_fx.clear()
                             self.batches_fx_status_type.clear()
                             self.batches_sx.clear()
+                            self.batches_sx_baseline_status_type.clear()
                             self.batches_with_obstacles.clear()  # Clear tracking
                             self.locked_baseline_batch_ids.clear()
                             self.pending_baseline_lock_ids.clear()
@@ -1662,11 +1676,13 @@ class MapManager:
                                     self.batches_fx.pop(bid, None)
                                     self.batches_fx_status_type.pop(bid, None)
                                     self.batches_sx.pop(bid, None)
+                                    self.batches_sx_baseline_status_type.pop(bid, None)
                                     self.batches_with_obstacles.discard(bid)  # Remove from tracking
                                     self.locked_baseline_batch_ids.discard(bid)
                                     self.locked_baseline_all_batch_ids.discard(bid)
                                     self.pending_baseline_lock_ids.discard(bid)
                                     self.short_pattern_ids.discard(bid)
+                                    self.tentative_baseline_ids.discard(bid)
                                 for bid in fx_batches_ids:
                                     # Remove FX batches for refresh (they'll be re-added)
                                     self.batches_fx.pop(bid, None)
@@ -1964,10 +1980,39 @@ class MapManager:
                 return
 
             pattern = target_batch.pattern if target_batch.pattern else ""
+            _parsed_state, baseline_status = self._parse_batch_state(target_batch.state)
+
+            if baseline_status == 'T':
+                self.locked_baseline_batch_ids.discard(known_id)
+                self.locked_baseline_all_batch_ids.discard(known_id)
+                self.tentative_baseline_ids.add(known_id)
+                with self.batches_lock:
+                    self.batches_sx[known_id] = target_batch
+                    self.batches_sx_baseline_status_type[known_id] = 'T'
+                    self.batches_with_obstacles.discard(known_id)
+
+                prefix_sx = f"sx_{known_id}_"
+                with self.obstacles_lock:
+                    self.obstacles = [obs for obs in self.obstacles if not obs.id.startswith(prefix_sx)]
+                    self.obstacle_sources = {
+                        k: v for k, v in self.obstacle_sources.items() if not k.startswith(prefix_sx)
+                    }
+
+                self.node.get_logger().info(
+                    f"⏳ Locked baseline for SX '{known_id}' is tentative (status=T), retrying until status=C"
+                )
+                self._start_short_pattern_retry_timer()
+                return
+
             self.locked_baseline_batch_ids.add(known_id)
             self.locked_baseline_all_batch_ids.add(known_id)
+            self.tentative_baseline_ids.discard(known_id)
             with self.batches_lock:
                 self.batches_sx[known_id] = target_batch
+                if baseline_status in ('T', 'C'):
+                    self.batches_sx_baseline_status_type[known_id] = baseline_status
+                else:
+                    self.batches_sx_baseline_status_type.pop(known_id, None)
                 self.batches_with_obstacles.discard(known_id)
 
             self.node.get_logger().info(
@@ -2024,18 +2069,40 @@ class MapManager:
                 if self.start_game_requested and not self.game_update_timer_active:
                     self._start_game_update_timer()
                 
-                # Track the locked batch IDs
+                # Track ids to preserve as active and ids that are fully locked.
+                active_batch_ids_from_lock = set()
                 locked_batch_ids = set()
                 sx_batches_ready_for_obstacles = []
                 
                 # Update batches with locked patterns
                 with self.batches_lock:
                     for batch in response.stable_state.batches:
-                        locked_batch_ids.add(batch.known_id)
+                        active_batch_ids_from_lock.add(batch.known_id)
                         if batch.known_id.startswith('s'):
-                            self.locked_baseline_batch_ids.add(batch.known_id)
+                            _parsed_state, baseline_status = self._parse_batch_state(batch.state)
                             self.batches_sx[batch.known_id] = batch
-                            self.node.get_logger().info(f"   🔒 Locked SX pattern: {batch.known_id} = '{batch.pattern}'")
+                            if baseline_status == 'T':
+                                self.locked_baseline_batch_ids.discard(batch.known_id)
+                                self.locked_baseline_all_batch_ids.discard(batch.known_id)
+                                self.tentative_baseline_ids.add(batch.known_id)
+                                self.batches_sx_baseline_status_type[batch.known_id] = 'T'
+                                self.node.get_logger().info(
+                                    f"   ⏳ Tentative SX baseline: {batch.known_id} status=T, waiting for C"
+                                )
+                                self.batches_with_obstacles.discard(batch.known_id)
+                                continue
+
+                            locked_batch_ids.add(batch.known_id)
+                            self.locked_baseline_batch_ids.add(batch.known_id)
+                            self.tentative_baseline_ids.discard(batch.known_id)
+                            if baseline_status in ('T', 'C'):
+                                self.batches_sx_baseline_status_type[batch.known_id] = baseline_status
+                            else:
+                                self.batches_sx_baseline_status_type.pop(batch.known_id, None)
+                            self.node.get_logger().info(
+                                f"   🔒 Locked SX pattern: {batch.known_id} = '{batch.pattern}'"
+                                f"{(' (status=' + baseline_status + ')') if baseline_status else ''}"
+                            )
                             if len(batch.pattern or "") >= 4:
                                 sx_batches_ready_for_obstacles.append(batch)
                         elif batch.known_id.startswith('f'):
@@ -2053,9 +2120,16 @@ class MapManager:
                             self.node.get_logger().info(f"   🔒 Locked FX pattern: {batch.known_id} = '{batch.pattern}'")
                 
                 # CRITICAL: Add locked batches to active_batch_ids to prevent them from being removed
-                self.active_batch_ids.update(locked_batch_ids)
+                self.active_batch_ids.update(active_batch_ids_from_lock)
                 self.locked_baseline_all_batch_ids.update(locked_batch_ids)
                 self.node.get_logger().info(f"   📌 Added {len(locked_batch_ids)} locked batches to active tracking")
+
+                if self.tentative_baseline_ids:
+                    self.node.get_logger().info(
+                        f"⏳ Locked baseline still tentative for {len(self.tentative_baseline_ids)} SX batches: "
+                        f"{self.tentative_baseline_ids}"
+                    )
+                    self._start_short_pattern_retry_timer()
 
                 # Detect SX batches with short patterns (< 4 elements) and schedule re-checks
                 for batch in response.stable_state.batches:
@@ -2132,15 +2206,17 @@ class MapManager:
 
     def _start_short_pattern_retry_timer(self):
         """Start a periodic timer that re-checks locked baselines for batches
-        whose pattern currently has fewer than 4 colour elements."""
+        whose pattern currently has fewer than 4 colour elements, or whose
+        locked baseline status is tentative (T)."""
         if self.short_pattern_retry_active:
             return
 
         self.short_pattern_retry_active = True
         interval = max(self.short_pattern_retry_interval_sec, 0.5)
+        total_watch = len(self.short_pattern_ids) + len(self.tentative_baseline_ids)
         self.node.get_logger().info(
             f"🔍 Short-pattern retry enabled: re-checking every {interval:.1f}s "
-            f"for {len(self.short_pattern_ids)} batches: {self.short_pattern_ids}"
+            f"for {total_watch} batches (short={self.short_pattern_ids}, tentative={self.tentative_baseline_ids})"
         )
 
     def _stop_short_pattern_retry_timer(self):
@@ -2157,7 +2233,7 @@ class MapManager:
         if not self.short_pattern_retry_active:
             return
 
-        if not self.short_pattern_ids:
+        if not self.short_pattern_ids and not self.tentative_baseline_ids:
             self._stop_short_pattern_retry_timer()
             return
 
@@ -2166,12 +2242,13 @@ class MapManager:
             return
 
         self.node.get_logger().info(
-            f"🔍 Re-checking short-pattern batches with locked baseline: {self.short_pattern_ids}"
+            f"🔍 Re-checking locked-baseline batches: short={self.short_pattern_ids}, tentative={self.tentative_baseline_ids}"
         )
-        for known_id in list(self.short_pattern_ids):
+        for known_id in list(self.short_pattern_ids | self.tentative_baseline_ids):
             # Defensive: SX-only retry policy
             if not known_id.startswith('s'):
                 self.short_pattern_ids.discard(known_id)
+                self.tentative_baseline_ids.discard(known_id)
                 continue
 
             req = GetStableBatches.Request()
@@ -2202,15 +2279,42 @@ class MapManager:
                 # Defensive: SX-only retry policy
                 if not known_id.startswith('s'):
                     self.short_pattern_ids.discard(known_id)
+                    self.tentative_baseline_ids.discard(known_id)
                     break
 
                 new_pattern = batch.pattern if batch.pattern else ""
+                _parsed_state, baseline_status = self._parse_batch_state(batch.state)
 
                 with self.batches_lock:
                     existing = self.batches_sx.get(known_id) or self.batches_fx.get(known_id)
                     old_pattern = existing.pattern if (existing and existing.pattern) else ""
 
-                if len(new_pattern) >= 4:
+                if baseline_status == 'T':
+                    with self.batches_lock:
+                        self.batches_sx[known_id] = batch
+                        self.batches_sx_baseline_status_type[known_id] = 'T'
+                        self.batches_with_obstacles.discard(known_id)
+                    self.locked_baseline_batch_ids.discard(known_id)
+                    self.locked_baseline_all_batch_ids.discard(known_id)
+                    self.tentative_baseline_ids.add(known_id)
+
+                    prefix_sx = f"sx_{known_id}_"
+                    with self.obstacles_lock:
+                        self.obstacles = [obs for obs in self.obstacles if not obs.id.startswith(prefix_sx)]
+                        self.obstacle_sources = {
+                            k: v for k, v in self.obstacle_sources.items() if not k.startswith(prefix_sx)
+                        }
+
+                    self.node.get_logger().info(
+                        f"⏳ Locked baseline still tentative for '{known_id}' (status=T), retrying"
+                    )
+                    break
+
+                if baseline_status == 'C':
+                    self.batches_sx_baseline_status_type[known_id] = 'C'
+                    self.tentative_baseline_ids.discard(known_id)
+
+                if len(new_pattern) >= 4 or baseline_status == 'C':
                     self.node.get_logger().info(
                         f"✅ Short-pattern resolved for '{known_id}': "
                         f"'{old_pattern}' → '{new_pattern}' ({len(new_pattern)} elements)"
@@ -2245,7 +2349,7 @@ class MapManager:
                     )
 
                     self.short_pattern_ids.discard(known_id)
-                    if not self.short_pattern_ids:
+                    if not self.short_pattern_ids and not self.tentative_baseline_ids:
                         self._stop_short_pattern_retry_timer()
 
                     self._try_publish_beacon_ready()
@@ -2345,10 +2449,25 @@ class MapManager:
 
                     pattern_colors = self.parse_pattern_colors((batch.pattern or "").lower())
                     if len(pattern_colors) < 4:
-                        self.node.get_logger().warn(
-                            f"⚠️  Locked SX batch '{batch_known_id}' still has incomplete pattern '{batch.pattern}', waiting before obstacle creation"
-                        )
-                        continue
+                        _parsed_state, baseline_status = self._parse_batch_state(batch.state)
+                        if baseline_status == 'C' and batch.members and len(batch.members) >= 4:
+                            fallback_colors = []
+                            for member in batch.members[:4]:
+                                member_color = str(getattr(member, 'color', '') or '').strip().lower()
+                                if member_color in ('blue', 'yellow'):
+                                    fallback_colors.append(member_color)
+                            if len(fallback_colors) == 4:
+                                pattern_colors = fallback_colors
+                            else:
+                                self.node.get_logger().warn(
+                                    f"⚠️  Locked SX batch '{batch_known_id}' status=C but pattern/member colors incomplete, waiting before obstacle creation"
+                                )
+                                continue
+                        else:
+                            self.node.get_logger().warn(
+                                f"⚠️  Locked SX batch '{batch_known_id}' still has incomplete pattern '{batch.pattern}', waiting before obstacle creation"
+                            )
+                            continue
 
                     member_count = len(batch.members) if batch.members else 0
                     if member_count == 3:
@@ -2483,9 +2602,11 @@ class MapManager:
             self.locked_baseline_all_batch_ids.discard(known_id)
             self.pending_baseline_lock_ids.discard(known_id)
             self.short_pattern_ids.discard(known_id)
+            self.tentative_baseline_ids.discard(known_id)
             self.manual_putdown_batch_ids.discard(known_id)
             self.active_batch_ids.discard(known_id)
             self.known_ids_to_retry.discard(known_id)
+            self.batches_sx_baseline_status_type.pop(known_id, None)
 
             # Persist manual deletion so beacon updates do not re-add this batch
             # (and therefore do not trigger new baseline-lock requests).
