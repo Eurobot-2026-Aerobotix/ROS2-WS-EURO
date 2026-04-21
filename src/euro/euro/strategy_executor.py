@@ -557,6 +557,14 @@ def handle_stm32_command(command, params, stm32, lidar, strategy):
         state.IDLE_FOR_SYSTEMS = False
     elif command == 'set_position':
         stm32.set_position(params[0], params[1], params[2])
+    elif command == 'creep':
+        stm32.creep(params[0])
+        state.IDLE = False
+        state.IDLE_FOR_SYSTEMS = False
+    elif command == 'creep_backwards':
+        stm32.creep_backwards(params[0])
+        state.IDLE = False
+        state.IDLE_FOR_SYSTEMS = False
     else:
         strategy.get_logger().warn(f"Unknown STM32 command: {command}")
     strategy.command_waiting = False

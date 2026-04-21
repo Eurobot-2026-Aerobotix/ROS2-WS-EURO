@@ -829,8 +829,8 @@ class STM32Controller(Node):
         except Exception as e:
             self.get_logger().error(f'Shutdown service error: {str(e)}')
             return False, f'Service error: {str(e)}'
-    def creep(self, timeout=10.0):
-        """Send a creep command to the STM32 (synchronous)"""
+    def creep(self, distance, timeout=10.0):
+        """Send a creep command to the STM32 (synchronous) with distance in arg2."""
         # Keep trying to connect to service until timeout
         if not self.navi_client.wait_for_service(timeout_sec=10):
             self.get_logger().error(f'NaviStm service not available after 10 seconds')
@@ -839,7 +839,7 @@ class STM32Controller(Node):
         #self.get_logger().info('NaviStm service is now available!')
         request = NaviStm.Request()
         request.arg1 = 20.0  # Indicates creep command
-        request.arg2 = 0.0
+        request.arg2 = distance
         request.arg3 = 0.0
         request.arg4 = 0.0
         request.arg5 = 0.0
@@ -848,7 +848,7 @@ class STM32Controller(Node):
         request.arg8 = 0.0
         request.arg9 = 0.0
         request.arg10 = 0.0
-        self.get_logger().info("Envoi de creep command")
+        self.get_logger().info(f"Envoi de creep command (distance={distance})")
         
         try:
             future = self.navi_client.call_async(request)
@@ -895,8 +895,8 @@ class STM32Controller(Node):
         except Exception as e:
             self.get_logger().error(f'Soft stop service error: {str(e)}')
             return False, f'Service error: {str(e)}'
-    def creep_backwards(self, timeout=10.0):
-        """Send a creep backwards command to the STM32 (synchronous)"""
+    def creep_backwards(self, distance, timeout=10.0):
+        """Send a creep backwards command to the STM32 (synchronous) with distance in arg2."""
         # Keep trying to connect to service until timeout
         if not self.navi_client.wait_for_service(timeout_sec=10):
             self.get_logger().error(f'NaviStm service not available after 10 seconds')
@@ -905,7 +905,7 @@ class STM32Controller(Node):
         #self.get_logger().info('NaviStm service is now available!')
         request = NaviStm.Request()
         request.arg1 = 21.0  # Indicates creep backwards command
-        request.arg2 = 0.0
+        request.arg2 = distance
         request.arg3 = 0.0
         request.arg4 = 0.0
         request.arg5 = 0.0
@@ -914,7 +914,7 @@ class STM32Controller(Node):
         request.arg8 = 0.0
         request.arg9 = 0.0
         request.arg10 = 0.0
-        self.get_logger().info("Envoi de creep backwards command")
+        self.get_logger().info(f"Envoi de creep backwards command (distance={distance})")
         
         try:
             future = self.navi_client.call_async(request)
