@@ -25,6 +25,7 @@ class PamiTestManager(Node):
         self.strategy_name = None
         self.strategy_color = None
         self.selected_pamis = []
+        self.target_order = 1
         
         # PAMI controller instance
         self.pami_controller = None
@@ -171,7 +172,7 @@ class PamiTestManager(Node):
             pami_folder, 
             'pami_controller_test',
             team_color=self.strategy_color,
-            target_order=1,
+            target_order=self.target_order,
             selected_pamis=self.selected_pamis,
         )
         
@@ -227,6 +228,7 @@ def main(args=None):
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument('strategy_input', nargs='?')
     parser.add_argument('pami_numbers', nargs='?', default='')
+    parser.add_argument('target_order', nargs='?', default='1')
 
     cli_args, _ = parser.parse_known_args(sys.argv[1:])
 
@@ -237,12 +239,16 @@ def main(args=None):
 
     if not strategy_input:
         manager.get_logger().error("No strategy input provided!")
-        manager.get_logger().info("Usage: ros2 run euro pami_test_manager <strategy_name_or_file_path> [pami_numbers]")
-        manager.get_logger().info("Example: ros2 run euro pami_test_manager pami_complete_yellow 2,3,5")
+        manager.get_logger().info("Usage: ros2 run euro pami_test_manager <strategy_name_or_file_path> [pami_numbers] [target_order]")
+        manager.get_logger().info("Example: ros2 run euro pami_test_manager pami_complete_yellow 2,3,5 2")
         rclpy.shutdown()
         return
 
     manager.selected_pamis = manager._parse_pami_numbers(cli_args.pami_numbers)
+    try:
+        manager.target_order = int(cli_args.target_order)
+    except Exception:
+        manager.target_order = 1
     
     # Load strategy information
     if not manager.load_strategy_info(strategy_input):
@@ -259,6 +265,7 @@ def main(args=None):
     manager.get_logger().info("\n" + "="*60)
     manager.get_logger().info("PAMI Test Manager Ready!")
     manager.get_logger().info(f"Strategy: {manager.strategy_name}")
+    manager.get_logger().info(f"Target order: {manager.target_order}")
     manager.get_logger().info(f"PAMIs: {manager.selected_pamis if manager.selected_pamis else 'all (1..7)'}")
     manager.get_logger().info("="*60 + "\n")
     
