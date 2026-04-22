@@ -59,6 +59,17 @@ PICKUP_POSES = {
     'S8': [{'x': 800, 'y': 2600, 'theta': [0, 180]}]
 }
 
+# Predefined pickup poses for selected FX batches (positions in mm)
+# These pickup angles are constrained by field geometry:
+# - f1 / f10: vertical approach (±90°)
+# - f6 / f9: horizontal approach (0° or 180°)
+FX_PICKUP_POSES = {
+    'F1': [{'x': 1200, 'y': 100, 'theta': [90, -90]}],
+    'F6': [{'x': 1900, 'y': 1500, 'theta': [0, 180]}],
+    'F9': [{'x': 1900, 'y': 2300, 'theta': [0, 180]}],
+    'F10': [{'x': 1200, 'y': 2900, 'theta': [90, -90]}],
+}
+
 # Predefined putdown poses for FX zones (positions in mm)
 PUTDOWN_POSES = {
     'fx1': {'x': 1200, 'y': 100, 'type': 'A'},
@@ -129,17 +140,34 @@ class BatchRegistry:
         return None
 
     @staticmethod
+    def _normalize_f_pickup_key(known_id: str) -> Optional[str]:
+        base = known_id.upper().replace('_WEB', '')
+        if base.startswith('FX') and base[2:].isdigit():
+            return f'F{base[2:]}'
+        if base.startswith('F') and base[1:].isdigit():
+            return base
+        return None
+
+    @staticmethod
     def _safe_ratio(value: float, max_value: float) -> float:
         if max_value <= 0:
             return 0.0
         return max(0.0, min(1.0, value / max_value))
 
     def _resolve_pickup_poses(self, known_id: str, batch_type: str) -> Tuple[Dict[str, Any], ...]:
-        if batch_type != 'sx':
-            return tuple()
-        base_id = self._normalize_base_known_id(known_id)
-        poses = PICKUP_POSES.get(base_id, [])
-        return tuple(deepcopy(poses))
+        if batch_type == 'sx':
+            base_id = self._normalize_base_known_id(known_id)
+            poses = PICKUP_POSES.get(base_id, [])
+            return tuple(deepcopy(poses))
+
+        if batch_type == 'fx':
+            f_key = self._normalize_f_pickup_key(known_id)
+            if f_key is None:
+                return tuple()
+            poses = FX_PICKUP_POSES.get(f_key, [])
+            return tuple(deepcopy(poses))
+
+        return tuple()
 
     def _resolve_putdown_pose_and_fx_subtype(self, known_id: str, batch_type: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
         if batch_type != 'fx':
@@ -709,7 +737,24 @@ class DecisionMaker:
         """
         # Strip _WEB suffix for simulation batches (S1_WEB → S1)
         base_id = known_id.upper().replace('_WEB', '')
-        return PICKUP_POSES.get(base_id)
+        poses = PICKUP_POSES.get(base_id)
+        if poses:
+            return poses
+        if base_id.startswith('FX') and base_id[2:].isdigit():
+            base_id = f'F{base_id[2:]}'
+        return FX_PICKUP_POSES.get(base_id)
+
+    @staticmethod
+    def _compute_fx_creep_target_mm(known_id: str, pickup_x_mm: float, pickup_y_mm: float) -> Optional[Tuple[float, float]]:
+        """Return creep_to target for supported FX pickup ids with 250mm wall offset."""
+        base_id = str(known_id or '').upper().replace('_WEB', '')
+        if base_id == 'F1':
+            return pickup_x_mm, 250.0
+        if base_id == 'F10':
+            return pickup_x_mm, 2750.0
+        if base_id in ('F6', 'F9'):
+            return 1750.0, pickup_y_mm
+        return None
     
     def find_optimal_putdown_position(self, center_x: float, center_y: float, 
                                       reference_x: float = None, reference_y: float = None) -> Optional[Dict]:
@@ -1127,10 +1172,13 @@ class DecisionMaker:
         else:
             pickup_theta = pickup_angles[0]
         
+        is_fx_pickup_flow = str(optimal_batch.get('batch_type', '')).lower() == 'fx'
+
         self.strategy.get_logger().info(
             f'🎯 Selected batch {known_id}: '
             f'pos=({pickup_x_mm}mm, {pickup_y_mm}mm), '
             f'angle={pickup_theta}°, '
+            f'flow={"FX" if is_fx_pickup_flow else "SX"}, '
             f'members={optimal_batch["member_count"]}, '
             f'distance={optimal_batch["distance_mm"]:.0f}mm'
         )
@@ -1261,10 +1309,32 @@ class DecisionMaker:
                     f'📍 Added final go_to_backwards after orientate: x={pickup_x_mm:.0f}mm, y={pickup_y_mm:.0f}mm'
                 )
         
-        # Add ESP pick_up command at the end
+        # FX flow: creep from aligned pickup pose to an inner wall-offset point
+        # before triggering ESP pickup. This allows automatic batch capture.
+        if is_fx_pickup_flow:
+            creep_target = self._compute_fx_creep_target_mm(known_id, pickup_x_mm, pickup_y_mm)
+            if creep_target is not None:
+                creep_x_mm, creep_y_mm = creep_target
+                creep_cmd = 'creep_to_backwards' if device == 'ESP_back' else 'creep_to'
+                task_sequence.append({
+                    'device': 'STM',
+                    'command': creep_cmd,
+                    'params': [creep_x_mm, creep_y_mm],
+                    'wait': False
+                })
+                self.strategy.get_logger().info(
+                    f'🪝 Added {creep_cmd} to ({creep_x_mm:.0f}mm, {creep_y_mm:.0f}mm) for {known_id}'
+                )
+            else:
+                self.strategy.get_logger().warning(
+                    f'⚠️ FX creep target not defined for {known_id}; skipping creep_to step'
+                )
+
+        # Add ESP pickup command at the end
+        esp_pickup_command = 'pick_up_fx' if is_fx_pickup_flow else 'pick_up'
         task_sequence.append({
             'device': device,
-            'command': 'pick_up',
+            'command': esp_pickup_command,
             'params': {},
             'wait': True  # Wait for STM32 to reach position before picking
         })

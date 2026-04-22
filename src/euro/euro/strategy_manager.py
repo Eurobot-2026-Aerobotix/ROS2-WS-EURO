@@ -559,6 +559,9 @@ class StrategyManager(Node):
 
         normalized_command = str(command or '').strip().lower()
 
+        if normalized_command == 'pick_up_fx':
+            normalized_command = 'pick_up'
+
         if normalized_command == 'pick_up':
             self.last_pickup_enqueue_time[device] = time.monotonic()
             return True
@@ -691,8 +694,9 @@ class StrategyManager(Node):
                     last_cmd = generated_task['sequence'][-1]
                     last_command = last_cmd.get('command')
                     last_device = last_cmd.get('device')
-                    if last_command in ['pick_up', 'put_down'] and last_device in ['ESP_front', 'ESP_back']:
-                        self.last_task_command = last_command
+                    normalized_last_command = 'pick_up' if last_command in ['pick_up', 'pick_up_fx'] else last_command
+                    if normalized_last_command in ['pick_up', 'put_down'] and last_device in ['ESP_front', 'ESP_back']:
+                        self.last_task_command = normalized_last_command
                         self.last_task_device = last_device
                     else:
                         self.last_task_command = None
@@ -1106,11 +1110,13 @@ def main(args=None):
                     last_cmd = task['sequence'][-1]
                     last_command = last_cmd.get('command')
                     last_device = last_cmd.get('device')
-                    
-                    if last_command in ['pick_up', 'put_down'] and last_device in ['ESP_front', 'ESP_back']:
-                        strategy.get_logger().info(f"📋 Last command in task '{task['name']}': {last_command} on device {last_device}")
+
+                    normalized_last_command = 'pick_up' if last_command in ['pick_up', 'pick_up_fx'] else last_command
+
+                    if normalized_last_command in ['pick_up', 'put_down'] and last_device in ['ESP_front', 'ESP_back']:
+                        strategy.get_logger().info(f"📋 Last command in task '{task['name']}': {normalized_last_command} on device {last_device}")
                         # Store in strategy attributes
-                        strategy.last_task_command = last_command
+                        strategy.last_task_command = normalized_last_command
                         strategy.last_task_device = last_device
                     else:
                         strategy.last_task_command = None

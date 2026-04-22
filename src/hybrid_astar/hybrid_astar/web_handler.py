@@ -1338,6 +1338,17 @@ class WebHandlerNode(Node):
                             theta = params[0]
                     self.get_logger().info(f"      - step {step_i}: {device}.{command} -> theta={theta}")
 
+                elif str(device).upper() == 'STM' and str(command) in ('creep_to', 'creep_to_backwards'):
+                    x = y = '?'
+                    if isinstance(params, list) and len(params) >= 2:
+                        try:
+                            x = float(params[0])
+                            y = float(params[1])
+                        except (TypeError, ValueError):
+                            x = params[0]
+                            y = params[1]
+                    self.get_logger().info(f"      - step {step_i}: {device}.{command} -> x={x}, y={y}")
+
                 else:
                     self.get_logger().info(f"      - step {step_i}: {device}.{command}")
 

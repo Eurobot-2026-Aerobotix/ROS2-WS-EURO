@@ -561,8 +561,16 @@ def handle_stm32_command(command, params, stm32, lidar, strategy):
         stm32.creep(params[0])
         state.IDLE = False
         state.IDLE_FOR_SYSTEMS = False
+    elif command == 'creep_to':
+        stm32.creep_to(params[0], params[1])
+        state.IDLE = False
+        state.IDLE_FOR_SYSTEMS = False
     elif command == 'creep_backwards':
         stm32.creep_backwards(params[0])
+        state.IDLE = False
+        state.IDLE_FOR_SYSTEMS = False
+    elif command == 'creep_to_backwards':
+        stm32.creep_to_backwards(params[0], params[1])
         state.IDLE = False
         state.IDLE_FOR_SYSTEMS = False
     else:
@@ -1083,6 +1091,10 @@ def pick_up(controller,pneumatic,strategy,front):
         return
 
     controller.kabech(0)
+
+
+
+
 def put_down(controller,pneumatic,strategy,front,params=None):
     
     if state.SHUTDOWN_REQUESTED:
@@ -1225,13 +1237,19 @@ def front_task(strategy, front_controller=None,pneumatic_controller=None):
                     front_controller.n20(2222)
                     front_controller.dawer(0)
                     strategy.get_logger().info(f"🔧 Front prepare for pick_up: n20(2222)")
-                else:
+                elif action == 'put_down':
                     cmd_to_n20=int(str(state.color_pt_front).replace('0','2').replace('1','4'))
                     front_controller.dawer(1)
                     front_controller.n20(cmd_to_n20)
+                else:
+                    front_controller.n20(2222)
+                    front_controller.dawer(2)
+
             elif command =='put_down':
                 put_down(front_controller,pneumatic_controller,strategy,True,params)
             elif command =='pick_up':
+                pick_up(front_controller,pneumatic_controller,strategy,True)
+            elif command =='pick_up_fx':
                 pick_up(front_controller,pneumatic_controller,strategy,True)
             # Pop only if the same command is still at queue head
             if len(strategy.queues['ESP_front']) > 0 and strategy.queues['ESP_front'][0] is cmd:
@@ -1273,13 +1291,19 @@ def back_task(strategy, back_controller=None,pneumatic_controller=None):
                     back_controller.n20(2222)
                     back_controller.dawer(0)
                     strategy.get_logger().info(f"🔧 Back prepare for pick_up: n20(2222)")
-                else:
+                elif action == 'put_down':
                     cmd_to_n20=int(str(state.color_pt_back).replace('0','2').replace('1','4'))
                     back_controller.dawer(1)
                     back_controller.n20(cmd_to_n20)
+                else:
+                    back_controller.n20(2222)
+                    back_controller.dawer(2)
+
             elif command =='put_down':
                 put_down(back_controller,pneumatic_controller,strategy,False,params)
             elif command =='pick_up':
+                pick_up(back_controller,pneumatic_controller,strategy,False)
+            elif command =='pick_up_fx':
                 pick_up(back_controller,pneumatic_controller,strategy,False)
             # Pop only if the same command is still at queue head
             if len(strategy.queues['ESP_back']) > 0 and strategy.queues['ESP_back'][0] is cmd:

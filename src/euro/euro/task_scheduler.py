@@ -25,7 +25,14 @@ class TaskScheduler:
     """Simple task scheduler that generates tasks based on the current map state."""
     # NOTE: `Map.get_time_left()` is expressed in seconds.
     # Keep these thresholds in seconds as well.
-    allow_fx = False
+    allow_fx = True
+    supported_fx_pickup_ids = {'f1', 'f6', 'f9', 'f10'}
+    fx_pickup_poses = {
+        'F1': [{'x': 1200.0, 'y': 400.0, 'theta': [90, -90]}],
+        'F6': [{'x': 1600.0, 'y': 1500.0, 'theta': [0, 180]}],
+        'F9': [{'x': 1600.0, 'y': 2300.0, 'theta': [0, 180]}],
+        'F10': [{'x': 1200.0, 'y': 2600.0, 'theta': [90, -90]}],
+    }
     must_dropoff_time = 5.0
     must_go_home_time = 5  # travel budget at 1m distance from nest (seconds)
     must_leave_pamiyeet_alone_time = 20.0
@@ -170,8 +177,8 @@ class TaskScheduler:
             return ""
         for cmd in reversed(sequence):
             command = str(cmd.get('command', '')).strip().lower()
-            if command in ('pick_up', 'put_down'):
-                return command
+            if command in ('pick_up', 'pick_up_fx', 'put_down'):
+                return 'pick_up' if command == 'pick_up_fx' else command
         return ""
 
     @staticmethod
@@ -490,6 +497,26 @@ class TaskScheduler:
         if target_pose is None:
             return float('inf')
         return float(self.map.distance_from(self.map.robot_position, target_pose))
+
+    def _resolve_pickup_poses_for_batch(self, batch_known_id: str) -> List[Dict[str, Any]]:
+        """Return available pickup poses for SX/FX batch ids (uppercase id expected)."""
+        normalized_id = str(batch_known_id or '').upper()
+        poses = self.map.pickup_poses.get(normalized_id, [])
+        if poses:
+            return poses
+        return self.fx_pickup_poses.get(normalized_id, [])
+
+    @staticmethod
+    def _compute_fx_creep_target_mm(batch_known_id: str, pickup_x_mm: float, pickup_y_mm: float) -> Optional[Tuple[float, float]]:
+        """Compute 250mm-from-wall creep target for supported FX pickup ids."""
+        normalized = str(batch_known_id or '').upper()
+        if normalized == 'F1':
+            return float(pickup_x_mm), 250.0
+        if normalized == 'F10':
+            return float(pickup_x_mm), 2750.0
+        if normalized in ('F6', 'F9'):
+            return 1750.0, float(pickup_y_mm)
+        return None
     
     def choose_side(self, task: Task) -> bool:
         if task.type == "pickup":
@@ -803,6 +830,7 @@ class TaskScheduler:
         queue = []
         skip_stats: Dict[str, int] = {
             'pickup_fx_disabled': 0,
+            'pickup_fx_unsupported': 0,
             'pickup_impossible': 0,
             'pickup_reserved_center': 0,
             'pickup_invalid_or_own_color': 0,
@@ -837,6 +865,11 @@ class TaskScheduler:
                     if self.ros_node is not None:
                         self.ros_node.get_logger().debug(f"⏭️ Skip pickup {batch_id}: fx pickups disabled")
                     continue
+                if (batch_id[0] == "f") and (str(batch_id).lower() not in self.supported_fx_pickup_ids):
+                    skip_stats['pickup_fx_unsupported'] += 1
+                    if self.ros_node is not None:
+                        self.ros_node.get_logger().debug(f"⏭️ Skip pickup {batch_id}: fx pickup not supported")
+                    continue
                 if batch_id in ["f3", "f5", "f8"]:
                     skip_stats['pickup_reserved_center'] += 1
                     if self.ros_node is not None:
@@ -850,17 +883,8 @@ class TaskScheduler:
                             f"⏭️ Skip pickup {batch_id}: invalid/own color pattern='{batch.color}' robot_color='{self.map.robot_color}'"
                         )
                     continue
-                if batch_id[0] == "f":
-                    possible_pickup_phi = 0.0
-                    if batch_id in ["f1", "f10"]:
-                        possible_pickup_phi = 90.0
-                    if batch.phi_degrees is None or abs(batch.phi_degrees - possible_pickup_phi) > 1.0:
-                        skip_stats['pickup_phi_mismatch'] += 1
-                        if self.ros_node is not None:
-                            self.ros_node.get_logger().debug(
-                                f"⏭️ Skip pickup {batch_id}: phi mismatch current={batch.phi_degrees} expected={possible_pickup_phi}"
-                            )
-                        continue
+                # FX orientation gate intentionally disabled:
+                # queue supported FX pickups regardless of detected batch phi.
                 if (self.map.time_left < self.must_leave_pamiyeet_alone_time) and (((self.map.robot_color[0] == "y") and (batch_id in ["s1", "s2", "s3", "s4", "f1", "f2", "f6"])) or ((self.map.robot_color[0] == "b") and (batch_id in ["s5", "s6", "s7", "s8", "f9", "f10", "f6"]))):
                     skip_stats['pickup_time_guard'] += 1
                     if self.ros_node is not None:
@@ -1106,17 +1130,13 @@ class TaskScheduler:
 
         normalized_id = batch_known_id.upper()
 
-        # Validate batch exists in pickup_poses
-        if normalized_id not in self.map.pickup_poses:
+        poses = self._resolve_pickup_poses_for_batch(normalized_id)
+        is_fx_pickup_flow = normalized_id.startswith('F')
+        if not poses:
             return None
         
         # Validate pickup_face
         if pickup_face not in ['front', 'back']:
-            return None
-        
-        # Get poses for this batch
-        poses = self.map.pickup_poses[normalized_id]
-        if not poses:
             return None
         
         # Validate pose_selector
@@ -1232,31 +1252,55 @@ class TaskScheduler:
                 first_added = True
             last_cmd = cmd
 
-        # Add a small extra insertion past pickup point (+5cm)
-        # along the same approach direction.
-        extra_pickup_mm = 70.0
-        approach_dx = float(pickup_x) - float(approach_x)
-        approach_dy = float(pickup_y) - float(approach_y)
-        approach_norm = math.hypot(approach_dx, approach_dy)
-        if approach_norm > 1e-6:
-            ux = approach_dx / approach_norm
-            uy = approach_dy / approach_norm
+        if is_fx_pickup_flow:
+            # FX flow:
+            # 1) move to pickup pose aligned with center-facing orientation,
+            # 2) creep_to toward wall-offset point for automatic capture,
+            # 3) trigger dedicated ESP pick_up_fx.
+            task_sequence.append({
+                'device': 'STM',
+                'command': stm_command,
+                'params': [float(pickup_x), float(pickup_y), 1100.0, 1.0, {'from_pathfinding': True, 'from_pickup_task': True}],
+                'wait': False
+            })
+
+            creep_target = self._compute_fx_creep_target_mm(normalized_id, float(pickup_x), float(pickup_y))
+            if creep_target is not None:
+                creep_x, creep_y = creep_target
+                creep_command = 'creep_to' if pickup_face == 'front' else 'creep_to_backwards'
+                task_sequence.append({
+                    'device': 'STM',
+                    'command': creep_command,
+                    'params': [creep_x, creep_y],
+                    'wait': False
+                })
         else:
-            ux = math.cos(theta_rad)
-            uy = math.sin(theta_rad)
+            # SX flow (legacy): add a small insertion past pickup point.
+            extra_pickup_mm = 70.0
+            approach_dx = float(pickup_x) - float(approach_x)
+            approach_dy = float(pickup_y) - float(approach_y)
+            approach_norm = math.hypot(approach_dx, approach_dy)
+            if approach_norm > 1e-6:
+                ux = approach_dx / approach_norm
+                uy = approach_dy / approach_norm
+            else:
+                ux = math.cos(theta_rad)
+                uy = math.sin(theta_rad)
 
-        pickup_target_x = float(pickup_x) + extra_pickup_mm * ux
-        pickup_target_y = float(pickup_y) + extra_pickup_mm * uy
+            pickup_target_x = float(pickup_x) + extra_pickup_mm * ux
+            pickup_target_y = float(pickup_y) + extra_pickup_mm * uy
 
-        task_sequence.append({
-            'device': 'STM',
-            'command': stm_command,
-            'params': [pickup_target_x, pickup_target_y, 1100.0, 1.0, {'from_pathfinding': True, 'from_pickup_task': True}],
-            'wait': False
-        })
+            task_sequence.append({
+                'device': 'STM',
+                'command': stm_command,
+                'params': [pickup_target_x, pickup_target_y, 1100.0, 1.0, {'from_pathfinding': True, 'from_pickup_task': True}],
+                'wait': False
+            })
+
+        esp_pickup_command = 'pick_up_fx' if is_fx_pickup_flow else 'pick_up'
         task_sequence.append({
             'device': esp_device,
-            'command': 'pick_up',
+            'command': esp_pickup_command,
             'params': {},
             'wait': True
         })
