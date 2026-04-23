@@ -174,6 +174,7 @@ class PamiTestManager(Node):
             team_color=self.strategy_color,
             target_order=self.target_order,
             selected_pamis=self.selected_pamis,
+            strict_strategy_match=True,
         )
         
         return True
