@@ -27,7 +27,7 @@ from aruco_mapper_msgs.srv import GetStableBatches
 
 # Global toggle: when True, batches reported LOST are removed.
 # Set to False to preserve LOST batches.
-ACTIVATE_LOST_BATCH_DELETING = True
+ACTIVATE_LOST_BATCH_DELETING = False
 
 
 class MapManager:
