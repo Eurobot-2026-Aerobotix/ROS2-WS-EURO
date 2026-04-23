@@ -112,7 +112,6 @@ class MapManager:
         # Flag to track if this is the first update_map call
         self.first_update_map = True
         self.first_update_empty_retry_count = 0
-        self.first_update_empty_retry_max = 6
         self.first_update_empty_reported = False
         self.first_update_start_logged = False
         
@@ -1011,8 +1010,12 @@ class MapManager:
             )
             return response
 
-        # Otherwise trigger initial update flow; timer starts automatically once locked.
-        success, message, _service_name = self._trigger_update_map_async(can_lock_baseline=True)
+        # Otherwise trigger initial update flow directly with locked baselines.
+        # This avoids a separate baseline-lock step and applies locked patterns immediately.
+        success, message, _service_name = self._trigger_update_map_async(
+            can_lock_baseline=False,
+            only_locked_baselines=True,
+        )
         if not success:
             response.success = False
             response.message = f"start_game failed to trigger initial update_map: {message}"
@@ -1020,7 +1023,7 @@ class MapManager:
 
         response.success = True
         response.message = (
-            "start_game accepted: initial update_map triggered; timer will start after baseline lock completes"
+            "start_game accepted: initial update_map (locked baselines) triggered; timer will start after data is ready"
         )
         return response
 
@@ -1170,7 +1173,7 @@ class MapManager:
             f"🔄 Game timer update_map triggered from {service_name}: {message}"
         )
 
-    def _trigger_update_map_async(self, can_lock_baseline: bool = True) -> tuple[bool, str, str]:
+    def _trigger_update_map_async(self, can_lock_baseline: bool = True, only_locked_baselines: bool = False) -> tuple[bool, str, str]:
         """Trigger the same asynchronous GetStableBatches flow as /update_map."""
         # If we are currently using simulation batches and ArUco service becomes available,
         # migrate source by running: clear_map -> reset(rrr) -> update_map.
@@ -1208,14 +1211,15 @@ class MapManager:
         stable_request = GetStableBatches.Request()
         stable_request.batch_types_filter = "sfg"
         stable_request.specific_known_id = ""
-        stable_request.only_locked_baselines = False
+        stable_request.only_locked_baselines = bool(only_locked_baselines)
 
         future = client_to_use.call_async(stable_request)
         future.add_done_callback(lambda f: self._handle_get_stable_batches_response(
-            f, None, client_to_use, service_name, None, False, can_lock_baseline))
+            f, None, client_to_use, service_name, None, False, can_lock_baseline, bool(only_locked_baselines)))
 
         message_type = "First" if self.first_update_map else "Incremental"
-        return True, f"{message_type} map update triggered from {service_name} (processing asynchronously)", service_name
+        lock_mode = "locked" if only_locked_baselines else "unlocked"
+        return True, f"{message_type} map update ({lock_mode}) triggered from {service_name} (processing asynchronously)", service_name
         return response
 
     def _switch_from_web_to_aruco_async(self) -> bool:
@@ -1341,7 +1345,7 @@ class MapManager:
         response.message = f"Reset map triggered from {service_name} with 'rrr' filter (processing asynchronously)"
         return response
 
-    def _handle_get_stable_batches_response(self, future, trigger_response=None, client=None, service_name="", specific_known_id=None, from_retry_timer=False, can_lock_baseline=True):
+    def _handle_get_stable_batches_response(self, future, trigger_response=None, client=None, service_name="", specific_known_id=None, from_retry_timer=False, can_lock_baseline=True, request_only_locked_baselines=False):
         """
         Callback for GetStableBatches service response
         Processes the received batches and updates the map
@@ -1392,47 +1396,42 @@ class MapManager:
 
             # If first update returns zero batches, retry as first update (do not switch to incremental flow yet).
             if is_first_update and num_batches == 0:
-                if self.first_update_empty_retry_count < self.first_update_empty_retry_max:
-                    self.first_update_empty_retry_count += 1
-                    attempt = self.first_update_empty_retry_count
-                    self.baseline_lock_pending = True
-                    retry_msg = (
-                        f"⚠️ First update_map returned 0 batches, retrying as first update "
-                        f"({attempt}/{self.first_update_empty_retry_max})"
-                    )
-                    if attempt == 1:
-                        self.node.get_logger().warn(retry_msg)
-                    else:
-                        self.node.get_logger().debug(retry_msg)
-
-                    retry_client = client if client is not None else self.retry_client
-                    if retry_client and retry_client.service_is_ready():
-                        retry_request = GetStableBatches.Request()
-                        retry_request.batch_types_filter = "sfg"
-                        retry_request.specific_known_id = ""
-                        retry_request.only_locked_baselines = False
-
-                        retry_future = retry_client.call_async(retry_request)
-                        retry_future.add_done_callback(
-                            lambda f: self._handle_get_stable_batches_response(
-                                f, trigger_response, retry_client, service_name, None, False, True
-                            )
-                        )
-                    else:
-                        self.node.get_logger().error(
-                            "❌ Cannot retry first update_map: batch service not ready"
-                        )
-                    return
-
-                exhausted_msg = (
-                    f"❌ First update_map still returned 0 batches after "
-                    f"{self.first_update_empty_retry_max} retries"
+                self.first_update_empty_retry_count += 1
+                attempt = self.first_update_empty_retry_count
+                self.baseline_lock_pending = True
+                retry_msg = (
+                    "⚠️ First update_map returned 0 batches, retrying until data is available "
+                    f"(attempt #{attempt})"
                 )
-                if not self.first_update_empty_reported:
-                    self.node.get_logger().error(exhausted_msg)
-                    self.first_update_empty_reported = True
+                if attempt == 1 or attempt % 10 == 0:
+                    self.node.get_logger().warn(retry_msg)
                 else:
-                    self.node.get_logger().debug(exhausted_msg)
+                    self.node.get_logger().debug(retry_msg)
+
+                retry_client = client if client is not None else self.retry_client
+                if retry_client and retry_client.service_is_ready():
+                    retry_request = GetStableBatches.Request()
+                    retry_request.batch_types_filter = "sfg"
+                    retry_request.specific_known_id = ""
+                    retry_request.only_locked_baselines = bool(request_only_locked_baselines)
+
+                    retry_future = retry_client.call_async(retry_request)
+                    retry_future.add_done_callback(
+                        lambda f: self._handle_get_stable_batches_response(
+                            f,
+                            trigger_response,
+                            retry_client,
+                            service_name,
+                            None,
+                            False,
+                            can_lock_baseline,
+                            request_only_locked_baselines,
+                        )
+                    )
+                else:
+                    self.node.get_logger().error(
+                        "❌ Cannot retry first update_map: batch service not ready"
+                    )
                 return
 
             if is_first_update and num_batches > 0:
@@ -1838,6 +1837,43 @@ class MapManager:
                 # Update active batch IDs to current state
                 # Use received_batch_ids (all batches in response) not filtered_batches (only new ones)
                 self.active_batch_ids = received_batch_ids | retained_manual_putdown_ids
+
+                # If this request was made with only_locked_baselines=True,
+                # treat these patterns as authoritative baseline immediately.
+                if request_only_locked_baselines:
+                    locked_batch_ids = set()
+                    with self.batches_lock:
+                        for batch in filtered_batches:
+                            if not batch.known_id.startswith('s'):
+                                continue
+                            _parsed_state, baseline_status = self._parse_batch_state(batch.state)
+                            if baseline_status == 'T':
+                                self.locked_baseline_batch_ids.discard(batch.known_id)
+                                self.locked_baseline_all_batch_ids.discard(batch.known_id)
+                                self.tentative_baseline_ids.add(batch.known_id)
+                                self.batches_sx_baseline_status_type[batch.known_id] = 'T'
+                            else:
+                                self.locked_baseline_batch_ids.add(batch.known_id)
+                                locked_batch_ids.add(batch.known_id)
+                                self.tentative_baseline_ids.discard(batch.known_id)
+                                if baseline_status in ('T', 'C'):
+                                    self.batches_sx_baseline_status_type[batch.known_id] = baseline_status
+                                else:
+                                    self.batches_sx_baseline_status_type.pop(batch.known_id, None)
+
+                    self.locked_baseline_all_batch_ids.update(locked_batch_ids)
+                    self.baselines_locked = True
+                    self.baseline_lock_pending = False
+                    self.node.get_logger().info(
+                        f"🔒 Applied locked baseline patterns directly from update_map response ({len(locked_batch_ids)} SX confirmed)"
+                    )
+
+                    if self.tentative_baseline_ids:
+                        self._start_short_pattern_retry_timer()
+
+                    self._try_publish_beacon_ready()
+                    if self.start_game_requested and not self.game_update_timer_active:
+                        self._start_game_update_timer()
                 
                 # Check if all batches are TRACKING and we haven't locked baselines yet
                 if can_lock_baseline and self.baseline_lock_pending and not self.baselines_locked and not self.known_ids_to_retry:

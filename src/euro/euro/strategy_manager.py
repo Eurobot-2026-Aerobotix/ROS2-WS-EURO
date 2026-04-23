@@ -1095,7 +1095,7 @@ def main(args=None):
         
         #reset_systems(pneumatic,front,back,None,strategy,True,False)
         #time.sleep(1)
-        #strategy.pathfinder.update_map()
+        strategy.pathfinder.update_map()
         # Execute tasks sequentially
         # Start a thread to execute tasks one by one
         def execute_tasks_sequentially():
