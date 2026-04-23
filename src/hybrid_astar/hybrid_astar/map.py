@@ -1288,6 +1288,170 @@ class MapManager:
         finally:
             self.source_switch_in_progress = False
 
+    def handle_update_map_direct(self, request: Trigger.Request, response: Trigger.Response) -> Trigger.Response:
+        """
+        Service handler: request a direct obstacle update using the 'D' batch filter.
+
+        This path bypasses retry/baseline logic and only refreshes the obstacles
+        returned by the service response.
+        """
+        client_to_use = None
+        service_name = ""
+
+        if self.get_stable_batches_client.service_is_ready():
+            client_to_use = self.get_stable_batches_client
+            service_name = "/aruco_mapper/get_stable_batches"
+        elif self.get_stable_batches_client_web and self.get_stable_batches_client_web.service_is_ready():
+            client_to_use = self.get_stable_batches_client_web
+            service_name = "/aruco_mapper/get_stable_batches_web"
+        else:
+            self.node.get_logger().error("❌ No GetStableBatches service available")
+            response.success = False
+            response.message = "No batch service available"
+            return response
+
+        self.node.get_logger().info(
+            f"🔄 Direct map update requested - calling {service_name} with 'D' filter (no retry/baseline logic)"
+        )
+
+        stable_request = GetStableBatches.Request()
+        stable_request.batch_types_filter = "D"
+        stable_request.specific_known_id = ""
+        stable_request.only_locked_baselines = False
+
+        future = client_to_use.call_async(stable_request)
+        future.add_done_callback(lambda f: self._handle_direct_get_stable_batches_response(
+            f, response, client_to_use, service_name, "D"
+        ))
+
+        response.success = True
+        response.message = f"Direct obstacle update triggered from {service_name} with 'D' filter (processing asynchronously)"
+        return response
+
+    def handle_test_map(self, request: Trigger.Request, response: Trigger.Response) -> Trigger.Response:
+        """Service handler used by /test_map; forwards to the direct update strategy."""
+        self.node.get_logger().info("🧪 /test_map called - forwarding to direct map update strategy")
+        return self.handle_update_map_direct(request, response)
+
+    def _handle_direct_get_stable_batches_response(
+        self,
+        future,
+        trigger_response=None,
+        client=None,
+        service_name: str = "",
+        batch_types_filter: str = "D",
+    ):
+        """Process a direct obstacle update without retry or baseline logic."""
+        try:
+            stable_response = future.result()
+
+            if stable_response is None:
+                self.node.get_logger().error("❌ Direct update service returned None")
+                return
+
+            aruco_state = stable_response.stable_state
+            batches = list(aruco_state.batches)
+            num_batches = len(batches)
+
+            if num_batches == 0:
+                self.node.get_logger().info(
+                    f"ℹ️ Direct update '{batch_types_filter}' from {service_name} returned no batches"
+                )
+                return
+
+            received_batch_ids = {batch.known_id for batch in batches}
+
+            # Refresh only the batches returned by the direct service call.
+            with self.obstacles_lock:
+                old_count = len(self.obstacles)
+                self.obstacles = [
+                    obs for obs in self.obstacles
+                    if not any(
+                        obs.id.startswith(f"fx_{bid}_")
+                        or obs.id.startswith(f"sx_{bid}_")
+                        or obs.id.startswith(f"gx_{bid}_")
+                        for bid in received_batch_ids
+                    )
+                ]
+                removed = old_count - len(self.obstacles)
+
+                self.obstacle_sources = {
+                    obs_id: source
+                    for obs_id, source in self.obstacle_sources.items()
+                    if not any(
+                        obs_id.startswith(f"fx_{bid}_")
+                        or obs_id.startswith(f"sx_{bid}_")
+                        or obs_id.startswith(f"gx_{bid}_")
+                        for bid in received_batch_ids
+                    )
+                }
+
+            with self.batches_lock:
+                for bid in received_batch_ids:
+                    self.batches_fx.pop(bid, None)
+                    self.batches_fx_status_type.pop(bid, None)
+                    self.batches_sx.pop(bid, None)
+                    self.batches_sx_baseline_status_type.pop(bid, None)
+                    self.batches_with_obstacles.discard(bid)
+                    self.locked_baseline_batch_ids.discard(bid)
+                    self.locked_baseline_all_batch_ids.discard(bid)
+                    self.pending_baseline_lock_ids.discard(bid)
+                    self.short_pattern_ids.discard(bid)
+                    self.tentative_baseline_ids.discard(bid)
+                    self.known_ids_to_retry.discard(bid)
+
+            self.node.get_logger().info(
+                f"🧩 Direct update '{batch_types_filter}' refreshing {num_batches} batches; removed {removed} old obstacles"
+            )
+
+            sx_batches = [b for b in batches if b.known_id.startswith('s')]
+            fx_batches = [b for b in batches if b.known_id.startswith('f')]
+            gx_batches = [b for b in batches if b.known_id.startswith('g')]
+            other_batches = [
+                b for b in batches
+                if not (b.known_id.startswith('s') or b.known_id.startswith('f') or b.known_id.startswith('g'))
+            ]
+            if other_batches:
+                self.node.get_logger().info(
+                    f"🌐 Direct update found {len(other_batches)} custom-name batches, treating them as FX"
+                )
+                fx_batches.extend(other_batches)
+
+            obstacles_before = len(self.obstacles)
+
+            if sx_batches:
+                sx_state = ArucoMapperState()
+                sx_state.stamp = aruco_state.stamp
+                sx_state.initialized = aruco_state.initialized
+                sx_state.batches = sx_batches
+                self._handle_aruco_mapper_state(sx_state, 'sx')
+
+            if fx_batches:
+                fx_state = ArucoMapperState()
+                fx_state.stamp = aruco_state.stamp
+                fx_state.initialized = aruco_state.initialized
+                fx_state.batches = fx_batches
+                self._handle_aruco_mapper_state(fx_state, 'fx')
+
+            if gx_batches:
+                gx_state = ArucoMapperState()
+                gx_state.stamp = aruco_state.stamp
+                gx_state.initialized = aruco_state.initialized
+                gx_state.batches = gx_batches
+                self._handle_aruco_mapper_state(gx_state, 'gx')
+
+            obstacles_after = len(self.obstacles)
+            num_obstacles = obstacles_after - obstacles_before
+
+            self.node.get_logger().info(
+                f"✅ Direct map update complete: {num_batches} batches processed, {num_obstacles} obstacles added"
+            )
+            self.publish_current_obstacles()
+        except Exception as e:
+            import traceback
+            self.node.get_logger().error(f"❌ Direct update response callback failed: {e}")
+            self.node.get_logger().error(traceback.format_exc())
+
     def handle_reset_map(self, request: Trigger.Request, response: Trigger.Response) -> Trigger.Response:
         """
         Service handler: Reset map by requesting stable batches filtered by 'rrr'.
