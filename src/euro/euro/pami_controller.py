@@ -216,6 +216,12 @@ class PamiController(Node):
             file_strategy_name = data.get('strategy_name')
             sequence = data.get('sequence', [])
 
+            # Keep only files that belong to requested strategy_name.
+            requested_strategy = str(self.strategy_name or '').strip().lower()
+            current_strategy = str(file_strategy_name or '').strip().lower()
+            if requested_strategy and current_strategy != requested_strategy:
+                continue
+
             try:
                 pami_number = int(data.get('pami_number'))
             except (ValueError, TypeError):
