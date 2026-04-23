@@ -27,7 +27,7 @@ from aruco_mapper_msgs.srv import GetStableBatches
 
 # Global toggle: when True, batches reported LOST are removed.
 # Set to False to preserve LOST batches.
-ACTIVATE_LOST_BATCH_DELETING = True
+ACTIVATE_LOST_BATCH_DELETING = False
 
 
 class MapManager:
@@ -974,7 +974,9 @@ class MapManager:
         
         Priority: Try web service first (for simulation), then fall back to aruco_mapper (for real robot)
         """
-        success, message, _service_name = self._trigger_update_map_async(can_lock_baseline=True)
+        # Plain /update_map should refresh map state only. Baseline locking is
+        # reserved for /start_game flow.
+        success, message, _service_name = self._trigger_update_map_async(can_lock_baseline=False)
         response.success = success
         response.message = message
         return response
@@ -1205,7 +1207,8 @@ class MapManager:
             if not self.first_update_start_logged:
                 self.node.get_logger().info("🔄 First update_map call - requesting all batches (unlocked)")
                 self.first_update_start_logged = True
-            if can_lock_baseline:
+            # Arm baseline lock flow only after /start_game has been requested.
+            if can_lock_baseline and self.start_game_requested:
                 self.baseline_lock_pending = True
 
         stable_request = GetStableBatches.Request()
@@ -1391,14 +1394,15 @@ class MapManager:
             disappeared_ids = set()
             
             # Remember if this is the first update (before we set it to False)
-            is_first_update = can_lock_baseline and self.first_update_map and specific_known_id is None
+            is_first_update = self.first_update_map and specific_known_id is None
             is_full_update = specific_known_id is None  # Full update (not a specific retry)
 
             # If first update returns zero batches, retry as first update (do not switch to incremental flow yet).
             if is_first_update and num_batches == 0:
                 self.first_update_empty_retry_count += 1
                 attempt = self.first_update_empty_retry_count
-                self.baseline_lock_pending = True
+                if can_lock_baseline and self.start_game_requested:
+                    self.baseline_lock_pending = True
                 retry_msg = (
                     "⚠️ First update_map returned 0 batches, retrying until data is available "
                     f"(attempt #{attempt})"
@@ -1862,21 +1866,42 @@ class MapManager:
                                     self.batches_sx_baseline_status_type.pop(batch.known_id, None)
 
                     self.locked_baseline_all_batch_ids.update(locked_batch_ids)
-                    self.baselines_locked = True
-                    self.baseline_lock_pending = False
+                    required_sx_ids = {
+                        bid for bid in self.active_batch_ids
+                        if bid.startswith('s') and bid not in self.manual_putdown_batch_ids
+                    }
+                    missing_sx_ids = required_sx_ids - set(self.locked_baseline_all_batch_ids)
+                    fully_locked = (not missing_sx_ids) and (not self.tentative_baseline_ids)
+
+                    self.baselines_locked = bool(fully_locked)
+                    self.baseline_lock_pending = not bool(fully_locked)
                     self.node.get_logger().info(
                         f"🔒 Applied locked baseline patterns directly from update_map response ({len(locked_batch_ids)} SX confirmed)"
                     )
+
+                    if missing_sx_ids:
+                        self.node.get_logger().info(
+                            f"⏳ Locked baseline still missing for {len(missing_sx_ids)} SX batches: {sorted(missing_sx_ids)}"
+                        )
+                        if self.start_game_requested:
+                            for missing_id in sorted(missing_sx_ids):
+                                self._request_locked_baseline_for_sx(missing_id)
 
                     if self.tentative_baseline_ids:
                         self._start_short_pattern_retry_timer()
 
                     self._try_publish_beacon_ready()
-                    if self.start_game_requested and not self.game_update_timer_active:
+                    if self.baselines_locked and self.start_game_requested and not self.game_update_timer_active:
                         self._start_game_update_timer()
                 
                 # Check if all batches are TRACKING and we haven't locked baselines yet
-                if can_lock_baseline and self.baseline_lock_pending and not self.baselines_locked and not self.known_ids_to_retry:
+                if (
+                    self.start_game_requested
+                    and can_lock_baseline
+                    and self.baseline_lock_pending
+                    and not self.baselines_locked
+                    and not self.known_ids_to_retry
+                ):
                     self._lock_baseline_patterns()
             
             # Count obstacles by type for summary
@@ -1938,7 +1963,7 @@ class MapManager:
         self.node.get_logger().info("✅ Auto-retry stopped: all batches are no longer EMERGING")
         
         # After all batches are no longer EMERGING, lock the baseline patterns
-        if self.baseline_lock_pending and not self.baselines_locked:
+        if self.start_game_requested and self.baseline_lock_pending and not self.baselines_locked:
             self._lock_baseline_patterns()
     
     def _lock_baseline_patterns(self):
@@ -1967,6 +1992,8 @@ class MapManager:
         Returns False when skipped (cooldown/service unavailable/not SX/already locked).
         """
         if not known_id.startswith('s'):
+            return False
+        if not self.start_game_requested:
             return False
         if known_id in self.locked_baseline_batch_ids or known_id in self.pending_baseline_lock_ids:
             return True
@@ -2366,7 +2393,19 @@ class MapManager:
                     self.batches_sx_baseline_status_type[known_id] = 'C'
                     self.tentative_baseline_ids.discard(known_id)
 
-                if len(new_pattern) >= 4 or baseline_status == 'C':
+                # Consider short-pattern resolved only when we can actually build
+                # 4 obstacle colors (from pattern or from member-color fallback).
+                resolved_colors = self.parse_pattern_colors((new_pattern or "").lower())
+                if len(resolved_colors) < 4 and batch.members and len(batch.members) >= 4:
+                    fallback_colors = []
+                    for member in batch.members[:4]:
+                        member_color = str(getattr(member, 'color', '') or '').strip().lower()
+                        if member_color in ('blue', 'yellow'):
+                            fallback_colors.append(member_color)
+                    if len(fallback_colors) == 4:
+                        resolved_colors = fallback_colors
+
+                if len(resolved_colors) >= 4:
                     self.node.get_logger().info(
                         f"✅ Short-pattern resolved for '{known_id}': "
                         f"'{old_pattern}' → '{new_pattern}' ({len(new_pattern)} elements)"
@@ -2406,15 +2445,26 @@ class MapManager:
 
                     self._try_publish_beacon_ready()
 
-                elif len(new_pattern) > len(old_pattern):
-                    self.node.get_logger().info(
-                        f"📈 Pattern improving for '{known_id}': "
-                        f"'{old_pattern}' → '{new_pattern}' (still {len(new_pattern)} elements, need 4)"
-                    )
                 else:
-                    self.node.get_logger().info(
-                        f"⏳ Pattern unchanged for '{known_id}': '{new_pattern}' ({len(new_pattern)} elements)"
-                    )
+                    # Keep this batch in retry set until a complete pattern/fallback appears.
+                    self.short_pattern_ids.add(known_id)
+                    if baseline_status == 'C':
+                        self.node.get_logger().info(
+                            f"⏳ Locked baseline for '{known_id}' is confirmed but still incomplete "
+                            f"('{new_pattern}', {len(new_pattern)} elements); waiting for 4 colors"
+                        )
+                    elif len(new_pattern) > len(old_pattern):
+                        self.node.get_logger().info(
+                            f"📈 Pattern improving for '{known_id}': "
+                            f"'{old_pattern}' → '{new_pattern}' (still {len(new_pattern)} elements, need 4)"
+                        )
+                    else:
+                        self.node.get_logger().info(
+                            f"⏳ Pattern unchanged for '{known_id}': '{new_pattern}' ({len(new_pattern)} elements)"
+                        )
+
+                if len(resolved_colors) < 4 and self.short_pattern_retry_active is False:
+                    self._start_short_pattern_retry_timer()
                 break
             else:
                 self.node.get_logger().info(
@@ -2480,6 +2530,7 @@ class MapManager:
 
                 if source == 'sx':
                     batch_known_id = batch.known_id
+                    is_locked_sx = batch_known_id in self.locked_baseline_batch_ids
 
                     if batch_known_id not in self.predefined_batch_positions:
                         self.node.get_logger().warn(
@@ -2492,17 +2543,17 @@ class MapManager:
                     batch.center.y = batch_pos["y"]
                     batch.center.z = 0.0
 
-                    if batch_known_id not in self.locked_baseline_batch_ids:
-                        self._request_locked_baseline_for_sx(batch_known_id)
+                    if not is_locked_sx:
+                        if self.start_game_requested:
+                            self._request_locked_baseline_for_sx(batch_known_id)
                         self.node.get_logger().debug(
-                            f"⏳ Deferring SX obstacles for '{batch_known_id}' until its baseline is locked"
+                            f"🧪 Creating provisional SX obstacles for '{batch_known_id}' from current pattern until baseline lock"
                         )
-                        continue
 
                     pattern_colors = self.parse_pattern_colors((batch.pattern or "").lower())
                     if len(pattern_colors) < 4:
                         _parsed_state, baseline_status = self._parse_batch_state(batch.state)
-                        if baseline_status == 'C' and batch.members and len(batch.members) >= 4:
+                        if batch.members and len(batch.members) >= 4:
                             fallback_colors = []
                             for member in batch.members[:4]:
                                 member_color = str(getattr(member, 'color', '') or '').strip().lower()
@@ -2511,14 +2562,30 @@ class MapManager:
                             if len(fallback_colors) == 4:
                                 pattern_colors = fallback_colors
                             else:
-                                self.node.get_logger().warn(
-                                    f"⚠️  Locked SX batch '{batch_known_id}' status=C but pattern/member colors incomplete, waiting before obstacle creation"
-                                )
+                                if self.start_game_requested and not is_locked_sx:
+                                    self.short_pattern_ids.add(batch_known_id)
+                                    self._start_short_pattern_retry_timer()
+                                if baseline_status == 'C' or is_locked_sx:
+                                    self.node.get_logger().warn(
+                                        f"⚠️  Locked SX batch '{batch_known_id}' status=C but pattern/member colors incomplete, waiting before obstacle creation"
+                                    )
+                                else:
+                                    self.node.get_logger().warn(
+                                        f"⚠️  SX batch '{batch_known_id}' provisional colors incomplete, waiting before obstacle creation"
+                                    )
                                 continue
                         else:
-                            self.node.get_logger().warn(
-                                f"⚠️  Locked SX batch '{batch_known_id}' still has incomplete pattern '{batch.pattern}', waiting before obstacle creation"
-                            )
+                            if self.start_game_requested and not is_locked_sx:
+                                self.short_pattern_ids.add(batch_known_id)
+                                self._start_short_pattern_retry_timer()
+                            if baseline_status == 'C' or is_locked_sx:
+                                self.node.get_logger().warn(
+                                    f"⚠️  Locked SX batch '{batch_known_id}' still has incomplete pattern '{batch.pattern}', waiting before obstacle creation"
+                                )
+                            else:
+                                self.node.get_logger().warn(
+                                    f"⚠️  SX batch '{batch_known_id}' provisional pattern '{batch.pattern}' incomplete, waiting before obstacle creation"
+                                )
                             continue
 
                     member_count = len(batch.members) if batch.members else 0

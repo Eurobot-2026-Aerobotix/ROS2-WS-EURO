@@ -95,17 +95,15 @@ class StrategyManager(Node):
             10
         )
 
-        # Beacon readiness status for dashboard: 0 = not ready, 1 = ready
-        beacon_qos = QoSProfile(depth=1)
-        beacon_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
-        beacon_qos.reliability = ReliabilityPolicy.RELIABLE
-        self.beacon_status_pub = self.create_publisher(Int32, '/web/beacon_status', beacon_qos)
+        # Beacon readiness is published by hybrid_astar map manager only.
+        # Keep strategy manager silent on /web/beacon_status to avoid conflicting
+        # transient-local samples from two different publishers.
+        self.beacon_status_pub = None
         self.task_scheduler_status_pub = self.create_publisher(String, '/web/task_scheduler_status', 10)
 
         self.beacon_status_value = 0
-        self.publish_beacon_status(self.beacon_status_value)
         self._beacon_startup_publish_count = 0
-        self._beacon_startup_timer = self.create_timer(0.5, self._publish_initial_beacon_status)
+        self._beacon_startup_timer = None
         self._task_scheduler_status_timer = self.create_timer(0.25, self._publish_task_scheduler_status)
         self.pathfinder = PathfinderClient()
         self.path_called = False
@@ -122,6 +120,8 @@ class StrategyManager(Node):
 
     def publish_beacon_status(self, value: int) -> None:
         self.beacon_status_value = int(value)
+        if self.beacon_status_pub is None:
+            return
         msg = Int32()
         msg.data = self.beacon_status_value
         self.beacon_status_pub.publish(msg)
