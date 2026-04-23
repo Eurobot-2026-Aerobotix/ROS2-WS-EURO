@@ -25,6 +25,10 @@ from hybrid_astar.srv import SetTeamColor
 from aruco_mapper_msgs.msg import ArucoMapperState, Batch, BatchMember
 from aruco_mapper_msgs.srv import GetStableBatches
 
+# Global toggle: when True, batches reported LOST are removed.
+# Set to False to preserve LOST batches.
+ACTIVATE_LOST_BATCH_DELETING = True
+
 
 class MapManager:
     """
@@ -225,6 +229,9 @@ class MapManager:
         )
         
         self.node.get_logger().info('🗺️  Map Manager initialized')
+        self.node.get_logger().info(
+            f"⚙️  activate_lost_batch_deleting={ACTIVATE_LOST_BATCH_DELETING}"
+        )
 
     def _publish_beacon_status(self, value: int) -> None:
         msg = Int32()
@@ -1367,8 +1374,14 @@ class MapManager:
             with self.batches_lock:
                 manual_putdown_ids = set(self.manual_putdown_batch_ids)
             lost_non_manual_ids = set(lost_batch_ids) - manual_putdown_ids
-            if lost_non_manual_ids:
+            lost_preserved_ids = set()
+            if lost_non_manual_ids and ACTIVATE_LOST_BATCH_DELETING:
                 self._remove_lost_batches(lost_non_manual_ids, reason="reported LOST by beacon")
+            elif lost_non_manual_ids:
+                lost_preserved_ids = set(lost_non_manual_ids)
+                self.node.get_logger().info(
+                    f"📌 LOST batch deletion disabled; preserving LOST batches: {lost_preserved_ids}"
+                )
             
             # Initialize variables that may be used in final summary
             disappeared_ids = set()
@@ -1601,6 +1614,9 @@ class MapManager:
             
             # Get known_ids from current response
             received_batch_ids = {batch.known_id for batch in filtered_batches}
+            # If LOST deletion is disabled, treat LOST batches as still received so
+            # incremental disappeared-batch cleanup does not remove them.
+            received_batch_ids.update(lost_preserved_ids)
             retained_manual_putdown_ids = set()
             preserved_manual_batches = {}
 
