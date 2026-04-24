@@ -43,21 +43,21 @@ class TaskScheduler:
     dropoff_min_clearance_to_sx = 420.0
     dropoff_min_clearance_to_fx = 330.0
     drop_off_enemy_clearance = 50.0
-    putdown_insert_distance = 175.0
+    putdown_insert_distance = 225.0
     putdown_retreat_distance = 250.0
-    switch_distance=550.0
+    switch_distance=2000.0
     retreat_distance=175.0
     coeffs = {
         "is_enemy_goal": 0.0,
-        "distance_to_goal_far": 0.001,
+        "distance_to_goal_far": 0.0,
+        "distance_to_goal_close":0.0000005,
         "number_of_obstacles_between": -1.0,
-        "enemy_is_obstacle_between": -3,
-        "distance_to_enemy": 0.001,
+        "enemy_is_obstacle_between": -5.0,
+        "distance_to_enemy": 0.003,
         "distance_from_nest": 0.000015,
         "number_of_opposite_crates": 1,
-        "distance_to_goal_close":0.008,
-        "pickup_facing_available_face": 0.75,
-        "dropoff_facing_loaded_face": 0.75,
+        "pickup_facing_available_face": 4,
+        "dropoff_facing_loaded_face": 4,
     }
     log_score_breakdown = False
     log_task_queue_snapshot = True
@@ -284,14 +284,16 @@ class TaskScheduler:
         else:
             contributions["is_enemy_goal"] = self.coeffs["is_enemy_goal"] * 700.0
         distance=self.map.distance_from(self.map.robot_position, target_pos)
-        if distance < self.switch_distance:
-            contributions["distance_to_goal"] = (
-                self.coeffs["distance_to_goal_close"] * (self.switch_distance*2 - distance)
-            )
-        else:
-            contributions["distance_to_goal"] = (
-                self.coeffs["distance_to_goal_far"] * distance
-            )
+        # if distance < self.switch_distance:
+        #     contributions["distance_to_goal"] = (
+        #         self.coeffs["distance_to_goal_close"] * (self.switch_distance*2 - distance)
+        #     )
+        # else:
+        #     contributions["distance_to_goal"] = (
+        #         self.coeffs["distance_to_goal_far"] * distance
+        #     )
+        contributions["distance_to_goal"] = self.coeffs["distance_to_goal_close"] * (self.switch_distance - distance) + self.coeffs["distance_to_goal_far"] * distance
+        
         contributions["number_of_obstacles_between"] = (
             self.map.calculate_number_of_obstacles_to(target_pos) * self.coeffs["number_of_obstacles_between"]
         )
@@ -548,7 +550,7 @@ class TaskScheduler:
                     pickup_pos,
                     key=lambda p: self.map.distance_from(self.map.enemy_absolute, p),
                 )
-            if self.map.distance_from(self.map.enemy_absolute, pickup_pos[0]) > 600.0:
+            if self.map.distance_from(self.map.enemy_absolute, pickup_pos[0]) > 400.0:
                 selected_pos = min(
                     pickup_pos,
                     key=lambda p: self.map.distance_from(self.map.robot_position, p),
@@ -994,7 +996,7 @@ class TaskScheduler:
             if pickup_tasks and dropoff_tasks:
                 nearest_pickup_mm = min(self._distance_to_task_target_mm(t) for t in pickup_tasks)
                 nearest_dropoff_mm = min(self._distance_to_task_target_mm(t) for t in dropoff_tasks)
-                if nearest_dropoff_mm < nearest_pickup_mm:
+                if (nearest_pickup_mm - nearest_dropoff_mm) > 300.0:
                     queue = dropoff_tasks + pickup_tasks + [
                         t for t in queue if t.type not in ('dropoff', 'pickup')
                     ]
