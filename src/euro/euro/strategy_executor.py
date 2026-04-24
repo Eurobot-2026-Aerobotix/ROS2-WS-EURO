@@ -1499,10 +1499,21 @@ def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=No
                     )
                 elif stm32_controller:
                     start_x_mm, start_y_mm, start_theta_deg = params[0], params[1], params[2]
-
+                    state.WAITING_TIRETTE=True
+                    if rpi_controller:
+                        # Check if tirette is already inserted
+                        tirette_status = rpi_controller.read_pin_17()
+                        if tirette_status == 0:
+                            strategy.get_logger().warning("⚠️ mafamech tirette lil PREPARE")
+                        while(tirette_status == 0):  
+                            time.sleep(0.05)
+                            tirette_status = rpi_controller.read_pin_17()
+                        result = rpi_controller.wait_start()
+                        state.WAITING_TIRETTE=False
+                        strategy.get_logger().info(f"✅ PREPARE DONE ")
                     # 1) Reset STM before applying provided start pose.
                     stm32_controller.reset()
-
+                    time.sleep(1)
                     # 2) Apply provided start pose.
                     stm32_controller.set_position(start_x_mm, start_y_mm, start_theta_deg)
                     state.IDLE_FOR_SYSTEMS = True
@@ -1526,15 +1537,12 @@ def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=No
                             orient_deg = float(start_theta_deg)
                         else:
                             orient_deg = math.degrees(math.atan2(dy, dx))
-
-                        # 4) Orient robot toward the next go_to direction.
-                        state.IDLE = False
-                        state.IDLE_FOR_SYSTEMS = False
                         stm32_controller.orientate(orient_deg, 0.0)
                         strategy.get_logger().info(
                             f"🧭 prepare_for_start orientate -> {orient_deg:.1f}° "
                             f"(next target: x={target_x_mm:.1f}, y={target_y_mm:.1f})"
                         )
+                        time.sleep(3)  
                 else:
                     strategy.get_logger().warning(
                         "⚠️ prepare_for_start skipped because STM32 controller is unavailable"

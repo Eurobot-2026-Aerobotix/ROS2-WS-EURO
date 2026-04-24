@@ -1315,17 +1315,17 @@ class MapManager:
         )
 
         stable_request = GetStableBatches.Request()
-        stable_request.batch_types_filter = "D"
+        stable_request.batch_types_filter = "ddd"
         stable_request.specific_known_id = ""
         stable_request.only_locked_baselines = False
 
         future = client_to_use.call_async(stable_request)
         future.add_done_callback(lambda f: self._handle_direct_get_stable_batches_response(
-            f, response, client_to_use, service_name, "D"
+            f, response, client_to_use, service_name, "ddd"
         ))
 
         response.success = True
-        response.message = f"Direct obstacle update triggered from {service_name} with 'D' filter (processing asynchronously)"
+        response.message = f"Direct obstacle update triggered from {service_name} with 'ddd' filter (processing asynchronously)"
         return response
 
     def handle_test_map(self, request: Trigger.Request, response: Trigger.Response) -> Trigger.Response:
@@ -1339,7 +1339,7 @@ class MapManager:
         trigger_response=None,
         client=None,
         service_name: str = "",
-        batch_types_filter: str = "D",
+        batch_types_filter: str = "ddd",
     ):
         """Process a direct obstacle update without retry or baseline logic."""
         try:
