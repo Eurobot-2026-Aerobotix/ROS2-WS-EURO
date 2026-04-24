@@ -26,12 +26,15 @@ class TaskScheduler:
     # NOTE: `Map.get_time_left()` is expressed in seconds.
     # Keep these thresholds in seconds as well.
     allow_fx = True
-    supported_fx_pickup_ids = {'f1', 'f6', 'f9', 'f10'}
+    supported_fx_pickup_ids = {'f1', 'f2', 'f4', 'f7', 'f6', 'f9', 'f10'}
     fx_pickup_poses = {
         'F1': [{'x': 1200.0, 'y': 400.0, 'theta': [90, -90]}],
         'F6': [{'x': 1600.0, 'y': 1500.0, 'theta': [0, 180]}],
         'F9': [{'x': 1600.0, 'y': 2300.0, 'theta': [0, 180]}],
         'F10': [{'x': 1200.0, 'y': 2600.0, 'theta': [90, -90]}],
+        'F2': [{'x': 1600.0, 'y': 700.0, 'theta': [0, 180]}],
+        'F4': [{'x': 850.0, 'y': 1250.0, 'theta': [0, 180]}],
+        'F7': [{'x': 850.0, 'y': 1750.0, 'theta': [0, 180]}],
     }
     must_dropoff_time = 5.0
     must_go_home_time = 5  # travel budget at 1m distance from nest (seconds)
@@ -516,7 +519,9 @@ class TaskScheduler:
             return float(pickup_x_mm), 250.0
         if normalized == 'F10':
             return float(pickup_x_mm), 2750.0
-        if normalized in ('F6', 'F9'):
+        if normalized in ('F4', 'F7'):
+            return 700.0, float(pickup_y_mm)
+        if normalized in ('F6', 'F9', 'F2'):
             return 1750.0, float(pickup_y_mm)
         return None
     
