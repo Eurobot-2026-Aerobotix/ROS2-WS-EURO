@@ -16,7 +16,6 @@ from rclpy.node import Node
 
 class MapUpdater:
     """Background updater placeholder (batch content is topic-driven)."""
-
     def __init__(
         self,
         map_ref,
@@ -187,6 +186,7 @@ class Map:
         self._active_obstacles_sub = None
         self._last_topic_batches_update_s = 0.0
         self._warned_missing_active_obstacles_msg = False
+        self.speed_filter = 0
 
     @staticmethod
     def _normalize_batch_id(known_id: Optional[str]) -> str:
@@ -324,8 +324,12 @@ class Map:
         self.enemy_absolute = Pose2D()  # Clear absolute when relative is cleared
     
     def set_enemy_speed(self, x: float, y: float) -> None: #TODO: check if enemy speed is relative or absolute
-        self.enemy_speed = Speed2D(x=x, y=y)
-    
+        if self.enemy_speed is None:
+            self.enemy_speed = Speed2D(x=x, y=y)
+        else:
+            self.enemy_speed.x = self.enemy_speed.x * self.speed_filter + x * (1 - self.speed_filter)
+            self.enemy_speed.y = self.enemy_speed.y * self.speed_filter + y * (1 - self.speed_filter)
+
     def update_enemy_absolute(self) -> None:
         """Update enemy absolute position based on robot position and enemy relative position."""
         if not self.enemy_relative.detected:

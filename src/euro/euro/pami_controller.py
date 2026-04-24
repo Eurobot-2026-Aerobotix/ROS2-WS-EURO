@@ -17,7 +17,7 @@ class PamiController(Node):
     Controller that loads PAMI strategies and publishes them to appropriate topics
     """
     
-    def __init__(self, strategy_name: str, pami_folder_path: str, node_name='pami_controller', team_color: str = None, target_order: int = 1, auto_publish: bool = True, selected_pamis: List[int] = None):
+    def __init__(self, strategy_name: str, pami_folder_path: str, node_name='pami_controller', team_color: str = None, target_order: int = 1, auto_publish: bool = True, selected_pamis: List[int] = None, strict_strategy_match: bool = False):
         super().__init__(node_name)
         
         self.strategy_name = strategy_name
@@ -26,6 +26,7 @@ class PamiController(Node):
         self.target_order = int(target_order)
         self.auto_publish = bool(auto_publish)
         self.selected_pamis = self._normalize_pami_numbers(selected_pamis)
+        self.strict_strategy_match = bool(strict_strategy_match)
         
         # Dictionary to store publishers for each pami
         self.pami_publishers = {}
@@ -41,7 +42,7 @@ class PamiController(Node):
             self.load_and_publish_pami_strategies()
         
         self.get_logger().info(
-            f'PAMI Controller initialized (strategy={strategy_name}, team_color={self.team_color}, target_order={self.target_order}, auto_publish={self.auto_publish}, selected_pamis={self.selected_pamis or "all"})'
+            f'PAMI Controller initialized (strategy={strategy_name}, team_color={self.team_color}, target_order={self.target_order}, auto_publish={self.auto_publish}, selected_pamis={self.selected_pamis or "all"}, strict_strategy_match={self.strict_strategy_match})'
         )
 
     def _normalize_pami_numbers(self, numbers: List[int]):
@@ -201,6 +202,12 @@ class PamiController(Node):
             f"Filtering by order={self.target_order}" +
             (f", color={self.team_color}" if self.team_color else "")
         )
+
+        requested_strategy = str(self.strategy_name or '').strip().lower()
+        if requested_strategy:
+            self.get_logger().info(
+                f"Requested strategy_name filter: '{requested_strategy}' (strict={self.strict_strategy_match})"
+            )
         
         # Get all YAML files in the pami_strategies folder
         pami_files = list(Path(self.pami_folder_path).glob('*.yaml'))
@@ -216,10 +223,9 @@ class PamiController(Node):
             file_strategy_name = data.get('strategy_name')
             sequence = data.get('sequence', [])
 
-            # Keep only files that belong to requested strategy_name.
-            requested_strategy = str(self.strategy_name or '').strip().lower()
+            # Optional strategy_name filtering.
             current_strategy = str(file_strategy_name or '').strip().lower()
-            if requested_strategy and current_strategy != requested_strategy:
+            if requested_strategy and self.strict_strategy_match and current_strategy != requested_strategy:
                 continue
 
             try:
@@ -268,6 +274,57 @@ class PamiController(Node):
                 'order': file_order,
                 'sequence': sequence,
             }
+
+        # Non-strict mode: if nothing matched and strategy_name was provided, retry without strategy_name.
+        if not matched_by_pami and requested_strategy and not self.strict_strategy_match:
+            self.get_logger().warn(
+                f"No matches found with strategy_name='{requested_strategy}'. Falling back to order/color-only matching."
+            )
+
+            for yaml_file in pami_files:
+                data = self.load_pami_yaml(str(yaml_file))
+                if data is None:
+                    continue
+
+                sequence = data.get('sequence', [])
+
+                try:
+                    pami_number = int(data.get('pami_number'))
+                except (ValueError, TypeError):
+                    continue
+
+                if pami_number < 1 or pami_number > 7:
+                    continue
+
+                try:
+                    file_order = int(data.get('order', 0))
+                except (ValueError, TypeError):
+                    file_order = 0
+
+                file_color = str(data.get('color', '') or '').lower()
+                if not file_color:
+                    name_low = str(data.get('strategy_name') or '').lower()
+                    if 'yellow' in name_low or 'jaune' in name_low or 'asfer' in name_low:
+                        file_color = 'yellow'
+                    elif 'blue' in name_low or 'azreg' in name_low:
+                        file_color = 'blue'
+
+                if file_order != self.target_order:
+                    continue
+
+                if self.team_color and file_color and file_color != self.team_color:
+                    continue
+
+                if pami_number in matched_by_pami:
+                    continue
+
+                matched_by_pami[pami_number] = {
+                    'file': yaml_file.name,
+                    'strategy_name': data.get('strategy_name'),
+                    'color': file_color,
+                    'order': file_order,
+                    'sequence': sequence,
+                }
 
         matched_count = 0
         target_pamis = self.selected_pamis if self.selected_pamis else list(range(1, 8))

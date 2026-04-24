@@ -64,13 +64,13 @@ def path_planning_task(strategy, lidar, round_timer, pneumatic_controller=None, 
         nonlocal reset_stm_triggered
         if round_timer.time() >= 100.0 and not reset_stm_triggered:
             strategy.get_logger().info("⏰ Game time reached 100s - resetting stm")
-            if stm32_controller is not None:
-                try:
-                    stm32_controller.reset()
-                except Exception as e:
-                    strategy.get_logger().warning(f"⚠️ Failed to reset STM at end-game timeout: {e}")
-            else:
-                strategy.get_logger().warning("⚠️ STM32 controller is None at end-game timeout")
+            # if stm32_controller is not None:
+            #     try:
+            #         stm32_controller.reset()
+            #     except Exception as e:
+            #         strategy.get_logger().warning(f"⚠️ Failed to reset STM at end-game timeout: {e}")
+            # else:
+            #     strategy.get_logger().warning("⚠️ STM32 controller is None at end-game timeout")
             reset_stm_triggered = True
             strategy.end_game = True
             state.STEAL_LOOP_ACTIVE = False
