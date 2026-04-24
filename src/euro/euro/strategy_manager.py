@@ -68,6 +68,8 @@ class StrategyManager(Node):
         self.latest_robot_pose_beacon = None
         self.latest_robot_pose_beacon_count = 0
         self.end_game=False
+        self.current_static_task_index = -1
+        self.current_static_task_name = ""
         # Track last pick_up/put_down command and device from task
         self.last_task_command = None
         self.last_task_device = None
@@ -1101,6 +1103,8 @@ def main(args=None):
         def execute_tasks_sequentially():
             # Execute all static tasks first
             for idx, task in enumerate(strategy.tasks):
+                strategy.current_static_task_index = idx
+                strategy.current_static_task_name = str(task.get('name', '') or '')
                 # Check if shutdown was requested
                 if state.SHUTDOWN_REQUESTED:
                     strategy.get_logger().info("Shutdown requested, stopping task execution")
@@ -1193,6 +1197,8 @@ def main(args=None):
                 
                 # Wait for all commands to complete
                 strategy.wait_for_all_queues_empty()
+            strategy.current_static_task_index = -1
+            strategy.current_static_task_name = ""
         # Start task execution in a background thread
         task_executor_thread = threading.Thread(
             target=execute_tasks_sequentially,

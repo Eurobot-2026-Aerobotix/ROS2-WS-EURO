@@ -503,6 +503,57 @@ def to_float_list(params):
     except (TypeError, ValueError) as e:
         raise ValueError(f"Invalid STM32 params: {params}") from e
 
+
+def _extract_xy_from_task_command(cmd: dict):
+    """Return (x_mm, y_mm) from a task command params list when available."""
+    if not isinstance(cmd, dict):
+        return None
+    params = cmd.get('params', [])
+    if not isinstance(params, list) or len(params) < 2:
+        return None
+
+    filtered = [p for p in params if not isinstance(p, dict)]
+    if len(filtered) < 2:
+        return None
+
+    try:
+        return float(filtered[0]), float(filtered[1])
+    except (TypeError, ValueError):
+        return None
+
+
+def _find_first_goto_after_current_task(strategy):
+    """
+    Find first STM go_to/go_to_backwards in tasks after current static task index.
+
+    Returns:
+        tuple(x_mm, y_mm) or None
+    """
+    tasks = getattr(strategy, 'tasks', None)
+    if not isinstance(tasks, list) or len(tasks) == 0:
+        return None
+
+    current_idx = int(getattr(strategy, 'current_static_task_index', -1))
+    search_start = max(current_idx + 1, 0)
+
+    for task in tasks[search_start:]:
+        if not isinstance(task, dict):
+            continue
+        sequence = task.get('sequence', [])
+        if not isinstance(sequence, list):
+            continue
+        for cmd in sequence:
+            if not isinstance(cmd, dict):
+                continue
+            device = str(cmd.get('device', '') or '')
+            command = str(cmd.get('command', '') or '')
+            if device == 'STM' and command in ('go_to', 'go_to_backwards'):
+                xy = _extract_xy_from_task_command(cmd)
+                if xy is not None:
+                    return xy
+
+    return None
+
 def handle_stm32_command(command, params, stm32, lidar, strategy):
     """Execute STM32 command based on type
     
@@ -1392,7 +1443,6 @@ def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=No
                         time.sleep(0.05)
                         tirette_status = rpi_controller.read_pin_17()
                     result = rpi_controller.wait_start()
-                    stm32_controller.reset()
                     state.WAITING_TIRETTE=False
                     strategy.get_logger().info(f"✅ Tirette tjebdet  STRATEGY GOOOOOOOOO !!!!")
                     
@@ -1436,6 +1486,59 @@ def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=No
                     stana(back_controller)
                 # Allow time for messages to be sent
                 time.sleep(0.1)
+            elif command == 'prepare_for_start':
+                strategy.get_logger().info("🧭 prepare_for_start received from the rasp queue")
+
+                if isinstance(params, list) and len(params) > 0 and isinstance(params[-1], dict):
+                    params.pop()
+
+                params = to_float_list(params)
+                if len(params) < 3:
+                    strategy.get_logger().warning(
+                        f"⚠️ prepare_for_start expects x,y,theta but got: {params}"
+                    )
+                elif stm32_controller:
+                    start_x_mm, start_y_mm, start_theta_deg = params[0], params[1], params[2]
+
+                    # 1) Reset STM before applying provided start pose.
+                    stm32_controller.reset()
+
+                    # 2) Apply provided start pose.
+                    stm32_controller.set_position(start_x_mm, start_y_mm, start_theta_deg)
+                    state.IDLE_FOR_SYSTEMS = True
+                    state.IDLE = True
+                    strategy.get_logger().info(
+                        f"✅ Prepared start pose set to x={start_x_mm}, y={start_y_mm}, theta={start_theta_deg}"
+                    )
+
+                    # 3) Find first go_to in the next tasks.
+                    next_xy = _find_first_goto_after_current_task(strategy)
+                    if next_xy is None:
+                        strategy.get_logger().warning(
+                            "⚠️ prepare_for_start: no future STM go_to/go_to_backwards found; skipping orientate"
+                        )
+                    else:
+                        target_x_mm, target_y_mm = next_xy
+                        dx = float(target_x_mm) - float(start_x_mm)
+                        dy = float(target_y_mm) - float(start_y_mm)
+
+                        if abs(dx) < 1e-6 and abs(dy) < 1e-6:
+                            orient_deg = float(start_theta_deg)
+                        else:
+                            orient_deg = math.degrees(math.atan2(dy, dx))
+
+                        # 4) Orient robot toward the next go_to direction.
+                        state.IDLE = False
+                        state.IDLE_FOR_SYSTEMS = False
+                        stm32_controller.orientate(orient_deg, 0.0)
+                        strategy.get_logger().info(
+                            f"🧭 prepare_for_start orientate -> {orient_deg:.1f}° "
+                            f"(next target: x={target_x_mm:.1f}, y={target_y_mm:.1f})"
+                        )
+                else:
+                    strategy.get_logger().warning(
+                        "⚠️ prepare_for_start skipped because STM32 controller is unavailable"
+                    )
             elif command == 'set_position':
                 strategy.get_logger().info("set position sent from the rasp queue")
                 
