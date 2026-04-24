@@ -104,17 +104,20 @@ def path_planning_task(strategy, lidar, round_timer, pneumatic_controller=None, 
                 strategy.get_logger().info(
                     f"🏴‍☠️ Path-planning steal loop started ({repeat_count} time(s))"
                 )
+                loop_completed = True
                 for attempt in range(1, repeat_count + 1):
                     if _check_end_game_timeout():
                         strategy.get_logger().warning(
                             "⏰ Stopping path-planning steal loop due to 100s timeout"
                         )
+                        loop_completed = False
                         break
 
                     if not rclpy.ok() or state.SHUTDOWN_REQUESTED or strategy.end_game or state.return_home_triggered or not state.STEAL_LOOP_ACTIVE:
                         strategy.get_logger().warning(
                             "⚠️ Stopping path-planning steal loop due to shutdown/end-game"
                         )
+                        loop_completed = False
                         break
 
                     # Gate steal attempts until robot is idle and either:
@@ -156,6 +159,7 @@ def path_planning_task(strategy, lidar, round_timer, pneumatic_controller=None, 
                         strategy.get_logger().warning(
                             "⚠️ Stopping path-planning steal loop before attempt due to shutdown/end-game"
                         )
+                        loop_completed = False
                         break
 
                     # Ensure emergency-replanning flag does not block generated-flow waits.
@@ -182,18 +186,27 @@ def path_planning_task(strategy, lidar, round_timer, pneumatic_controller=None, 
                             strategy.get_logger().warning(
                                 "🔁 Keeping steal loop active after transient emergency enqueue failure"
                             )
-                            continue
-                        break
+                        else:
+                            strategy.get_logger().warning(
+                                "🔁 Keeping steal loop active and retrying with the next attempt"
+                            )
+                        continue
 
                     if strategy.end_game:
                         strategy.get_logger().info(
                             f"🏁 End-game reached during path-planning steal loop at attempt {attempt}/{repeat_count}"
                         )
+                        loop_completed = False
                         break
 
-                strategy.get_logger().info(
-                    f"✅ Path-planning steal loop finished ({repeat_count} time(s))"
-                )
+                if loop_completed:
+                    strategy.get_logger().info(
+                        f"✅ Path-planning steal loop finished ({repeat_count} time(s))"
+                    )
+                else:
+                    strategy.get_logger().info(
+                        f"⚠️ Path-planning steal loop exited early ({repeat_count} time(s))"
+                    )
             finally:
                 state.STEAL_LOOP_ACTIVE = False
                 state.STEAL_LOOP_RUNNING = False
