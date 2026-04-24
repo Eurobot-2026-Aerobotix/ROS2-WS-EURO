@@ -1626,7 +1626,6 @@ class TaskScheduler:
             ty = float(self.map.robot_position.y)
 
         sorted_poses = sorted(poses, key=lambda p: p['x'])
-
         def _d2(p):
             return (float(p['x']) - tx) ** 2 + (float(p['y']) - ty) ** 2
 
