@@ -435,7 +435,7 @@ class Map:
             y: Y position in mm
             max_distance_mm: Match radius in mm (defaults to `self.batch_radius`)
         """
-        if not self.predefined_batch_positions:
+        if not self.predefined_batch_positions and not self.drop_offs:
             return None
 
         threshold = float(self.batch_radius if max_distance_mm is None else max_distance_mm)
@@ -445,6 +445,7 @@ class Map:
         px = float(x)
         py = float(y)
 
+        # 1) Prefer SX anchors first (legacy behavior).
         for known_id, position in self.predefined_batch_positions.items():
             bx = float(position.get('x', 0.0))
             by = float(position.get('y', 0.0))
@@ -458,6 +459,36 @@ class Map:
                 live_batch = self.batches.get(self._normalize_batch_id(known_id))
                 best_batch = BatchInfo(
                     known_id=self._normalize_batch_id(known_id),
+                    x=bx,
+                    y=by,
+                    phi_degrees=bphi,
+                    color=(live_batch.color if live_batch is not None else "unknown"),
+                )
+
+        if best_batch is not None and best_distance <= threshold:
+            return best_batch
+
+        # 2) Fallback: no SX match nearby -> try FX anchors from drop-off centers.
+        #    This allows global pickup-goal resolution to recover f* ids.
+        best_batch = None
+        best_distance = float('inf')
+
+        for dropoff_id, dropoff in self.drop_offs.items():
+            fx_id = self._normalize_batch_id(dropoff_id)
+            if not fx_id or not fx_id.startswith('f'):
+                continue
+
+            bx = float(dropoff.get('x', 0.0))
+            by = float(dropoff.get('y', 0.0))
+            # FX are dropoff centers; no strong orientation requirement here.
+            bphi = 0.0
+
+            distance = math.hypot(px - bx, py - by)
+            if distance < best_distance:
+                best_distance = distance
+                live_batch = self.batches.get(fx_id)
+                best_batch = BatchInfo(
+                    known_id=fx_id,
                     x=bx,
                     y=by,
                     phi_degrees=bphi,
