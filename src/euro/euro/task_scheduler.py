@@ -1630,12 +1630,18 @@ class TaskScheduler:
 
     def _select_putdown_device(self, task: Task) -> Optional[str]:
         """Choose putdown device based on holder occupancy (front/back)."""
-        drop_pref = str(task.options.get('drop', '')).lower()
-        if drop_pref == 'front' and (not self.map.robot_front_empty):
-            return 'front'
-        if drop_pref == 'back' and (not self.map.robot_back_empty):
-            return 'back'
+        front_loaded = not bool(getattr(self.map, 'robot_front_empty', True))
+        back_loaded = not bool(getattr(self.map, 'robot_back_empty', True))
 
+        if front_loaded and not back_loaded:
+            return 'front'
+        if back_loaded and not front_loaded:
+            return 'back'
+        if not front_loaded and not back_loaded:
+            return None
+
+        # When both holders are loaded, recompute from live heading so we don't
+        # keep a stale queued preference after robot orientation changes.
         zone = self.map.drop_offs.get(str(task.target_id).lower())
         if zone is not None:
             selected = self._choose_putdown_face_by_heading(
@@ -1644,12 +1650,22 @@ class TaskScheduler:
             if selected is not None:
                 return selected
 
-        # Last fallback: drop whatever is currently held.
-        if not self.map.robot_front_empty:
+        # Fallback to selected point when zone center is unavailable.
+        if 'x' in task.options and 'y' in task.options:
+            selected = self._choose_putdown_face_by_heading(
+                Pose2D(x=float(task.options['x']), y=float(task.options['y']))
+            )
+            if selected is not None:
+                return selected
+
+        # Last fallback for dual-loaded state: keep task hint if valid.
+        drop_pref = str(task.options.get('drop', '')).lower()
+        if drop_pref == 'front' and front_loaded:
             return 'front'
-        if not self.map.robot_back_empty:
+        if drop_pref == 'back' and back_loaded:
             return 'back'
-        return None
+
+        return 'front'
 
     def build_return_home(self, drop_option: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
         """
