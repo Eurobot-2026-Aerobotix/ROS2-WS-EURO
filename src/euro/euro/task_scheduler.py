@@ -39,6 +39,7 @@ class TaskScheduler:
     must_dropoff_time = 5.0
     must_go_home_time = 5  # travel budget at 1m distance from nest (seconds)
     must_leave_pamiyeet_alone_time = 20.0
+    must_prioritize_own_batches_time = 50.0
     max_distance_for_predict_enemy_goal = 1500.0 # in mm
     drop_off_distance = 450.0
     retreat_distance = 250.0
@@ -60,7 +61,7 @@ class TaskScheduler:
         "distance_from_nest": 0.000015,
         "number_of_opposite_crates": 1,
         "pickup_facing_available_face": 4,
-        "dropoff_facing_loaded_face": 4,
+        "dropoff_facing_loaded_face": 8,
     }
     log_score_breakdown = False
     log_task_queue_snapshot = True
@@ -1001,16 +1002,23 @@ class TaskScheduler:
             if pickup_tasks and dropoff_tasks:
                 nearest_pickup_mm = min(self._distance_to_task_target_mm(t) for t in pickup_tasks)
                 nearest_dropoff_mm = min(self._distance_to_task_target_mm(t) for t in dropoff_tasks)
-                if (nearest_pickup_mm - nearest_dropoff_mm) > 300.0:
+                if (nearest_pickup_mm - nearest_dropoff_mm) > 250.0:
                     queue = dropoff_tasks + pickup_tasks + [
                         t for t in queue if t.type not in ('dropoff', 'pickup')
                     ]
+        
+        # If we have enough time left, prioritize our own batches over dropoffs to defend them.
+        time_left_s = self.map.get_time_left()
+        if (time_left_s > self.must_prioritize_own_batches_time):
+            own_batches = ["s1", "s2", "s3", "s4", "f1", "f2", "f3", "f4", "f5", "f6"]
+            if (self.map.robot_color[0] == "b"):
+                own_batches = ["s5", "s6", "s7", "s8", "f5", "f6", "f7", "f8", "f9", "f10"]
+            queue = [t for t in queue if t.target_id in own_batches] + [t for t in queue if t.target_id not in own_batches]
 
         go_home_time = max(
             self.must_go_home_time * self.map.distance_from(self.map.robot_position, self.map.nest_position) / 1000.0,
             5,
         )
-        time_left_s = self.map.get_time_left()
 
         if time_left_s < max(go_home_time, self.must_dropoff_time):
             # If time is running out, prioritize dropoff tasks
