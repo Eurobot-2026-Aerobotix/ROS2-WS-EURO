@@ -149,16 +149,6 @@ class HybridAStarNode(Node):
             Trigger, '/update_map', self.map_manager.handle_update_map,
             callback_group=self.reentrant_group)
 
-        # Direct obstacle-only update using the ArUco 'D' batch filter.
-        self.update_map_direct_service = self.create_service(
-            Trigger, '/update_map_direct', self.map_manager.handle_update_map_direct,
-            callback_group=self.reentrant_group)
-
-        # Test map service: forwards to the direct update strategy.
-        self.test_map_service = self.create_service(
-            Trigger, '/test_map', self.map_manager.handle_test_map,
-            callback_group=self.reentrant_group)
-
         # Start game flow: begin periodic update_map only after baseline lock completes
         self.start_game_service = self.create_service(
             Trigger, '/start_game', self.map_manager.handle_start_game,

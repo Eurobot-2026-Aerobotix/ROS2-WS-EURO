@@ -563,12 +563,6 @@ class WebHandlerNode(Node):
             callback_group=self.reentrant_group
         )
 
-        self.test_map_client = self.create_client(
-            Trigger,
-            '/test_map',
-            callback_group=self.reentrant_group
-        )
-
         self.clear_map_client = self.create_client(
             Trigger,
             '/clear_map',
@@ -647,7 +641,7 @@ class WebHandlerNode(Node):
         self.get_logger().info("   - /web/test_controller (manual euro controllers)")
         self.get_logger().info("   Services:")
         self.get_logger().info("   - /aruco_mapper/get_stable_batches_web (provides batches to map)")
-        self.get_logger().info("   - /update_map, /test_map, /clear_map, /reset_map (hybrid_astar controls)")
+        self.get_logger().info("   - /update_map, /clear_map, /reset_map (hybrid_astar controls)")
         self.get_logger().info("=" * 60)
     
     # ========================================================================
@@ -1235,7 +1229,6 @@ class WebHandlerNode(Node):
 
                 action_to_service = {
                     'update_map': ('/update_map', self.update_map_client),
-                    'test_map': ('/test_map', self.test_map_client),
                     'clear_map': ('/clear_map', self.clear_map_client),
                     'reset_map': ('/reset_map', self.reset_map_client),
                     # UI-friendly alias
