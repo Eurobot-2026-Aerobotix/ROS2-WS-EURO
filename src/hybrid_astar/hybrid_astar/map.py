@@ -2295,8 +2295,17 @@ class MapManager:
                     }
 
                 self.node.get_logger().info(
-                    f"⏳ Locked baseline for SX '{known_id}' is tentative (status=T), retrying until status=C"
+                    f"[TEMP_BASELINE] ⏳ Locked baseline for SX '{known_id}' is tentative (status=T), retrying until status=C"
                 )
+
+                # Render tentative SX obstacle layout immediately using available data,
+                # then replace it once a confirmed baseline arrives.
+                sx_state = ArucoMapperState()
+                sx_state.stamp = response.stable_state.stamp
+                sx_state.initialized = response.stable_state.initialized
+                sx_state.batches = [target_batch]
+                self._handle_aruco_mapper_state(sx_state, 'sx')
+
                 self._start_short_pattern_retry_timer()
                 return
 
@@ -2312,7 +2321,7 @@ class MapManager:
                 self.batches_with_obstacles.discard(known_id)
 
             self.node.get_logger().info(
-                f"✅ Locked baseline received for SX '{known_id}' pattern='{pattern}'"
+                f"[FINAL_BASELINE] ✅ Locked baseline received for SX '{known_id}' pattern='{pattern}'"
             )
 
             if len(pattern) < 4:
@@ -2369,6 +2378,7 @@ class MapManager:
                 active_batch_ids_from_lock = set()
                 locked_batch_ids = set()
                 sx_batches_ready_for_obstacles = []
+                tentative_sx_batches_for_obstacles = []
                 
                 # Update batches with locked patterns
                 with self.batches_lock:
@@ -2384,9 +2394,10 @@ class MapManager:
                                 self.tentative_baseline_ids.add(batch.known_id)
                                 self.batches_sx_baseline_status_type[batch.known_id] = 'T'
                                 self.node.get_logger().info(
-                                    f"   ⏳ Tentative SX baseline: {batch.known_id} status=T, waiting for C"
+                                    f"[TEMP_BASELINE] ⏳ Tentative SX baseline: {batch.known_id} status=T, waiting for C"
                                 )
                                 self.batches_with_obstacles.discard(batch.known_id)
+                                tentative_sx_batches_for_obstacles.append(batch)
                                 continue
 
                             locked_batch_ids.add(batch.known_id)
@@ -2397,7 +2408,7 @@ class MapManager:
                             else:
                                 self.batches_sx_baseline_status_type.pop(batch.known_id, None)
                             self.node.get_logger().info(
-                                f"   🔒 Locked SX pattern: {batch.known_id} = '{batch.pattern}'"
+                                f"[FINAL_BASELINE] 🔒 Locked SX pattern: {batch.known_id} = '{batch.pattern}'"
                                 f"{(' (status=' + baseline_status + ')') if baseline_status else ''}"
                             )
                             if len(batch.pattern or "") >= 4:
@@ -2438,6 +2449,23 @@ class MapManager:
                         )
 
                 self._try_publish_beacon_ready()
+
+                if tentative_sx_batches_for_obstacles:
+                    with self.obstacles_lock:
+                        tentative_ids = {batch.known_id for batch in tentative_sx_batches_for_obstacles}
+                        self.obstacles = [
+                            obs for obs in self.obstacles
+                            if not any(obs.id.startswith(f"sx_{bid}_") for bid in tentative_ids)
+                        ]
+                        self.obstacle_sources = {
+                            k: v for k, v in self.obstacle_sources.items()
+                            if not any(k.startswith(f"sx_{bid}_") for bid in tentative_ids)
+                        }
+                    sx_tentative_state = ArucoMapperState()
+                    sx_tentative_state.stamp = response.stable_state.stamp
+                    sx_tentative_state.initialized = response.stable_state.initialized
+                    sx_tentative_state.batches = tentative_sx_batches_for_obstacles
+                    self._handle_aruco_mapper_state(sx_tentative_state, 'sx')
 
                 if sx_batches_ready_for_obstacles:
                     with self.batches_lock:
@@ -2604,7 +2632,7 @@ class MapManager:
                         }
 
                     self.node.get_logger().info(
-                        f"⏳ Locked baseline still tentative for '{known_id}' (status=T), retrying"
+                        f"[TEMP_BASELINE] ⏳ Locked baseline still tentative for '{known_id}' (status=T), retrying"
                     )
                     break
 
@@ -2614,7 +2642,7 @@ class MapManager:
 
                 if len(new_pattern) >= 4 or baseline_status == 'C':
                     self.node.get_logger().info(
-                        f"✅ Short-pattern resolved for '{known_id}': "
+                        f"[FINAL_BASELINE] ✅ Short-pattern resolved for '{known_id}': "
                         f"'{old_pattern}' → '{new_pattern}' ({len(new_pattern)} elements)"
                     )
 
@@ -2739,7 +2767,9 @@ class MapManager:
                     batch.center.y = batch_pos["y"]
                     batch.center.z = 0.0
 
-                    if batch_known_id not in self.locked_baseline_batch_ids:
+                    is_tentative_baseline = batch_known_id in self.tentative_baseline_ids
+
+                    if batch_known_id not in self.locked_baseline_batch_ids and not is_tentative_baseline:
                         self._request_locked_baseline_for_sx(batch_known_id)
                         self.node.get_logger().debug(
                             f"⏳ Deferring SX obstacles for '{batch_known_id}' until its baseline is locked"
@@ -2747,14 +2777,22 @@ class MapManager:
                         continue
 
                     pattern_colors = self.parse_pattern_colors((batch.pattern or "").lower())
-                    if len(pattern_colors) < 4:
+                    member_colors = []
+                    if batch.members:
+                        for member in batch.members:
+                            member_color = str(getattr(member, 'color', '') or '').strip().lower()
+                            if member_color in ('blue', 'yellow'):
+                                member_colors.append(member_color)
+
+                    if len(pattern_colors) < 4 and len(member_colors) >= 1:
+                        # For tentative baselines, prefer what is currently observed.
+                        # For confirmed baselines, this still acts as a safe fallback.
+                        pattern_colors = member_colors[:4]
+
+                    if len(pattern_colors) < 4 and not is_tentative_baseline:
                         _parsed_state, baseline_status = self._parse_batch_state(batch.state)
                         if baseline_status == 'C' and batch.members and len(batch.members) >= 4:
-                            fallback_colors = []
-                            for member in batch.members[:4]:
-                                member_color = str(getattr(member, 'color', '') or '').strip().lower()
-                                if member_color in ('blue', 'yellow'):
-                                    fallback_colors.append(member_color)
+                            fallback_colors = member_colors[:4]
                             if len(fallback_colors) == 4:
                                 pattern_colors = fallback_colors
                             else:
@@ -2769,7 +2807,7 @@ class MapManager:
                             continue
 
                     member_count = len(batch.members) if batch.members else 0
-                    if member_count == 3:
+                    if member_count == 3 and not is_tentative_baseline:
                         self.node.get_logger().info(
                             f"⏭️  SX batch '{batch_known_id}' has only 3 members - skipping obstacle creation"
                         )
@@ -2792,7 +2830,15 @@ class MapManager:
                         )
                         continue
 
-                    for idx, (offset_x, offset_y) in enumerate(offsets):
+                    # Tentative baselines are rendered with currently known crates,
+                    # then replaced when confirmed baseline data arrives.
+                    if is_tentative_baseline:
+                        tentative_count = member_count if member_count > 0 else len(pattern_colors)
+                        crates_to_draw = max(1, min(4, tentative_count, len(pattern_colors)))
+                    else:
+                        crates_to_draw = 4
+
+                    for idx, (offset_x, offset_y) in enumerate(offsets[:crates_to_draw]):
                         obs = Obstacle()
                         obs.id = f"{source}_{batch_known_id}_member{idx}"
                         obs.type = 'crate'
