@@ -36,7 +36,7 @@ class TaskScheduler:
         'F4': [{'x': 850.0, 'y': 1250.0, 'theta': [0, 180]}],
         'F7': [{'x': 850.0, 'y': 1750.0, 'theta': [0, 180]}],
     }
-    must_dropoff_time = 5.0
+    must_dropoff_time = 16.0
     must_go_home_time = 5  # travel budget at 1m distance from nest (seconds)
     must_leave_pamiyeet_alone_time = 20.0
     must_prioritize_own_batches_time = 50.0
