@@ -841,7 +841,6 @@ class StrategyManager(Node):
                     )
                 time.sleep(0.1)
                 continue
-
         self.get_logger().info(f"✅ Generated {len(generated_tasks)} task(s) for steal command")
 
         # Wait for all previous commands to finish BEFORE enqueuing the new task.
