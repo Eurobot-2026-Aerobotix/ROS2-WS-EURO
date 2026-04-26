@@ -54,14 +54,14 @@ class TaskScheduler:
     coeffs = {
         "is_enemy_goal": 0.0,
         "distance_to_goal_far": 0.0,
-        "distance_to_goal_close":0.0000005,
+        "distance_to_goal_close":0.000002,
         "number_of_obstacles_between": -1.0,
         "enemy_is_obstacle_between": -5.0,
         "distance_to_enemy": 0.003,
         "distance_from_nest": 0.000015,
         "number_of_opposite_crates": 1,
         "pickup_facing_available_face": 4,
-        "dropoff_facing_loaded_face": 8,
+        "dropoff_facing_loaded_face": 10,
     }
     log_score_breakdown = False
     log_task_queue_snapshot = True
@@ -462,7 +462,7 @@ class TaskScheduler:
 
         front_diff = abs(self._normalize_angle_deg(bearing_to_target - robot_theta))
         back_diff = abs(self._normalize_angle_deg(bearing_to_target - (robot_theta + 180.0)))
-        return 'front' if front_diff <= back_diff else 'back'
+        return 'front' if front_diff > back_diff else 'back'
 
     def _choose_putdown_face_by_heading(self, target: Pose2D) -> Optional[str]:
         """Pick front/back for dropoff based on loaded side(s) and heading."""
