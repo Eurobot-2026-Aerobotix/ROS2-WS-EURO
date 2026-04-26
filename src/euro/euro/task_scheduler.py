@@ -49,12 +49,12 @@ class TaskScheduler:
     drop_off_enemy_clearance = 50.0
     putdown_insert_distance = 225.0
     putdown_retreat_distance = 250.0
-    switch_distance=2000.0
+    switch_distance=2500.0
     retreat_distance=175.0
     coeffs = {
         "is_enemy_goal": 0.0,
         "distance_to_goal_far": 0.0,
-        "distance_to_goal_close":0.000002,
+        "distance_to_goal_close":0.0000023,
         "number_of_obstacles_between": -1.0,
         "enemy_is_obstacle_between": -5.0,
         "distance_to_enemy": 0.003,
