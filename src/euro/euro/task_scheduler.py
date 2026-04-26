@@ -1011,7 +1011,7 @@ class TaskScheduler:
         time_left_s = self.map.get_time_left()
         if (time_left_s > self.must_prioritize_own_batches_time):
             own_batches = ["s1", "s2", "s3", "s4", "f1", "f2", "f3", "f4", "f5", "f6"]
-            if (self.map.robot_color[0] == "b"):
+            if (self.map.robot_position.y > 1500):
                 own_batches = ["s5", "s6", "s7", "s8", "f5", "f6", "f7", "f8", "f9", "f10"]
             queue = [t for t in queue if t.target_id in own_batches] + [t for t in queue if t.target_id not in own_batches]
 
