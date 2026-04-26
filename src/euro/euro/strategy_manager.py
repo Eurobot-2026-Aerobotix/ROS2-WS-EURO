@@ -784,6 +784,8 @@ class StrategyManager(Node):
 
         generated_tasks = None
         generation_attempt = 0
+        failed_target_id = ""
+        failed_target_attempts = 0
 
         # First, wait for any ongoing actions to complete fully.
         # This ensures we start from a clean, idle state, mimicking the static task flow.
@@ -808,6 +810,31 @@ class StrategyManager(Node):
             generated_tasks = self.task_scheduler.get_optimal_task(start_pose=start_pose)
 
             if generated_tasks is None:
+                current_failed_target = str(getattr(self.task_scheduler, 'last_failed_target_id', '') or '').strip().lower()
+                if current_failed_target:
+                    if current_failed_target == failed_target_id:
+                        failed_target_attempts += 1
+                    else:
+                        failed_target_id = current_failed_target
+                        failed_target_attempts = 1
+
+                    if failed_target_attempts >= 5:
+                        self.get_logger().warning(
+                            f"⚠️ Task generation failed 5 times for '{failed_target_id}', skipping it"
+                        )
+                        if self.task_scheduler.skip_task(failed_target_id):
+                            self.get_logger().info(
+                                f"⏭️ Skipped impossible task after repeated generation failures: {failed_target_id}"
+                            )
+                        else:
+                            self.get_logger().warning(
+                                f"⚠️ Could not skip task '{failed_target_id}' after repeated failures"
+                            )
+                        generated_tasks = None
+                        failed_target_id = ""
+                        failed_target_attempts = 0
+                        continue
+
                 if generation_attempt == 1 or generation_attempt % 10 == 0:
                     self.get_logger().warning(
                         f"⚠️ No executable steal task yet (attempt {generation_attempt}) - retrying..."
