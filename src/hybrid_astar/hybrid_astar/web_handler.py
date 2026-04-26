@@ -472,6 +472,11 @@ class WebHandlerNode(Node):
             '/web/test_controller_result',
             10
         )
+        self.batch_pattern_override_cmd_pub = self.create_publisher(
+            String,
+            '/hybrid_astar/batch_pattern_override_cmd',
+            10
+        )
         
         self.obstacle_relative_pub = self.create_publisher(
             PoseStamped,
@@ -1183,6 +1188,68 @@ class WebHandlerNode(Node):
                 self.get_logger().info(f"🧪 {response['message']}")
 
             elif controller_name in ['hybrid_astar', 'pathfinder', 'map']:
+                if action in ['set_batch_pattern_override', 'batch_pattern_override']:
+                    known_id, pattern, compact_code = self._parse_batch_pattern_override_payload(data)
+                    cmd = {
+                        'action': 'set',
+                        'known_id': known_id,
+                        'pattern': pattern,
+                    }
+                    self.batch_pattern_override_cmd_pub.publish(String(data=json.dumps(cmd)))
+
+                    response = {
+                        'success': True,
+                        'controller': 'hybrid_astar',
+                        'action': action,
+                        'request_id': request_id,
+                        'known_id': known_id,
+                        'pattern': pattern,
+                        'code': compact_code,
+                        'message': f"Applied pattern override {known_id} -> {pattern}"
+                    }
+                    self.get_logger().info(f"🧪 {response['message']}")
+                    self.publish_test_controller_result(response)
+                    return
+
+                if action == 'clear_batch_pattern_override':
+                    known_id, _pattern, compact_code = self._parse_batch_pattern_override_payload(
+                        data,
+                        pattern_required=False
+                    )
+                    cmd = {
+                        'action': 'clear',
+                        'known_id': known_id,
+                    }
+                    self.batch_pattern_override_cmd_pub.publish(String(data=json.dumps(cmd)))
+
+                    response = {
+                        'success': True,
+                        'controller': 'hybrid_astar',
+                        'action': action,
+                        'request_id': request_id,
+                        'known_id': known_id,
+                        'code': compact_code,
+                        'message': f"Cleared pattern override for {known_id}"
+                    }
+                    self.get_logger().info(f"🧪 {response['message']}")
+                    self.publish_test_controller_result(response)
+                    return
+
+                if action == 'clear_all_batch_pattern_overrides':
+                    cmd = {'action': 'clear_all'}
+                    self.batch_pattern_override_cmd_pub.publish(String(data=json.dumps(cmd)))
+
+                    response = {
+                        'success': True,
+                        'controller': 'hybrid_astar',
+                        'action': action,
+                        'request_id': request_id,
+                        'message': 'Cleared all batch pattern overrides'
+                    }
+                    self.get_logger().info(f"🧪 {response['message']}")
+                    self.publish_test_controller_result(response)
+                    return
+
                 if action in ['start_round_timer', 'reset_round_timer', 'start_timer', 'reset_timer']:
                     if not hasattr(self, 'round_timer') or self.round_timer is None:
                         raise ValueError('Round timer is not initialized')
@@ -1296,6 +1363,72 @@ class WebHandlerNode(Node):
             return bool(response.success), message
         except Exception as e:
             return False, f"{service_name} error: {str(e)}"
+
+    def _parse_batch_pattern_override_payload(self, data: Dict, pattern_required: bool = True):
+        """Parse override payload from test controller request.
+
+        Supported forms:
+          - compact: {"code":"14", "prefix":"s"}
+          - explicit: {"known_id":"s1", "pattern":"byyb"}
+        """
+        pattern_by_code = {
+            '1': 'yybb',
+            '2': 'ybyb',
+            '3': 'ybby',
+            '4': 'byyb',
+            '5': 'byby',
+            '6': 'bbyy',
+        }
+
+        code = str(data.get('code', '') if data.get('code') is not None else '').strip()
+        if not code:
+            value = data.get('value', None)
+            code = str(value).strip() if value is not None else ''
+
+        compact_code = ''
+        known_id = str(data.get('known_id', '')).strip().lower()
+        pattern = str(data.get('pattern', '')).strip().lower()
+
+        if code:
+            compact = re.sub(r'\s+', '', code)
+            if not re.fullmatch(r'\d{2}', compact):
+                raise ValueError(
+                    f"Invalid compact code '{code}' (expected 2 digits like '14')"
+                )
+
+            idx = int(compact[0])
+            pattern_code = compact[1]
+            prefix = str(data.get('prefix', 's')).strip().lower()
+            if prefix != 's':
+                raise ValueError(f"Invalid prefix '{prefix}' (only 's' is supported)")
+            if idx <= 0:
+                raise ValueError(f"Invalid batch index '{idx}' in code '{code}'")
+
+            if pattern_required:
+                mapped_pattern = pattern_by_code.get(pattern_code)
+                if mapped_pattern is None:
+                    raise ValueError(
+                        f"Invalid pattern code '{pattern_code}' in '{code}' (expected 1..6)"
+                    )
+                pattern = mapped_pattern
+
+            known_id = f"{prefix}{idx}"
+            compact_code = compact
+
+        if not known_id:
+            raise ValueError("Missing known_id (or compact code)")
+        if not re.fullmatch(r's\d+', known_id):
+            raise ValueError(f"Invalid known_id '{known_id}'")
+
+        if pattern_required:
+            if not re.fullmatch(r'[yb]{4}', pattern):
+                raise ValueError(
+                    f"Invalid pattern '{pattern}' (expected 4 letters using y/b)"
+                )
+        else:
+            pattern = ''
+
+        return known_id, pattern, compact_code
 
     def _log_steal_tasks_details(self, tasks: List[Dict]):
         """Log generated steal tasks in compact form for debugging."""

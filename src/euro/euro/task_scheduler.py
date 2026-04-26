@@ -75,6 +75,7 @@ class TaskScheduler:
         self.tracked_task_invalid = False
         self.impossible_batches: Set[str] = set()
         self._non_skipped_pop_streak = 0
+        self.last_failed_target_id: str = ""
         self._map_qos = 10
         self._loop_period_s = float(loop_period_s)
         self._loop_timer = None
@@ -138,17 +139,21 @@ class TaskScheduler:
             return task
         return None
 
-    def skip_task(self) -> bool:
+    def skip_task(self, target_id: Optional[str] = None) -> bool:
         """
         Skip the currently tracked task.
 
         The tracked task target is marked as impossible and will not be generated
         until two consecutive tasks are popped without another skip in between.
         """
-        if self.tracked_task is None:
+        if target_id is None and self.tracked_task is None:
             return False
 
-        target_id = str(getattr(self.tracked_task, 'target_id', '') or '').lower().strip()
+        if target_id is None:
+            target_id = str(getattr(self.tracked_task, 'target_id', '') or '').lower().strip()
+        else:
+            target_id = str(target_id).lower().strip()
+
         if not target_id:
             self.untrack_task()
             self._non_skipped_pop_streak = 0
@@ -156,9 +161,11 @@ class TaskScheduler:
 
         self.impossible_batches.add(target_id)
         self.task_queue = [t for t in self.task_queue if str(t.target_id).lower() != target_id]
-        self.untrack_task()
+        if self.tracked_task is not None and str(getattr(self.tracked_task, 'target_id', '') or '').lower().strip() == target_id:
+            self.untrack_task()
         self.tracked_task_invalid = False
         self._non_skipped_pop_streak = 0
+        self.last_failed_target_id = ""
 
         if self.ros_node is not None:
             self.ros_node.get_logger().warning(
@@ -1038,6 +1045,19 @@ class TaskScheduler:
             skip_rows = [f"{k}={v}" for k, v in skip_stats.items() if v > 0]
             if not skip_rows:
                 skip_rows = ["no_filter_counted=1"]
+
+            # When nothing is schedulable anymore, the impossible set is stale.
+            # Clear it so pickup/dropoff targets can become eligible again on the next loop.
+            if self.impossible_batches:
+                cleared_impossible = sorted(self.impossible_batches)
+                self.impossible_batches.clear()
+                self._non_skipped_pop_streak = 0
+                if self.ros_node is not None:
+                    self.ros_node.get_logger().info(
+                        f"♻️ Queue empty: cleared impossible batches so targets can be reconsidered: {cleared_impossible}"
+                    )
+                else:
+                    print(f"[TaskScheduler] Queue empty: cleared impossible batches so targets can be reconsidered: {cleared_impossible}")
 
             empty_message = (
                 "⚠️ Empty task queue diagnostic | "
@@ -1956,6 +1976,7 @@ class TaskScheduler:
         """
         task = self.pop_task()
         if task is None:
+            self.last_failed_target_id = ""
             if self.ros_node is not None:
                 tracked = self.tracked_task.target_id if self.tracked_task is not None else 'none'
                 self.ros_node.get_logger().warning(
@@ -2027,6 +2048,7 @@ class TaskScheduler:
             # Keeping it tracked causes repeated filtering (`filtered_tracked_target`)
             # and can starve the queue in steal-loop retries.
             failed_target = str(task.target_id)
+            self.last_failed_target_id = failed_target
             if self.tracked_task is not None and str(self.tracked_task.target_id) == failed_target:
                 self.untrack_task()
             self.tracked_task_invalid = False
@@ -2039,6 +2061,7 @@ class TaskScheduler:
             return None
 
         self.rpi_queue.extend(generated_tasks)
+        self.last_failed_target_id = ""
         return generated_tasks
     
     def loop(self) -> None:

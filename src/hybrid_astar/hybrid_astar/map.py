@@ -6,6 +6,7 @@ Manages dynamic obstacles from ArUco mapper and enemy detection
 
 import math
 import time
+import json
 from typing import Dict, List, Optional, Tuple
 from threading import Lock
 
@@ -14,7 +15,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
 
 # ROS2 messages
-from std_msgs.msg import Empty, Int32
+from std_msgs.msg import Empty, Int32, String
 from std_srvs.srv import Trigger
 from geometry_msgs.msg import PoseStamped, Quaternion, Point
 from visualization_msgs.msg import Marker, MarkerArray
@@ -143,6 +144,8 @@ class MapManager:
         # Set to track batches that already have obstacles created (prevents duplicates)
         self.batches_with_obstacles: set = set()
         self.manual_putdown_batch_ids: set = set()
+        self.manual_pattern_overrides: Dict[str, str] = {}
+        self.synthetic_override_batch_ids: set = set()
 
         # Retry management for auto update_map
         self.retry_timer = None
@@ -207,6 +210,10 @@ class MapManager:
         
         node.create_subscription(
             PoseStamped, '/obstacle_relative', self.handle_obstacle_relative, 10)
+
+        node.create_subscription(
+            String, '/hybrid_astar/batch_pattern_override_cmd',
+            self.handle_pattern_override_command, 10)
         
         # Create timer for publishing current obstacles
         obstacle_hz = params['rates']['obstacle_list_hz']
@@ -309,6 +316,273 @@ class MapManager:
             if suffix in ('NP', 'P', 'T', 'C'):
                 return base, suffix
         return normalized, ""
+
+    @staticmethod
+    def _is_valid_pattern(pattern: str) -> bool:
+        normalized = str(pattern or '').strip().lower()
+        return len(normalized) == 4 and all(c in ('y', 'b') for c in normalized)
+
+    def _apply_manual_pattern_override(self, batch: Batch) -> None:
+        """Replace batch.pattern with manual override when available."""
+        known_id = str(getattr(batch, 'known_id', '') or '').strip().lower()
+        if not known_id:
+            return
+        override = self.manual_pattern_overrides.get(known_id)
+        if override:
+            batch.pattern = override
+
+    def _default_direction_for_known_id(self, known_id: str) -> str:
+        """Return a deterministic default direction for a known batch id."""
+        known_id = str(known_id or '').strip().lower()
+        if known_id.startswith('s'):
+            if known_id in ('s1', 's2', 's7', 's8'):
+                return 'horizontal'
+            return 'vertical'
+        return 'vertical'
+
+    def _create_synthetic_batch_from_override(self, known_id: str, pattern: str) -> bool:
+        """Create a synthetic batch with 4 members from manual override data.
+
+        This is used when no live batch is currently active but the operator wants
+        to visualize/update a batch pattern immediately.
+        """
+        known_id = str(known_id or '').strip().lower()
+        pattern = str(pattern or '').strip().lower()
+        if not known_id or not self._is_valid_pattern(pattern):
+            return False
+
+        direction = self._default_direction_for_known_id(known_id)
+        batch = Batch()
+        batch.batch_id = int(time.time() * 1000) % 1000000000
+        batch.known_id = known_id
+        batch.direction = direction
+        batch.count = 4
+        batch.state = 'TRACKING_C' if known_id.startswith('s') else 'TRACKING'
+        batch.pattern = pattern
+
+        center_x_m = None
+        center_y_m = None
+        if known_id.startswith('s'):
+            if known_id not in self.predefined_batch_positions:
+                self.node.get_logger().warn(
+                    f"⚠️  Cannot synthesize override for '{known_id}': unknown SX predefined position"
+                )
+                return False
+            batch_pos = self.predefined_batch_positions[known_id]
+            center_x_m = float(batch_pos['x'])
+            center_y_m = float(batch_pos['y'])
+        else:
+            self.node.get_logger().warn(
+                f"⚠️  Cannot synthesize override for '{known_id}': SX only is supported"
+            )
+            return False
+
+        center = Point()
+        center.x = center_x_m
+        center.y = center_y_m
+        center.z = 0.0
+        batch.center = center
+
+        offsets_mm = (
+            [(-75.0, 0.0), (-25.0, 0.0), (25.0, 0.0), (75.0, 0.0)]
+            if direction == 'horizontal'
+            else [(0.0, -75.0), (0.0, -25.0), (0.0, 25.0), (0.0, 75.0)]
+        )
+
+        for idx, (dx_mm, dy_mm) in enumerate(offsets_mm):
+            member = BatchMember()
+            member.aruco_id = 9000 + idx
+            member.color = 'yellow' if pattern[idx] == 'y' else 'blue'
+
+            member_pos = Point()
+            member_pos.x = center_x_m + (dx_mm / 1000.0)
+            member_pos.y = center_y_m + (dy_mm / 1000.0)
+            member_pos.z = 0.0
+            member.map_pos = member_pos
+            batch.members.append(member)
+
+        with self.batches_lock:
+            if known_id.startswith('s'):
+                self.batches_sx[known_id] = batch
+                self.batches_sx_baseline_status_type[known_id] = 'C'
+                self.locked_baseline_batch_ids.add(known_id)
+                self.locked_baseline_all_batch_ids.add(known_id)
+                self.pending_baseline_lock_ids.discard(known_id)
+                self.tentative_baseline_ids.discard(known_id)
+            self.active_batch_ids.add(known_id)
+            self.batches_with_obstacles.discard(known_id)
+            self.deleted_batch_ids.discard(known_id)
+            self.synthetic_override_batch_ids.add(known_id)
+
+        self.node.get_logger().info(
+            f"🧩 Created synthetic batch for override: {known_id} pattern={pattern} direction={direction}"
+        )
+        return True
+
+    def _reset_batch_for_override_clear(self, known_id: str) -> None:
+        """Drop one batch from local state so it can be rebuilt from live source.
+
+        Unlike `delete_batch()`, this does NOT mark the batch as manually deleted.
+        """
+        known_id = str(known_id or '').strip().lower()
+        if not known_id:
+            return
+
+        with self.obstacles_lock:
+            self.obstacles = [
+                obs for obs in self.obstacles
+                if not (obs.id.startswith(f"fx_{known_id}_") or obs.id.startswith(f"sx_{known_id}_"))
+            ]
+            self.obstacle_sources = {
+                k: v for k, v in self.obstacle_sources.items()
+                if not (k.startswith(f"fx_{known_id}_") or k.startswith(f"sx_{known_id}_"))
+            }
+
+        with self.batches_lock:
+            self.batches_fx.pop(known_id, None)
+            self.batches_fx_status_type.pop(known_id, None)
+            self.batches_sx.pop(known_id, None)
+            self.batches_sx_baseline_status_type.pop(known_id, None)
+            self.batches_with_obstacles.discard(known_id)
+            self.locked_baseline_batch_ids.discard(known_id)
+            self.locked_baseline_all_batch_ids.discard(known_id)
+            self.pending_baseline_lock_ids.discard(known_id)
+            self.short_pattern_ids.discard(known_id)
+            self.tentative_baseline_ids.discard(known_id)
+            self.manual_putdown_batch_ids.discard(known_id)
+            self.synthetic_override_batch_ids.discard(known_id)
+            self.active_batch_ids.discard(known_id)
+            self.known_ids_to_retry.discard(known_id)
+            self.deleted_batch_ids.discard(known_id)
+
+    def handle_pattern_override_command(self, msg: String) -> None:
+        """Handle manual pattern override commands from web_handler.
+
+        Expected JSON payload:
+          {"action":"set","known_id":"s1","pattern":"byyb"}
+          {"action":"clear","known_id":"s1"}
+          {"action":"clear_all"}
+        """
+        try:
+            data = json.loads(msg.data or '{}')
+            action = str(data.get('action', '')).strip().lower()
+            known_id = str(data.get('known_id', '')).strip().lower()
+            pattern = str(data.get('pattern', '')).strip().lower()
+
+            if action == 'set':
+                if not known_id:
+                    raise ValueError("Missing known_id for override set")
+                if not known_id.startswith('s'):
+                    raise ValueError(
+                        f"Manual pattern override supports SX only (got '{known_id}')"
+                    )
+                if not self._is_valid_pattern(pattern):
+                    raise ValueError(
+                        f"Invalid pattern '{pattern}' (expected 4 chars using y/b)"
+                    )
+                self.manual_pattern_overrides[known_id] = pattern
+                self.node.get_logger().info(
+                    f"🎛️  Manual pattern override set: {known_id} -> {pattern}"
+                )
+                rebuilt = self._rebuild_overridden_batch_if_present(known_id)
+                if not rebuilt and self._create_synthetic_batch_from_override(known_id, pattern):
+                    self._rebuild_overridden_batch_if_present(known_id)
+                return
+
+            if action == 'clear':
+                if not known_id:
+                    raise ValueError("Missing known_id for override clear")
+                if not known_id.startswith('s'):
+                    raise ValueError(
+                        f"Manual pattern override supports SX only (got '{known_id}')"
+                    )
+                removed = self.manual_pattern_overrides.pop(known_id, None)
+                if removed is None:
+                    self.node.get_logger().info(
+                        f"ℹ️  No manual pattern override found for '{known_id}'"
+                    )
+                else:
+                    self.node.get_logger().info(
+                        f"🧽 Cleared manual pattern override for '{known_id}'"
+                    )
+
+                self._reset_batch_for_override_clear(known_id)
+                success, message, _service_name = self._trigger_update_map_async(can_lock_baseline=False)
+                if success:
+                    self.node.get_logger().info(
+                        f"🔄 Refresh triggered after clearing override for '{known_id}': {message}"
+                    )
+                else:
+                    self.node.get_logger().warn(
+                        f"⚠️ Could not refresh map after clearing override for '{known_id}': {message}"
+                    )
+                return
+
+            if action == 'clear_all':
+                overridden_ids = set(self.manual_pattern_overrides.keys()) | set(self.synthetic_override_batch_ids)
+                count = len(self.manual_pattern_overrides)
+                self.manual_pattern_overrides.clear()
+                for sid in list(overridden_ids):
+                    self._reset_batch_for_override_clear(sid)
+                self.node.get_logger().info(
+                    f"🧽 Cleared all manual pattern overrides ({count})"
+                )
+
+                success, message, _service_name = self._trigger_update_map_async(can_lock_baseline=False)
+                if success:
+                    self.node.get_logger().info(
+                        f"🔄 Refresh triggered after clear_all overrides: {message}"
+                    )
+                else:
+                    self.node.get_logger().warn(
+                        f"⚠️ Could not refresh map after clear_all overrides: {message}"
+                    )
+                return
+
+            raise ValueError(f"Unsupported override action '{action}'")
+
+        except Exception as e:
+            self.node.get_logger().error(f"❌ Invalid pattern override command: {e}")
+
+    def _rebuild_overridden_batch_if_present(self, known_id: str) -> bool:
+        """If batch is already active, apply override and rebuild its obstacles."""
+        target_batch = None
+        source = None
+        with self.batches_lock:
+            if known_id in self.batches_sx:
+                target_batch = self.batches_sx[known_id]
+                source = 'sx'
+            elif known_id in self.batches_fx:
+                target_batch = self.batches_fx[known_id]
+                source = 'fx'
+
+            if target_batch is None:
+                return False
+
+            self._apply_manual_pattern_override(target_batch)
+            self.batches_with_obstacles.discard(known_id)
+
+        prefix_sx = f"sx_{known_id}_"
+        prefix_fx = f"fx_{known_id}_"
+        with self.obstacles_lock:
+            self.obstacles = [
+                obs for obs in self.obstacles
+                if not (obs.id.startswith(prefix_sx) or obs.id.startswith(prefix_fx))
+            ]
+            self.obstacle_sources = {
+                k: v for k, v in self.obstacle_sources.items()
+                if not (k.startswith(prefix_sx) or k.startswith(prefix_fx))
+            }
+
+        if target_batch is None or source is None:
+            return False
+
+        fake_state = ArucoMapperState()
+        fake_state.stamp = self.node.get_clock().now().to_msg()
+        fake_state.initialized = True
+        fake_state.batches = [target_batch]
+        self._handle_aruco_mapper_state(fake_state, source)
+        return True
     
     def handle_clear_all(self, msg: Empty):
         """Clear all obstacles"""
@@ -356,6 +630,8 @@ class MapManager:
             self.batches_sx_baseline_status_type.clear()
             self.batches_with_obstacles.clear()  # Clear tracking
             self.manual_putdown_batch_ids.clear()
+            self.manual_pattern_overrides.clear()
+            self.synthetic_override_batch_ids.clear()
         
         # Reset state flags
         self.first_update_map = True
@@ -1323,6 +1599,8 @@ class MapManager:
         self.short_pattern_ids.clear()
         self.tentative_baseline_ids.clear()
         self.batches_sx_baseline_status_type.clear()
+        self.manual_pattern_overrides.clear()
+        self.synthetic_override_batch_ids.clear()
         self._stop_retry_timer()
         self._stop_short_pattern_retry_timer()
 
@@ -1995,6 +2273,8 @@ class MapManager:
                 )
                 return
 
+            self._apply_manual_pattern_override(target_batch)
+
             pattern = target_batch.pattern if target_batch.pattern else ""
             _parsed_state, baseline_status = self._parse_batch_state(target_batch.state)
 
@@ -2103,6 +2383,7 @@ class MapManager:
                 # Update batches with locked patterns
                 with self.batches_lock:
                     for batch in response.stable_state.batches:
+                        self._apply_manual_pattern_override(batch)
                         active_batch_ids_from_lock.add(batch.known_id)
                         if batch.known_id.startswith('s'):
                             _parsed_state, baseline_status = self._parse_batch_state(batch.state)
@@ -2326,6 +2607,7 @@ class MapManager:
                     self.tentative_baseline_ids.discard(known_id)
                     break
 
+                self._apply_manual_pattern_override(batch)
                 new_pattern = batch.pattern if batch.pattern else ""
                 _parsed_state, baseline_status = self._parse_batch_state(batch.state)
 
@@ -2429,6 +2711,7 @@ class MapManager:
         """
         with self.obstacles_lock:
             for batch in msg.batches:
+                self._apply_manual_pattern_override(batch)
                 if source == 'gx':
                     continue
 
@@ -2666,6 +2949,7 @@ class MapManager:
             self.short_pattern_ids.discard(known_id)
             self.tentative_baseline_ids.discard(known_id)
             self.manual_putdown_batch_ids.discard(known_id)
+            self.synthetic_override_batch_ids.discard(known_id)
             self.active_batch_ids.discard(known_id)
             self.known_ids_to_retry.discard(known_id)
             self.batches_sx_baseline_status_type.pop(known_id, None)
