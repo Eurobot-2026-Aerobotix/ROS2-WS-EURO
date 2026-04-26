@@ -445,6 +445,111 @@ class TaskScheduler:
         angle_diff = self._normalize_angle_deg(travel_theta_deg - float(start_theta_deg))
         return 'go_to' if abs(angle_diff) <= 90.0 else 'go_to_backwards'
 
+    def _choose_motion_command_for_segment(
+        self,
+        start_x_mm: float,
+        start_y_mm: float,
+        start_theta_deg: float,
+        target_x_mm: float,
+        target_y_mm: float,
+        default_command: str,
+        previous_command: Optional[str] = None,
+    ) -> str:
+        """
+        Choose forward/backward motion for one segment by minimizing rotation and
+        avoiding frequent mode switches.
+        """
+        dx = float(target_x_mm) - float(start_x_mm)
+        dy = float(target_y_mm) - float(start_y_mm)
+        if math.hypot(dx, dy) < 1e-6:
+            return previous_command or default_command
+
+        travel_theta_deg = math.degrees(math.atan2(dy, dx))
+        forward_err = abs(self._normalize_angle_deg(travel_theta_deg - float(start_theta_deg)))
+        backward_err = abs(self._normalize_angle_deg((travel_theta_deg + 180.0) - float(start_theta_deg)))
+
+        # Strong preference when one mode clearly avoids a near-180° turn.
+        if forward_err > 120.0 and backward_err < 60.0:
+            preferred = 'go_to_backwards'
+        elif backward_err > 120.0 and forward_err < 60.0:
+            preferred = 'go_to'
+        else:
+            switch_penalty = 18.0
+            reverse_bias = 6.0
+
+            forward_cost = forward_err + (
+                switch_penalty if previous_command is not None and previous_command != 'go_to' else 0.0
+            )
+            backward_cost = backward_err + reverse_bias + (
+                switch_penalty if previous_command is not None and previous_command != 'go_to_backwards' else 0.0
+            )
+            preferred = 'go_to' if forward_cost <= backward_cost else 'go_to_backwards'
+
+            # Hysteresis: keep previous mode unless the new one is clearly better.
+            if previous_command in ('go_to', 'go_to_backwards') and preferred != previous_command:
+                margin = 12.0
+                prev_cost = forward_cost if previous_command == 'go_to' else backward_cost
+                new_cost = forward_cost if preferred == 'go_to' else backward_cost
+                if (prev_cost - new_cost) < margin:
+                    preferred = previous_command
+
+        if default_command == 'go_to' and preferred not in ('go_to', 'go_to_backwards'):
+            return 'go_to'
+        if default_command == 'go_to_backwards' and preferred not in ('go_to', 'go_to_backwards'):
+            return 'go_to_backwards'
+        return preferred
+
+    def _commands_to_unique_waypoints(self, stm32_commands: List[str]) -> List[Tuple[float, float]]:
+        """Convert pathfinder command strings into de-duplicated waypoint list in mm."""
+        waypoints: List[Tuple[float, float]] = []
+        last_cmd = None
+        for cmd in stm32_commands:
+            if cmd == last_cmd:
+                continue
+            values = cmd.replace('go_to(', '').replace(')', '').split(',')
+            waypoints.append((float(values[0].strip()), float(values[1].strip())))
+            last_cmd = cmd
+        return waypoints
+
+    def _build_waypoint_motion_plan(
+        self,
+        stm32_commands: List[str],
+        start_pose: Optional[Dict[str, float]],
+        default_command: str,
+    ) -> List[Tuple[float, float, str]]:
+        """Return per-waypoint motion commands, selecting forward/backward per segment."""
+        waypoints = self._commands_to_unique_waypoints(stm32_commands)
+        if not waypoints:
+            return []
+
+        current_x, current_y, current_theta_deg = self._resolve_start_pose_mm_deg(start_pose)
+        previous_command: Optional[str] = None
+        planned: List[Tuple[float, float, str]] = []
+
+        for waypoint_x, waypoint_y in waypoints:
+            motion_cmd = self._choose_motion_command_for_segment(
+                current_x,
+                current_y,
+                current_theta_deg,
+                waypoint_x,
+                waypoint_y,
+                default_command,
+                previous_command,
+            )
+            planned.append((waypoint_x, waypoint_y, motion_cmd))
+
+            # Predict heading after segment for next segment decision.
+            segment_theta_deg = math.degrees(math.atan2(waypoint_y - current_y, waypoint_x - current_x))
+            if motion_cmd == 'go_to':
+                current_theta_deg = segment_theta_deg
+            else:
+                current_theta_deg = self._normalize_angle_deg(segment_theta_deg + 180.0)
+            current_x = waypoint_x
+            current_y = waypoint_y
+            previous_command = motion_cmd
+
+        return planned
+
     def _choose_pickup_face_by_heading(self, target: Pose2D) -> Optional[str]:
         """Pick front/back based on availability and which side faces target best."""
         front_available = bool(getattr(self.map, 'robot_front_empty', False))
@@ -1255,37 +1360,23 @@ class TaskScheduler:
         if not path_success:
             return None
 
-        start_mm_x, start_mm_y, start_theta_deg = self._resolve_start_pose_mm_deg(start_pose)
-        can_rotate = bool(getattr(self.pathfinder, 'last_can_rotate', True))
-        first_waypoint_command = stm_command
-        if not can_rotate and len(stm32_commands) > 0:
-            first_values = stm32_commands[0].replace('go_to(', '').replace(')', '').split(',')
-            first_x = float(first_values[0].strip())
-            first_y = float(first_values[1].strip())
-            first_waypoint_command = self._choose_first_motion_command(
-                start_mm_x, start_mm_y, start_theta_deg, first_x, first_y, stm_command
-            )
+        waypoint_plan = self._build_waypoint_motion_plan(
+            stm32_commands=stm32_commands,
+            start_pose=start_pose,
+            default_command=stm_command,
+        )
         
         # Build task sequence compatible with strategy_executor
         task_sequence: List[Dict[str, Any]] = []
 
         # Add waypoints from pathfinder
-        last_cmd = None
-        first_added = False
-        for cmd in stm32_commands:
-            values = cmd.replace('go_to(', '').replace(')', '').split(',')
-            x = float(values[0].strip())
-            y = float(values[1].strip())
-            if cmd != last_cmd:
-                waypoint_command = first_waypoint_command if not first_added else stm_command
-                task_sequence.append({
-                    'device': 'STM',
-                    'command': waypoint_command,
-                    'params': [x, y, 1100.0,0.0, {'from_pathfinding': True, 'from_pickup_task': True}],
-                    'wait': False
-                })
-                first_added = True
-            last_cmd = cmd
+        for waypoint_x, waypoint_y, waypoint_command in waypoint_plan:
+            task_sequence.append({
+                'device': 'STM',
+                'command': waypoint_command,
+                'params': [waypoint_x, waypoint_y, 1100.0,0.0, {'from_pathfinding': True, 'from_pickup_task': True}],
+                'wait': False
+            })
 
         if is_fx_pickup_flow:
             # FX flow:
@@ -1457,36 +1548,22 @@ class TaskScheduler:
         if not path_success:
             return None
 
-        start_mm_x, start_mm_y, start_theta_deg = self._resolve_start_pose_mm_deg(start_pose)
-        can_rotate = bool(getattr(self.pathfinder, 'last_can_rotate', True))
-        first_waypoint_command = stm_command
-        if not can_rotate and len(stm32_commands) > 0:
-            first_values = stm32_commands[0].replace('go_to(', '').replace(')', '').split(',')
-            first_x = float(first_values[0].strip())
-            first_y = float(first_values[1].strip())
-            first_waypoint_command = self._choose_first_motion_command(
-                start_mm_x, start_mm_y, start_theta_deg, first_x, first_y, stm_command
-            )
+        waypoint_plan = self._build_waypoint_motion_plan(
+            stm32_commands=stm32_commands,
+            start_pose=start_pose,
+            default_command=stm_command,
+        )
 
         task_sequence: List[Dict[str, Any]] = []
 
         # Waypoints from pathfinder
-        last_cmd = None
-        first_added = False
-        for cmd in stm32_commands:
-            values = cmd.replace('go_to(', '').replace(')', '').split(',')
-            waypoint_x = float(values[0].strip())
-            waypoint_y = float(values[1].strip())
-            if cmd != last_cmd:
-                waypoint_command = first_waypoint_command if not first_added else stm_command
-                task_sequence.append({
-                    'device': 'STM',
-                    'command': waypoint_command,
-                    'params': [waypoint_x, waypoint_y, 1100.0, 0.0, {'from_pathfinding': True, 'from_putdown_task': True}],
-                    'wait': False
-                })
-                first_added = True
-            last_cmd = cmd
+        for waypoint_x, waypoint_y, waypoint_command in waypoint_plan:
+            task_sequence.append({
+                'device': 'STM',
+                'command': waypoint_command,
+                'params': [waypoint_x, waypoint_y, 1100.0, 0.0, {'from_pathfinding': True, 'from_putdown_task': True}],
+                'wait': False
+            })
 
         # Orientate to center before put_down (no extra final go_to)
         task_sequence.append({
@@ -1757,34 +1834,20 @@ class TaskScheduler:
                     )
                 return None
 
-            start_mm_x, start_mm_y, start_theta_deg = self._resolve_start_pose_mm_deg(None)
-            can_rotate = bool(getattr(self.pathfinder, 'last_can_rotate', True))
-            first_waypoint_command = 'go_to'
-            if not can_rotate and len(stm32_commands) > 0:
-                first_values = stm32_commands[0].replace('go_to(', '').replace(')', '').split(',')
-                first_x = float(first_values[0].strip())
-                first_y = float(first_values[1].strip())
-                first_waypoint_command = self._choose_first_motion_command(
-                    start_mm_x, start_mm_y, start_theta_deg, first_x, first_y, 'go_to'
-                )
+            waypoint_plan = self._build_waypoint_motion_plan(
+                stm32_commands=stm32_commands,
+                start_pose=None,
+                default_command='go_to',
+            )
 
             intermediate_sequence: List[Dict[str, Any]] = []
-            last_cmd = None
-            first_added = False
-            for cmd in stm32_commands:
-                values = cmd.replace('go_to(', '').replace(')', '').split(',')
-                waypoint_x = float(values[0].strip())
-                waypoint_y = float(values[1].strip())
-                if cmd != last_cmd:
-                    waypoint_command = first_waypoint_command if not first_added else 'go_to'
-                    intermediate_sequence.append({
-                        'device': 'STM',
-                        'command': waypoint_command,
-                        'params': [waypoint_x, waypoint_y, 1100.0, 0.0, {'from_pathfinding': True, 'from_return_home': True, 'blue_staging': True}],
-                        'wait': False
-                    })
-                    first_added = True
-                last_cmd = cmd
+            for waypoint_x, waypoint_y, waypoint_command in waypoint_plan:
+                intermediate_sequence.append({
+                    'device': 'STM',
+                    'command': waypoint_command,
+                    'params': [waypoint_x, waypoint_y, 1100.0, 0.0, {'from_pathfinding': True, 'from_return_home': True, 'blue_staging': True}],
+                    'wait': False
+                })
 
             intermediate_sequence.append({
                 'device': 'STM',
@@ -1871,34 +1934,20 @@ class TaskScheduler:
                     )
                 return None
 
-            start_mm_x, start_mm_y, start_theta_deg = self._resolve_start_pose_mm_deg(None)
-            can_rotate = bool(getattr(self.pathfinder, 'last_can_rotate', True))
-            first_waypoint_command = 'go_to'
-            if not can_rotate and len(stm32_commands) > 0:
-                first_values = stm32_commands[0].replace('go_to(', '').replace(')', '').split(',')
-                first_x = float(first_values[0].strip())
-                first_y = float(first_values[1].strip())
-                first_waypoint_command = self._choose_first_motion_command(
-                    start_mm_x, start_mm_y, start_theta_deg, first_x, first_y, 'go_to'
-                )
+            waypoint_plan = self._build_waypoint_motion_plan(
+                stm32_commands=stm32_commands,
+                start_pose=None,
+                default_command='go_to',
+            )
 
             intermediate_sequence: List[Dict[str, Any]] = []
-            last_cmd = None
-            first_added = False
-            for cmd in stm32_commands:
-                values = cmd.replace('go_to(', '').replace(')', '').split(',')
-                waypoint_x = float(values[0].strip())
-                waypoint_y = float(values[1].strip())
-                if cmd != last_cmd:
-                    waypoint_command = first_waypoint_command if not first_added else 'go_to'
-                    intermediate_sequence.append({
-                        'device': 'STM',
-                        'command': waypoint_command,
-                        'params': [waypoint_x, waypoint_y, 1100.0, 0.0, {'from_pathfinding': True, 'from_return_home': True}],
-                        'wait': False
-                    })
-                    first_added = True
-                last_cmd = cmd
+            for waypoint_x, waypoint_y, waypoint_command in waypoint_plan:
+                intermediate_sequence.append({
+                    'device': 'STM',
+                    'command': waypoint_command,
+                    'params': [waypoint_x, waypoint_y, 1100.0, 0.0, {'from_pathfinding': True, 'from_return_home': True}],
+                    'wait': False
+                })
 
             intermediate_sequence.append({
                 'device': 'STM',
