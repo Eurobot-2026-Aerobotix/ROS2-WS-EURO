@@ -1308,6 +1308,7 @@ def front_task(strategy, front_controller=None,pneumatic_controller=None):
                 else:
                     front_controller.n20(2222)
                     front_controller.kabech(2)
+                    front_controller.dawer(0)
 
             elif command =='put_down':
                 put_down(front_controller,pneumatic_controller,strategy,True,params)
@@ -1362,6 +1363,7 @@ def back_task(strategy, back_controller=None,pneumatic_controller=None):
                 else:
                     back_controller.n20(2222)
                     back_controller.kabech(2)
+                    back_controller.dawer(0)
 
             elif command =='put_down':
                 put_down(back_controller,pneumatic_controller,strategy,False,params)
