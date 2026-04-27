@@ -2094,6 +2094,93 @@ class TaskScheduler:
             if pickup_task is not None:
                 generated_tasks = [pickup_task]
 
+                # Auto-build an immediate put_down+retreat after FX pickups
+                # Build tasks without invoking pathfinding (direct orientate + put_down + retreat)
+                normalized_pickup_id = str(task.target_id).lower()
+                if normalized_pickup_id.startswith('f') and normalized_pickup_id in self.supported_fx_pickup_ids:
+                    zone = self.map.drop_offs.get(normalized_pickup_id)
+                    if zone is not None:
+                        target_x = float(zone['x'])
+                        target_y = float(zone['y'])
+
+                        # Device mapping
+                        esp_device = 'ESP_front' if pickup_face == 'front' else 'ESP_back'
+                        retreat_stm_command = 'go_to_backwards' if esp_device == 'ESP_front' else 'go_to'
+
+                        # Compute angle to center (fallback handled below)
+                        center_x = target_x
+                        center_y = target_y
+                        theta_to_center_deg = math.degrees(math.atan2(center_y - target_y, center_x - target_x))
+                        if esp_device == 'ESP_back':
+                            theta_to_center_deg += 180.0
+                        while theta_to_center_deg > 180.0:
+                            theta_to_center_deg -= 360.0
+                        while theta_to_center_deg <= -180.0:
+                            theta_to_center_deg += 360.0
+                        theta_to_center_rad = math.radians(theta_to_center_deg)
+
+                        # Build directional unit vectors
+                        to_center_dx = center_x - target_x
+                        to_center_dy = center_y - target_y
+                        to_center_norm = math.hypot(to_center_dx, to_center_dy)
+                        if to_center_norm <= 1e-6:
+                            to_center_dx = math.cos(theta_to_center_rad)
+                            to_center_dy = math.sin(theta_to_center_rad)
+                            to_center_norm = 1.0
+                        to_center_ux = to_center_dx / to_center_norm
+                        to_center_uy = to_center_dy / to_center_norm
+
+                        away_ux = -to_center_ux
+                        away_uy = -to_center_uy
+
+                        # No insertion for this immediate put_down flow
+                        retreat_dist = self.wall_dropoff_retreat_distance if normalized_pickup_id in self.wall_dropoff_ids else self.center_dropoff_retreat_distance
+                        retreat_x = target_x + retreat_dist * away_ux
+                        retreat_y = target_y + retreat_dist * away_uy
+
+                        # Putdown task (no pathfinding waypoints)
+                        putdown_task = {
+                            'name': f'putdown_{normalized_pickup_id}_{esp_device.split("_")[1]}',
+                            'sequence': [
+                                {
+                                    'device': 'STM',
+                                    'command': 'orientate',
+                                    'params': [theta_to_center_deg, 0.0],
+                                    'wait': False,
+                                },
+                                {
+                                    'device': esp_device,
+                                    'command': 'put_down',
+                                    'params': {
+                                        'from_task_scheduler': True,
+                                        'putdown_insert_distance_mm': 0.0,
+                                        'use_putdown_angle': True,
+                                        'putdown_theta_deg': float(theta_to_center_deg),
+                                    },
+                                    'wait': True,
+                                },
+                            ],
+                            'global_goal': {'x': target_x, 'y': target_y, 'theta': theta_to_center_deg},
+                            'tracking': {'type': 'put_down', 'target_id': normalized_pickup_id},
+                        }
+
+                        putdown_retreat_task = {
+                            'name': f'putdown_retreat_{normalized_pickup_id}_{esp_device.split("_")[1]}',
+                            'sequence': [
+                                {
+                                    'device': 'STM',
+                                    'command': retreat_stm_command,
+                                    'params': [retreat_x, retreat_y, 900.0, 1.0, {'from_putdown_task': True, 'putdown_retreat': True}],
+                                    'wait': True,
+                                }
+                            ],
+                            'global_goal': {'x': retreat_x, 'y': retreat_y, 'theta': theta_to_center_deg},
+                            'tracking': {'type': 'put_down', 'target_id': normalized_pickup_id},
+                        }
+
+                        generated_tasks.append(putdown_task)
+                        generated_tasks.append(putdown_retreat_task)
+
         elif task.type == 'dropoff':
             device = self._select_putdown_device(task)
             if device is None:
