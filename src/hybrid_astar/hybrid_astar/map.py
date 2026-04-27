@@ -2636,6 +2636,14 @@ class MapManager:
                     self.node.get_logger().info(
                         f"[TEMP_BASELINE] ⏳ Locked baseline still tentative for '{known_id}' (status=T), retrying"
                     )
+
+                    # Keep temporary SX obstacles visible and color-synced while
+                    # waiting for constrained baseline confirmation.
+                    sx_state = ArucoMapperState()
+                    sx_state.stamp = response.stable_state.stamp
+                    sx_state.initialized = response.stable_state.initialized
+                    sx_state.batches = [batch]
+                    self._handle_aruco_mapper_state(sx_state, 'sx')
                     break
 
                 if baseline_status == 'C':
@@ -2835,8 +2843,13 @@ class MapManager:
                     # Tentative baselines are rendered with currently known crates,
                     # then replaced when confirmed baseline data arrives.
                     if is_tentative_baseline:
-                        tentative_count = member_count if member_count > 0 else len(pattern_colors)
-                        crates_to_draw = max(1, min(4, tentative_count, len(pattern_colors)))
+                        # If a full temporary pattern exists (e.g. "yybb"), draw all
+                        # 4 crates from that pattern even when member detection is partial.
+                        if len(pattern_colors) == 4:
+                            crates_to_draw = 4
+                        else:
+                            tentative_count = member_count if member_count > 0 else len(pattern_colors)
+                            crates_to_draw = max(1, min(4, tentative_count, len(pattern_colors)))
                     else:
                         crates_to_draw = 4
 
