@@ -47,10 +47,16 @@ class TaskScheduler:
     dropoff_min_clearance_to_sx = 420.0
     dropoff_min_clearance_to_fx = 330.0
     drop_off_enemy_clearance = 50.0
-    putdown_insert_distance = 225.0
-    putdown_retreat_distance = 250.0
     switch_distance=2500.0
     retreat_distance=175.0
+    
+    # Drop-off zone parameters for different drop-off types
+    wall_dropoff_ids = {'f1', 'f2', 'f6', 'f9', 'f10', 'f4', 'f7'}
+    wall_dropoff_insert_distance = 200.0
+    wall_dropoff_retreat_distance = 150.0
+    center_dropoff_insert_distance = 235.0
+    center_dropoff_retreat_distance = 185.0
+    
     coeffs = {
         "is_enemy_goal": 0.0,
         "distance_to_goal_far": 0.0,
@@ -1484,12 +1490,15 @@ class TaskScheduler:
         if self.pathfinder is None:
             return None
 
-        if insert_distance_mm is None:
-            insert_distance_mm = float(self.putdown_insert_distance)
-        if retreat_distance_mm is None:
-            retreat_distance_mm = float(self.putdown_retreat_distance)
-
         normalized_id = str(batch_known_id).lower()
+        
+        # Determine drop-off type and set appropriate parameters
+        is_wall_dropoff = normalized_id in self.wall_dropoff_ids
+        
+        if insert_distance_mm is None:
+            insert_distance_mm = self.wall_dropoff_insert_distance if is_wall_dropoff else self.center_dropoff_insert_distance
+        if retreat_distance_mm is None:
+            retreat_distance_mm = self.wall_dropoff_retreat_distance if is_wall_dropoff else self.center_dropoff_retreat_distance
         zone = self.map.drop_offs.get(normalized_id)
         if zone is None:
             return None
