@@ -37,11 +37,13 @@ class TaskScheduler:
         'F7': [{'x': 850.0, 'y': 1750.0, 'theta': [0, 180]}],
     }
     must_dropoff_time = 16.0
-    must_go_home_time = 5  # travel budget at 1m distance from nest (seconds)
+    must_go_home_time = 8.5  # travel budget at 1m distance from nest (seconds)
     must_leave_pamiyeet_alone_time = 20.0
+    prefer_f_ninja_dropoff_time = 75.0
     must_prioritize_own_batches_time = 50.0
     max_distance_for_predict_enemy_goal = 1500.0 # in mm
     drop_off_distance = 450.0
+    facing_drop_off_distance = 1200.0
     retreat_distance = 250.0
     distance_from_wall = 450.0
     dropoff_min_clearance_to_sx = 420.0
@@ -68,6 +70,7 @@ class TaskScheduler:
         "number_of_opposite_crates": 1,
         "pickup_facing_available_face": 4,
         "dropoff_facing_loaded_face": 10,
+        "prefer_f_ninja_dropoff": 1.5,
     }
     log_score_breakdown = False
     log_task_queue_snapshot = True
@@ -358,14 +361,26 @@ class TaskScheduler:
             preferred_face = self._preferred_face_toward_target(target_pos)
             front_loaded = not bool(getattr(self.map, 'robot_front_empty', True))
             back_loaded = not bool(getattr(self.map, 'robot_back_empty', True))
+            distance_to_target = self.map.distance_from(self.map.robot_position, target_pos)
 
             facing_with_loaded_face = (
                 (preferred_face == 'front' and front_loaded)
                 or (preferred_face == 'back' and back_loaded)
             )
             contributions["dropoff_facing_loaded_face"] = (
-                self.coeffs["dropoff_facing_loaded_face"] if facing_with_loaded_face else 0.0
+                self.coeffs["dropoff_facing_loaded_face"]
+                if facing_with_loaded_face and distance_to_target <= self.facing_drop_off_distance
+                else 0.0
             )
+
+            preferred_fx_dropoff_id = "f7" if self.map.robot_color[0] == "y" else "f4"
+            if task.target_id == preferred_fx_dropoff_id:
+                time_left_s = float(self.map.get_time_left())
+                contributions["prefer_f_ninja_dropoff"] = (
+                    self.coeffs["prefer_f_ninja_dropoff"]
+                    if time_left_s > self.prefer_f_ninja_dropoff_time
+                    else -self.coeffs["prefer_f_ninja_dropoff"]
+                )
 
         score = sum(contributions.values())
         return score, contributions
