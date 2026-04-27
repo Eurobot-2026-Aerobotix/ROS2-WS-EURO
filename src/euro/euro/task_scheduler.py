@@ -1,4 +1,5 @@
 import math
+import time
 import re
 try:
     from .simple_map import Map, Pose2D
@@ -74,6 +75,10 @@ class TaskScheduler:
     }
     log_score_breakdown = False
     log_task_queue_snapshot = True
+    # Track recent pickups to avoid unnecessary orientate on immediate explicit put_down
+    _last_pickup_timestamp = 0.0
+    _last_pickup_id = ""
+    skip_orientate_after_pickup_window_s = 8.0
     def __init__(self, map: Map, pathfinder_client=None, ros_node=None, loop_period_s: float = 0.05):
         self.map = map
         self.pathfinder = pathfinder_client
@@ -1548,6 +1553,19 @@ class TaskScheduler:
             theta_to_center_deg += 360.0
         theta_to_center_rad = math.radians(theta_to_center_deg)
 
+        # Special-case: if this is an FX pickup zone, perform put_down in current
+        # robot pose (no orientate) and do not create an insert task.
+        is_fx_pickup_zone = normalized_id in self.supported_fx_pickup_ids
+        if is_fx_pickup_zone:
+            try:
+                theta_to_center_deg = float(self.map.robot_position.theta)
+            except Exception:
+                theta_to_center_deg = theta_to_center_deg
+            theta_to_center_rad = math.radians(theta_to_center_deg)
+            # Force no insertion for this flow unless explicitly provided
+            if insert_distance_mm is None:
+                insert_distance_mm = 0.0
+
         # Path to target point only; explicit orientate is added in task sequence
         current_theta_rad = math.radians(float(self.map.robot_position.theta))
 
@@ -1590,12 +1608,23 @@ class TaskScheduler:
             })
 
         # Orientate to center before put_down (no extra final go_to)
-        task_sequence.append({
-            'device': 'STM',
-            'command': 'orientate',
-            'params': [theta_to_center_deg, 0.0],
-            'wait': False
-        })
+        # Skip orientate if this put_down corresponds to a very recent pickup
+        try:
+            recent_pickup = (
+                str(batch_known_id).lower() == str(self._last_pickup_id).lower()
+                and (time.time() - float(self._last_pickup_timestamp) <= float(self.skip_orientate_after_pickup_window_s))
+            )
+        except Exception:
+            recent_pickup = False
+
+        # Always skip orientate for FX pickup zones (we drop in current pose)
+        if not recent_pickup and not is_fx_pickup_zone:
+            task_sequence.append({
+                'device': 'STM',
+                'command': 'orientate',
+                'params': [theta_to_center_deg, 0.0],
+                'wait': False
+            })
 
         task_sequence.append({
             'device': esp_device,
@@ -1635,6 +1664,11 @@ class TaskScheduler:
             to_center_norm = 1.0
         to_center_ux = to_center_dx / to_center_norm
         to_center_uy = to_center_dy / to_center_norm
+
+        # If FX pickup flow, use pickup-facing heading for insertion/retreat direction
+        if is_fx_pickup_zone:
+            to_center_ux = math.cos(theta_to_center_rad)
+            to_center_uy = math.sin(theta_to_center_rad)
 
         # Retreat direction is always away from zone center.
         away_ux = -to_center_ux
@@ -1706,6 +1740,8 @@ class TaskScheduler:
                 'target_id': normalized_id,
             },
         }
+        if is_fx_pickup_zone:
+            return [putdown_task, putdown_retreat_task]
         return [putdown_task, putdown_insert_task, putdown_retreat_task]
 
     def _select_pickup_face_for_task(self, task: Task) -> Optional[str]:
@@ -2086,6 +2122,13 @@ class TaskScheduler:
             )
             if pickup_task is not None:
                 generated_tasks = [pickup_task]
+                # record recent pickup to help later explicit put_down builds skip orientate
+                try:
+                    normalized_pickup_id = str(task.target_id).lower()
+                    self._last_pickup_timestamp = time.time()
+                    self._last_pickup_id = normalized_pickup_id
+                except Exception:
+                    pass
 
                 # Auto-build an immediate put_down+retreat after FX pickups
                 # Build tasks without invoking pathfinding (direct orientate + put_down + retreat)
