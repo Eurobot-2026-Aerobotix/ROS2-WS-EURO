@@ -350,10 +350,12 @@ class TaskScheduler:
             if task.target_id[0] == "f":
                 batch = self.map.batches.get(task.target_id)
                 if batch is not None:
-                    pattern = str(batch.color or "")
+                    pattern = str(batch.color or "").lower()
+                    robot_color_char = str(self.map.robot_color[0]).lower()
+                    own_count = pattern.count(robot_color_char)
+                    opposite_count = max(0, len(pattern) - own_count)
                     contributions["number_of_opposite_crates"] = (
-                        self.coeffs["number_of_opposite_crates"]
-                        * (len(pattern) - pattern.count(self.map.robot_color[0]))
+                        self.coeffs["number_of_opposite_crates"] * opposite_count
                     )
             else:
                 contributions["number_of_opposite_crates"] = self.coeffs["number_of_opposite_crates"] * 4.0  # Assume all 4 crates are opposite color for storage pickups
@@ -1016,8 +1018,10 @@ class TaskScheduler:
                     if self.ros_node is not None:
                         self.ros_node.get_logger().debug(f"⏭️ Skip pickup {batch_id}: reserved center drop-off zone")
                     continue
-                # ken mafihouch 4 walla deja m3abbi b mte3na 
-                if (len(batch.color) != 4) or (batch.color.count(self.map.robot_color[0]) == 4):
+                # Validate pattern length and reject batches that are all our color (case-insensitive)
+                batch_color = str(batch.color or "").lower()
+                robot_color_char = str(self.map.robot_color[0]).lower() 
+                if (len(batch_color) != 4) or (batch_color.count(robot_color_char) == 4):
                     skip_stats['pickup_invalid_or_own_color'] += 1
                     if self.ros_node is not None:
                         self.ros_node.get_logger().debug(
@@ -1124,8 +1128,6 @@ class TaskScheduler:
         # sorting tasks
         queue.sort(key=lambda t: t.score, reverse=True)
 
-        queue = [t for t in queue if t.target_id[0] == "s"] + [t for t in queue if t.target_id[0] == "f"]
-
         # If exactly one holder is empty and closest dropoff is closer than closest pickup,
         # prioritize dropoff tasks over pickup tasks.
         exactly_one_side_empty = bool(self.map.robot_front_empty) != bool(self.map.robot_back_empty)
@@ -1147,6 +1149,11 @@ class TaskScheduler:
             if (self.map.robot_position.y > 1500):
                 own_batches = ["s5", "s6", "s7", "s8", "f5", "f6", "f7", "f8", "f9", "f10"]
             queue = [t for t in queue if t.target_id in own_batches] + [t for t in queue if t.target_id not in own_batches]
+
+        pickup_s_tasks = [t for t in queue if t.type == "pickup" and t.target_id.startswith("s")]
+        pickup_f_tasks = [t for t in queue if t.type == "pickup" and t.target_id.startswith("f")]
+        non_pickup_tasks = [t for t in queue if t.type != "pickup"]
+        queue = pickup_s_tasks + pickup_f_tasks + non_pickup_tasks
 
         go_home_time = max(
             self.must_go_home_time * self.map.distance_from(self.map.robot_position, self.map.nest_position) / 1000.0,
