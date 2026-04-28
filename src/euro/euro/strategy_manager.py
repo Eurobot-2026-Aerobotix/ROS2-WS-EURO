@@ -77,6 +77,16 @@ class StrategyManager(Node):
             'ESP_front': None,
             'ESP_back': None,
         }
+        # Track whether the last pickup command on each device was `pick_up_fx`.
+        self.last_pickup_was_fx = {
+            'ESP_front': False,
+            'ESP_back': False,
+        }
+        # Track whether a direct-flow put_down `prepare` was already injected.
+        self.pending_gap_prepare = {
+            'ESP_front': False,
+            'ESP_back': False,
+        }
         # Storage for prepared path commands
         self.prepared_commands = []
         self.prepared_goal_angle = None
@@ -565,16 +575,55 @@ class StrategyManager(Node):
             return True
 
         normalized_command = str(command or '').strip().lower()
+        original_command = str((cmd_dict or {}).get('command', command) or '').strip().lower()
 
         if normalized_command == 'pick_up_fx':
             normalized_command = 'pick_up'
 
         if normalized_command == 'pick_up':
             self.last_pickup_enqueue_time[device] = time.monotonic()
+            self.last_pickup_was_fx[device] = (original_command == 'pick_up_fx')
+            self.pending_gap_prepare[device] = False
             return True
 
         if normalized_command != 'put_down':
             return True
+
+        # Force the normal `prepare` step even when pick_up -> put_down is direct
+        # and there are no STM commands in-between. This matches the normal flow
+        # where `prepare` is injected while waiting for STM to finish.
+        try:
+            if cmd_dict and isinstance(cmd_dict, dict):
+                params = cmd_dict.get('params')
+                if isinstance(params, dict) and params.get('from_fx_pickup_combo'):
+                    if not self.last_pickup_was_fx.get(device, False):
+                        return True
+                    if not self.pending_gap_prepare.get(device, False):
+                        queue = self.queues.get(device)
+                        has_prepare = False
+                        if queue is not None:
+                            for queued_cmd in queue:
+                                if not isinstance(queued_cmd, dict):
+                                    continue
+                                if str(queued_cmd.get('command', '')).strip().lower() != 'prepare':
+                                    continue
+                                queued_params = queued_cmd.get('params', {})
+                                if isinstance(queued_params, dict) and str(queued_params.get('action', '')).strip().lower() == 'put_down':
+                                    has_prepare = True
+                                    break
+
+                        if not has_prepare:
+                            self.queues[device].append({
+                                'command': 'prepare',
+                                'params': {'action': 'put_down'},
+                                'wait': False,
+                            })
+                            self.pending_gap_prepare[device] = True
+                            self.get_logger().info(
+                                f"🔧 Added forced prepare for {device} put_down during pickup→put_down gap"
+                            )
+        except Exception:
+            pass
 
 
         last_pickup_t = self.last_pickup_enqueue_time.get(device)
