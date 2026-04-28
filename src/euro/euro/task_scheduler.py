@@ -1,5 +1,4 @@
 import math
-import time
 import re
 try:
     from .simple_map import Map, Pose2D
@@ -75,10 +74,6 @@ class TaskScheduler:
     }
     log_score_breakdown = False
     log_task_queue_snapshot = True
-    # Track recent pickups to avoid unnecessary orientate on immediate explicit put_down
-    _last_pickup_timestamp = 0.0
-    _last_pickup_id = ""
-    skip_orientate_after_pickup_window_s = 8.0
     def __init__(self, map: Map, pathfinder_client=None, ros_node=None, loop_period_s: float = 0.05):
         self.map = map
         self.pathfinder = pathfinder_client
@@ -355,12 +350,10 @@ class TaskScheduler:
             if task.target_id[0] == "f":
                 batch = self.map.batches.get(task.target_id)
                 if batch is not None:
-                    pattern = str(batch.color or "").lower()
-                    robot_color_char = str(self.map.robot_color[0]).lower()
-                    own_count = pattern.count(robot_color_char)
-                    opposite_count = max(0, len(pattern) - own_count)
+                    pattern = str(batch.color or "")
                     contributions["number_of_opposite_crates"] = (
-                        self.coeffs["number_of_opposite_crates"] * opposite_count
+                        self.coeffs["number_of_opposite_crates"]
+                        * (len(pattern) - pattern.count(self.map.robot_color[0]))
                     )
             else:
                 contributions["number_of_opposite_crates"] = self.coeffs["number_of_opposite_crates"] * 4.0  # Assume all 4 crates are opposite color for storage pickups
@@ -1023,10 +1016,8 @@ class TaskScheduler:
                     if self.ros_node is not None:
                         self.ros_node.get_logger().debug(f"⏭️ Skip pickup {batch_id}: reserved center drop-off zone")
                     continue
-                # Validate pattern length and reject batches that are all our color (case-insensitive)
-                batch_color = str(batch.color or "").lower()
-                robot_color_char = str(self.map.robot_color[0]).lower() 
-                if (len(batch_color) != 4) or (batch_color.count(robot_color_char) == 4):
+                # ken mafihouch 4 walla deja m3abbi b mte3na 
+                if (len(batch.color) != 4) or (batch.color.count(self.map.robot_color[0]) == 4):
                     skip_stats['pickup_invalid_or_own_color'] += 1
                     if self.ros_node is not None:
                         self.ros_node.get_logger().debug(
@@ -1133,6 +1124,8 @@ class TaskScheduler:
         # sorting tasks
         queue.sort(key=lambda t: t.score, reverse=True)
 
+        queue = [t for t in queue if t.target_id[0] == "s"] + [t for t in queue if t.target_id[0] == "f"]
+
         # If exactly one holder is empty and closest dropoff is closer than closest pickup,
         # prioritize dropoff tasks over pickup tasks.
         exactly_one_side_empty = bool(self.map.robot_front_empty) != bool(self.map.robot_back_empty)
@@ -1154,11 +1147,6 @@ class TaskScheduler:
             if (self.map.robot_position.y > 1500):
                 own_batches = ["s5", "s6", "s7", "s8", "f5", "f6", "f7", "f8", "f9", "f10"]
             queue = [t for t in queue if t.target_id in own_batches] + [t for t in queue if t.target_id not in own_batches]
-
-        pickup_s_tasks = [t for t in queue if t.type == "pickup" and t.target_id.startswith("s")]
-        pickup_f_tasks = [t for t in queue if t.type == "pickup" and t.target_id.startswith("f")]
-        non_pickup_tasks = [t for t in queue if t.type != "pickup"]
-        queue = pickup_s_tasks + pickup_f_tasks + non_pickup_tasks
 
         go_home_time = max(
             self.must_go_home_time * self.map.distance_from(self.map.robot_position, self.map.nest_position) / 1000.0,
@@ -1560,19 +1548,6 @@ class TaskScheduler:
             theta_to_center_deg += 360.0
         theta_to_center_rad = math.radians(theta_to_center_deg)
 
-        # Special-case: if this is an FX pickup zone, perform put_down in current
-        # robot pose (no orientate) and do not create an insert task.
-        is_fx_pickup_zone = normalized_id in self.supported_fx_pickup_ids
-        if is_fx_pickup_zone:
-            try:
-                theta_to_center_deg = float(self.map.robot_position.theta)
-            except Exception:
-                theta_to_center_deg = theta_to_center_deg
-            theta_to_center_rad = math.radians(theta_to_center_deg)
-            # Force no insertion for this flow unless explicitly provided
-            if insert_distance_mm is None:
-                insert_distance_mm = 0.0
-
         # Path to target point only; explicit orientate is added in task sequence
         current_theta_rad = math.radians(float(self.map.robot_position.theta))
 
@@ -1615,23 +1590,12 @@ class TaskScheduler:
             })
 
         # Orientate to center before put_down (no extra final go_to)
-        # Skip orientate if this put_down corresponds to a very recent pickup
-        try:
-            recent_pickup = (
-                str(batch_known_id).lower() == str(self._last_pickup_id).lower()
-                and (time.time() - float(self._last_pickup_timestamp) <= float(self.skip_orientate_after_pickup_window_s))
-            )
-        except Exception:
-            recent_pickup = False
-
-        # Always skip orientate for FX pickup zones (we drop in current pose)
-        if not recent_pickup and not is_fx_pickup_zone:
-            task_sequence.append({
-                'device': 'STM',
-                'command': 'orientate',
-                'params': [theta_to_center_deg, 0.0],
-                'wait': False
-            })
+        task_sequence.append({
+            'device': 'STM',
+            'command': 'orientate',
+            'params': [theta_to_center_deg, 0.0],
+            'wait': False
+        })
 
         task_sequence.append({
             'device': esp_device,
@@ -1671,11 +1635,6 @@ class TaskScheduler:
             to_center_norm = 1.0
         to_center_ux = to_center_dx / to_center_norm
         to_center_uy = to_center_dy / to_center_norm
-
-        # If FX pickup flow, use pickup-facing heading for insertion/retreat direction
-        if is_fx_pickup_zone:
-            to_center_ux = math.cos(theta_to_center_rad)
-            to_center_uy = math.sin(theta_to_center_rad)
 
         # Retreat direction is always away from zone center.
         away_ux = -to_center_ux
@@ -1747,8 +1706,6 @@ class TaskScheduler:
                 'target_id': normalized_id,
             },
         }
-        if is_fx_pickup_zone:
-            return [putdown_task, putdown_retreat_task]
         return [putdown_task, putdown_insert_task, putdown_retreat_task]
 
     def _select_pickup_face_for_task(self, task: Task) -> Optional[str]:
@@ -2129,100 +2086,6 @@ class TaskScheduler:
             )
             if pickup_task is not None:
                 generated_tasks = [pickup_task]
-                # record recent pickup to help later explicit put_down builds skip orientate
-                try:
-                    normalized_pickup_id = str(task.target_id).lower()
-                    self._last_pickup_timestamp = time.time()
-                    self._last_pickup_id = normalized_pickup_id
-                except Exception:
-                    pass
-
-                # Auto-build an immediate put_down+retreat after FX pickups
-                # Build tasks without invoking pathfinding (direct orientate + put_down + retreat)
-                normalized_pickup_id = str(task.target_id).lower()
-                if normalized_pickup_id.startswith('f') and normalized_pickup_id in self.supported_fx_pickup_ids:
-                    zone = self.map.drop_offs.get(normalized_pickup_id)
-                    if zone is not None:
-                        target_x = float(zone['x'])
-                        target_y = float(zone['y'])
-
-                        # Device mapping
-                        esp_device = 'ESP_front' if pickup_face == 'front' else 'ESP_back'
-                        retreat_stm_command = 'go_to_backwards' if esp_device == 'ESP_front' else 'go_to'
-
-                        # Compute angle to center (fallback handled below)
-                        center_x = target_x
-                        center_y = target_y
-                        theta_to_center_deg = math.degrees(math.atan2(center_y - target_y, center_x - target_x))
-                        if esp_device == 'ESP_back':
-                            theta_to_center_deg += 180.0
-                        while theta_to_center_deg > 180.0:
-                            theta_to_center_deg -= 360.0
-                        while theta_to_center_deg <= -180.0:
-                            theta_to_center_deg += 360.0
-                        theta_to_center_rad = math.radians(theta_to_center_deg)
-
-                        # Build directional unit vectors
-                        to_center_dx = center_x - target_x
-                        to_center_dy = center_y - target_y
-                        to_center_norm = math.hypot(to_center_dx, to_center_dy)
-                        if to_center_norm <= 1e-6:
-                            to_center_dx = math.cos(theta_to_center_rad)
-                            to_center_dy = math.sin(theta_to_center_rad)
-                            to_center_norm = 1.0
-                        to_center_ux = to_center_dx / to_center_norm
-                        to_center_uy = to_center_dy / to_center_norm
-
-                        away_ux = -to_center_ux
-                        away_uy = -to_center_uy
-
-                        # No insertion for this immediate put_down flow
-                        retreat_dist = self.wall_dropoff_retreat_distance if normalized_pickup_id in self.wall_dropoff_ids else self.center_dropoff_retreat_distance
-                        retreat_x = target_x + retreat_dist * away_ux
-                        retreat_y = target_y + retreat_dist * away_uy
-
-                        # Putdown task (no pathfinding waypoints)
-                        putdown_task = {
-                            'name': f'putdown_{normalized_pickup_id}_{esp_device.split("_")[1]}',
-                            'sequence': [
-                                {
-                                    'device': 'STM',
-                                    'command': 'orientate',
-                                    'params': [theta_to_center_deg, 0.0],
-                                    'wait': False,
-                                },
-                                {
-                                    'device': esp_device,
-                                    'command': 'put_down',
-                                    'params': {
-                                        'from_task_scheduler': True,
-                                        'putdown_insert_distance_mm': 0.0,
-                                        'use_putdown_angle': True,
-                                        'putdown_theta_deg': float(theta_to_center_deg),
-                                    },
-                                    'wait': True,
-                                },
-                            ],
-                            'global_goal': {'x': target_x, 'y': target_y, 'theta': theta_to_center_deg},
-                            'tracking': {'type': 'put_down', 'target_id': normalized_pickup_id},
-                        }
-
-                        putdown_retreat_task = {
-                            'name': f'putdown_retreat_{normalized_pickup_id}_{esp_device.split("_")[1]}',
-                            'sequence': [
-                                {
-                                    'device': 'STM',
-                                    'command': retreat_stm_command,
-                                    'params': [retreat_x, retreat_y, 900.0, 1.0, {'from_putdown_task': True, 'putdown_retreat': True}],
-                                    'wait': True,
-                                }
-                            ],
-                            'global_goal': {'x': retreat_x, 'y': retreat_y, 'theta': theta_to_center_deg},
-                            'tracking': {'type': 'put_down', 'target_id': normalized_pickup_id},
-                        }
-
-                        generated_tasks.append(putdown_task)
-                        generated_tasks.append(putdown_retreat_task)
 
         elif task.type == 'dropoff':
             device = self._select_putdown_device(task)
