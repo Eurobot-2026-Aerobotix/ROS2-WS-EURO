@@ -2910,6 +2910,47 @@ class MapManager:
                     self.obstacles.append(obs)
                     self.obstacle_sources[obs.id] = source
 
+                # If this is an FX batch, ensure we also add a 170x170 safety-zone
+                # centered on the reported batch center (one per FX known_id).
+                if source == 'fx':
+                    safety_id = f"fx_{batch.known_id}_safety"
+                    if safety_id not in self.obstacle_sources:
+                        try:
+                            safety_zone_size_mm = 170.0
+                            center_x_mm = float(batch.center.x) * 1000.0 if hasattr(batch, 'center') else None
+                            center_y_mm = float(batch.center.y) * 1000.0 if hasattr(batch, 'center') else None
+                        except Exception:
+                            center_x_mm = None
+                            center_y_mm = None
+
+                        # Fallback to average of member positions if batch.center missing
+                        if center_x_mm is None or center_y_mm is None:
+                            # compute average from members
+                            try:
+                                mx = sum(m.map_pos.x for m in batch.members) / len(batch.members)
+                                my = sum(m.map_pos.y for m in batch.members) / len(batch.members)
+                                center_x_mm = mx * 1000.0
+                                center_y_mm = my * 1000.0
+                            except Exception:
+                                center_x_mm = 0.0
+                                center_y_mm = 0.0
+
+                        safety_obs = Obstacle()
+                        safety_obs.id = safety_id
+                        safety_obs.type = 'safety_zone'
+                        safety_obs.color = 'wall'
+                        safety_obs.width_mm = safety_zone_size_mm
+                        safety_obs.height_mm = safety_zone_size_mm
+                        safety_obs.pose.x = center_x_mm
+                        safety_obs.pose.y = center_y_mm
+                        safety_obs.pose.theta = 0.0
+                        safety_obs.detected_at = msg.stamp
+                        self.obstacles.append(safety_obs)
+                        self.obstacle_sources[safety_obs.id] = 'beacon_safety'
+                        self.node.get_logger().info(
+                            f"🛡️ Added safety zone for {batch.known_id}: {safety_zone_size_mm:.0f}mm x {safety_zone_size_mm:.0f}mm at ({center_x_mm:.1f}, {center_y_mm:.1f})mm"
+                        )
+
                 with self.batches_lock:
                     self.batches_with_obstacles.add(batch.known_id)
 
