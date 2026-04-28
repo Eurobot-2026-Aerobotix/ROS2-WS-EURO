@@ -518,6 +518,7 @@ class StrategyManager(Node):
                                 command=command,
                                 cmd_enqueue_epoch=cmd_enqueue_epoch,
                                 allow_during_emergency=allow_during_emergency,
+                                cmd_dict=cmd,
                             ):
                                 return False
 
@@ -554,8 +555,12 @@ class StrategyManager(Node):
         command: str,
         cmd_enqueue_epoch: int,
         allow_during_emergency: bool = False,
+        cmd_dict: Optional[Dict[str, Any]] = None,
     ) -> bool:
-        """Ensure a minimum time gap between pick_up and next put_down on same ESP device."""
+        """Ensure a minimum time gap between pick_up and next put_down on same ESP device.
+        
+        For FX pickup+putdown combo tasks (marked with _skip_pickup_putdown_gap), bypass the delay.
+        """
         if device not in ('ESP_front', 'ESP_back'):
             return True
 

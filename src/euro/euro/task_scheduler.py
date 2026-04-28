@@ -1403,7 +1403,9 @@ class TaskScheduler:
             # FX flow:
             # 1) move to pickup pose aligned with center-facing orientation,
             # 2) creep_to toward wall-offset point for automatic capture,
-            # 3) trigger dedicated ESP pick_up_fx.
+            # 3) trigger dedicated ESP pick_up_fx,
+            # 4) immediately put_down at the same location (FX combo flow),
+            # 5) retreat away from pickup point.
             task_sequence.append({
                 'device': 'STM',
                 'command': stm_command,
@@ -1451,6 +1453,45 @@ class TaskScheduler:
             'params': {},
             'wait': True
         })
+        
+        # For FX pickups, add immediate putdown+retreat in the same task (no gap delay)
+        if is_fx_pickup_flow:
+            # Put down immediately after pickup at the same location
+            task_sequence.append({
+                'device': esp_device,
+                'command': 'put_down',
+                'params': {
+                    'from_fx_pickup_combo': True,
+                },
+                'wait': True
+            })
+            
+            # Retreat: opposite direction of pickup
+            # If pickup was go_to (front), retreat is go_to_backwards
+            # If pickup was go_to_backwards (back), retreat is go_to
+            retreat_command = 'go_to_backwards' if stm_command == 'go_to' else 'go_to'
+            
+            # Compute retreat point 250mm away from pickup position
+            retreat_distance_mm = 150.0
+            if pickup_face == 'front':
+                # Front pickup: move backward along the forward direction
+                retreat_dx = math.cos(theta_rad)
+                retreat_dy = math.sin(theta_rad)
+                retreat_x = float(pickup_x) - retreat_distance_mm * retreat_dx
+                retreat_y = float(pickup_y) - retreat_distance_mm * retreat_dy
+            else:
+                # Back pickup: move forward along the backward direction
+                retreat_dx = math.cos(theta_rad)
+                retreat_dy = math.sin(theta_rad)
+                retreat_x = float(pickup_x) + retreat_distance_mm * retreat_dx
+                retreat_y = float(pickup_y) + retreat_distance_mm * retreat_dy
+            
+            task_sequence.append({
+                'device': 'STM',
+                'command': retreat_command,
+                'params': [retreat_x, retreat_y, 900.0, 1.0, {'from_fx_pickup_combo': True, 'fx_retreat': True}],
+                'wait': True
+            })
         
         # Build and return task dict
         task = {
