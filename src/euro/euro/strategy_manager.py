@@ -576,6 +576,19 @@ class StrategyManager(Node):
         if normalized_command != 'put_down':
             return True
 
+        # If this put_down is part of an FX pickup+putdown combo, skip the enforced gap.
+        # Some callers (e.g. TaskScheduler FX flow) add a flag in the command params
+        # to indicate the immediate combo put_down, so we should not delay in that case.
+        try:
+            if cmd_dict and isinstance(cmd_dict, dict):
+                params = cmd_dict.get('params')
+                if isinstance(params, dict) and params.get('from_fx_pickup_combo'):
+                    self.get_logger().debug("Skipping pickup-putdown gap due to FX combo flag")
+                    return True
+        except Exception:
+            # Be conservative and fall through to normal gap enforcement on errors
+            pass
+
         last_pickup_t = self.last_pickup_enqueue_time.get(device)
         if last_pickup_t is None:
             return True

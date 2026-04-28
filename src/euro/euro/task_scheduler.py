@@ -1399,6 +1399,7 @@ class TaskScheduler:
                 'wait': False
             })
 
+        creep_target: Optional[Tuple[float, float]] = None
         if is_fx_pickup_flow:
             # FX flow:
             # 1) move to pickup pose aligned with center-facing orientation,
@@ -1454,7 +1455,7 @@ class TaskScheduler:
             'wait': True
         })
         
-        # For FX pickups, add immediate putdown+retreat in the same task (no gap delay)
+        # For FX pickups, add immediate putdown+retreat in the same task.
         if is_fx_pickup_flow:
             # Put down immediately after pickup at the same location
             task_sequence.append({
@@ -1466,25 +1467,38 @@ class TaskScheduler:
                 'wait': True
             })
             
-            # Retreat: opposite direction of pickup
+            # Retreat command type depends on pickup face.
             # If pickup was go_to (front), retreat is go_to_backwards
             # If pickup was go_to_backwards (back), retreat is go_to
             retreat_command = 'go_to_backwards' if stm_command == 'go_to' else 'go_to'
             
-            # Compute retreat point 250mm away from pickup position
+            # Compute retreat target away from wall.
+            # When creep target exists, retreat from creep point back toward pickup point.
             retreat_distance_mm = 150.0
-            if pickup_face == 'front':
-                # Front pickup: move backward along the forward direction
-                retreat_dx = math.cos(theta_rad)
-                retreat_dy = math.sin(theta_rad)
-                retreat_x = float(pickup_x) - retreat_distance_mm * retreat_dx
-                retreat_y = float(pickup_y) - retreat_distance_mm * retreat_dy
+            if creep_target is not None:
+                origin_x = float(creep_target[0])
+                origin_y = float(creep_target[1])
+                back_dx = float(pickup_x) - origin_x
+                back_dy = float(pickup_y) - origin_y
+                back_norm = math.hypot(back_dx, back_dy)
+
+                if back_norm > 1e-6:
+                    retreat_x = origin_x + retreat_distance_mm * (back_dx / back_norm)
+                    retreat_y = origin_y + retreat_distance_mm * (back_dy / back_norm)
+                else:
+                    # Degenerate fallback if pickup and creep are equal.
+                    fallback_dx = math.cos(theta_rad)
+                    fallback_dy = math.sin(theta_rad)
+                    retreat_sign = -1.0 if pickup_face == 'front' else 1.0
+                    retreat_x = float(pickup_x) + retreat_sign * retreat_distance_mm * fallback_dx
+                    retreat_y = float(pickup_y) + retreat_sign * retreat_distance_mm * fallback_dy
             else:
-                # Back pickup: move forward along the backward direction
-                retreat_dx = math.cos(theta_rad)
-                retreat_dy = math.sin(theta_rad)
-                retreat_x = float(pickup_x) + retreat_distance_mm * retreat_dx
-                retreat_y = float(pickup_y) + retreat_distance_mm * retreat_dy
+                # No creep target available: fallback to heading-based retreat.
+                fallback_dx = math.cos(theta_rad)
+                fallback_dy = math.sin(theta_rad)
+                retreat_sign = -1.0 if pickup_face == 'front' else 1.0
+                retreat_x = float(pickup_x) + retreat_sign * retreat_distance_mm * fallback_dx
+                retreat_y = float(pickup_y) + retreat_sign * retreat_distance_mm * fallback_dy
             
             task_sequence.append({
                 'device': 'STM',
