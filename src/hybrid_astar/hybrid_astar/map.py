@@ -293,6 +293,12 @@ class MapManager:
             or known_id in self.locked_baseline_all_batch_ids
         )
 
+        if was_locked:
+            self.node.get_logger().info(
+                f"ℹ️  SX '{known_id}' regressed to {state}, but baseline is already locked; keeping it locked until LOST or put_down"
+            )
+            return
+
         self.locked_baseline_batch_ids.discard(known_id)
         self.locked_baseline_all_batch_ids.discard(known_id)
         self.pending_baseline_lock_ids.discard(known_id)
@@ -1808,6 +1814,18 @@ class MapManager:
                             skipped_count += 1
                         elif is_sx:
                             # EMERGING SX: Add to retry queue (log only on first add)
+                            if (
+                                batch.known_id in self.locked_baseline_batch_ids
+                                or batch.known_id in self.locked_baseline_all_batch_ids
+                            ):
+                                if batch.known_id in self.known_ids_to_retry:
+                                    self.known_ids_to_retry.discard(batch.known_id)
+                                self.node.get_logger().info(
+                                    f"  🔒 [{batch_type}] '{batch.known_id}': EMERGING ignored because baseline is already locked"
+                                )
+                                skipped_count += 1
+                                continue
+
                             self._invalidate_sx_baseline_lock(batch.known_id, state)
                             if batch.known_id not in emerging_ids and batch.known_id not in self.known_ids_to_retry:
                                 self.node.get_logger().info(f"  ⏭️  [{batch_type}] '{batch.known_id}': EMERGING → added to retry")
@@ -1860,6 +1878,16 @@ class MapManager:
                         self.node.get_logger().info(f"  🗑️  [{batch_type}] '{batch.known_id}': {state} ({len(batch.members)} members) → LOST, removing from retry")
                     else:
                         # Still EMERGING
+                        if (
+                            batch.known_id in self.locked_baseline_batch_ids
+                            or batch.known_id in self.locked_baseline_all_batch_ids
+                        ):
+                            self.known_ids_to_retry.discard(batch.known_id)
+                            self.node.get_logger().info(
+                                f"  🔒 [{batch_type}] '{batch.known_id}': {state} ({len(batch.members)} members) → ignored because baseline is already locked"
+                            )
+                            continue
+
                         self._invalidate_sx_baseline_lock(batch.known_id, state)
                         self.node.get_logger().info(f"  ⏳ [{batch_type}] '{batch.known_id}': {state} ({len(batch.members)} members) → still EMERGING, keeping in retry")
                 
@@ -2285,6 +2313,20 @@ class MapManager:
             _parsed_state, baseline_status = self._parse_batch_state(target_batch.state)
 
             if baseline_status == 'T':
+                already_locked = (
+                    known_id in self.locked_baseline_batch_ids
+                    or known_id in self.locked_baseline_all_batch_ids
+                )
+                if already_locked:
+                    self.short_pattern_ids.discard(known_id)
+                    self.tentative_baseline_ids.discard(known_id)
+                    self.node.get_logger().info(
+                        f"[STICKY_BASELINE] ℹ️  Locked SX '{known_id}' came back as tentative (T); keeping existing lock until LOST or put_down"
+                    )
+                    if not self.short_pattern_ids and not self.tentative_baseline_ids:
+                        self._stop_short_pattern_retry_timer()
+                    return
+
                 self.locked_baseline_batch_ids.discard(known_id)
                 self.locked_baseline_all_batch_ids.discard(known_id)
                 self.tentative_baseline_ids.add(known_id)
@@ -2621,7 +2663,22 @@ class MapManager:
                     existing = self.batches_sx.get(known_id) or self.batches_fx.get(known_id)
                     old_pattern = existing.pattern if (existing and existing.pattern) else ""
 
+                already_locked = (
+                    known_id in self.locked_baseline_batch_ids
+                    or known_id in self.locked_baseline_all_batch_ids
+                )
+
                 if baseline_status == 'T':
+                    if already_locked:
+                        self.short_pattern_ids.discard(known_id)
+                        self.tentative_baseline_ids.discard(known_id)
+                        self.node.get_logger().info(
+                            f"[STICKY_BASELINE] ℹ️  Locked SX '{known_id}' stayed tentative (T); keeping existing lock until LOST or put_down"
+                        )
+                        if not self.short_pattern_ids and not self.tentative_baseline_ids:
+                            self._stop_short_pattern_retry_timer()
+                        break
+
                     with self.batches_lock:
                         self.batches_sx[known_id] = batch
                         self.batches_sx_baseline_status_type[known_id] = 'T'
