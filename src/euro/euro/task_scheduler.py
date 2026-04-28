@@ -2053,7 +2053,7 @@ class TaskScheduler:
                 {
                     'device': 'RASP_PI',
                     'command': 'wait_end_game',
-                    'params': [13],
+                    'params': [11.3],
                     'wait': True
                 }
             ],
