@@ -10,6 +10,10 @@ import threading
 import math
 from geometry_msgs.msg import Point
 
+# Global switch for task-tracking cancellation handling.
+# When False, task cancellation is ignored and no emergency recovery is triggered.
+ALLOW_CANCELING = True
+
 class Round:
     """Timer class to track game round time"""
     
@@ -319,38 +323,46 @@ def task_tracking_task(strategy, stm32, lidar=None):
             time.sleep(0.05)
             continue
 
-        strategy.get_logger().warning(
-            f"🚨 Task-tracking cancellation detected during {strategy.last_task_command} - triggering emergency stop"
-        )
-        strategy.remove_esp_waiting = True
-        stm32.stop()
-        state.last_stm_command = "emergency"
-        state.IDLE = False
-        state.IDLE_FOR_SYSTEMS = True
-        state.replanning = True
+        if ALLOW_CANCELING:
+            strategy.get_logger().warning(
+                f"🚨 Task-tracking cancellation detected during {strategy.last_task_command} - triggering emergency stop"
+            )
+            strategy.remove_esp_waiting = True
+            stm32.soft_stop()
+            state.last_stm_command = "emergency"
+            state.IDLE = False
+            state.IDLE_FOR_SYSTEMS = True
+            state.replanning = True
 
-        # Emergency mode is steal-only: drop static queued motion/actuator work.
-        strategy.queues['STM'].clear()
-        strategy.queues['ESP_front'].clear()
-        strategy.queues['ESP_back'].clear()
-        state.ESP_DISPATCH_EPOCH = int(getattr(state, 'ESP_DISPATCH_EPOCH', 0)) + 1
-        state.ESP_FRONT_IDLE = True
-        state.ESP_BACK_IDLE = True
-        strategy.get_logger().warning(
-            f"🧹 Cleared STM/ESP queues for task-tracking emergency recovery (epoch={state.ESP_DISPATCH_EPOCH})"
-        )
+            # Emergency mode is steal-only: drop static queued motion/actuator work.
+            strategy.queues['STM'].clear()
+            strategy.queues['ESP_front'].clear()
+            strategy.queues['ESP_back'].clear()
+            state.ESP_DISPATCH_EPOCH = int(getattr(state, 'ESP_DISPATCH_EPOCH', 0)) + 1
+            state.ESP_FRONT_IDLE = True
+            state.ESP_BACK_IDLE = True
+            strategy.get_logger().warning(
+                f"🧹 Cleared STM/ESP queues for task-tracking emergency recovery (epoch={state.ESP_DISPATCH_EPOCH})"
+            )
 
-        # Motion command is canceled: clear stale motion targets so lidar does not
-        # keep EMERGENCY_STOP latched against an obsolete path.
-        if lidar is not None:
+            # Motion command is canceled: clear stale motion targets so lidar does not
+            # keep EMERGENCY_STOP latched against an obsolete path.
+            if lidar is not None:
+                try:
+                    lidar.clear_goto_target()
+                except Exception as e:
+                    strategy.get_logger().warning(f"⚠️ Failed to clear lidar go-to target: {e}")
             try:
-                lidar.clear_goto_target()
+                strategy.pathfinder.clear_goal()
             except Exception as e:
-                strategy.get_logger().warning(f"⚠️ Failed to clear lidar go-to target: {e}")
-        try:
-            strategy.pathfinder.clear_goal()
-        except Exception as e:
-            strategy.get_logger().warning(f"⚠️ Failed to clear pathfinder goal: {e}")
+                strategy.get_logger().warning(f"⚠️ Failed to clear pathfinder goal: {e}")
+        else:
+            strategy.get_logger().info(
+                "ℹ️ Task-tracking cancellation ignored because ALLOW_CANCELING=False"
+            )
+            scheduler.tracked_task_invalid = False
+            time.sleep(0.05)
+            continue
 
         # Arm dynamic steal flow immediately (do not wait for this thread's
         # post-stop IDLE wait to complete). The path-planning thread will
