@@ -23,6 +23,18 @@ class _RobotState:
         self.STEAL_LOOP_RUNNING = False
         self.STEAL_REPEAT_COUNT = 30
         self.ESP_DISPATCH_EPOCH = 0
+        self.ESP_FRONT_PREPARED = False
+        self.ESP_BACK_PREPARED = False
+        self.ESP_FRONT_LAST_N20 = None
+        self.ESP_BACK_LAST_N20 = None
+        self.ESP_FRONT_LAST_KABECH = None
+        self.ESP_BACK_LAST_KABECH = None
+        self.ESP_FRONT_LAST_DAWER = None
+        self.ESP_BACK_LAST_DAWER = None
+        self.ESP_FRONT_UNPREPARE_N20 = None
+        self.ESP_BACK_UNPREPARE_N20 = None
+        self.ESP_FRONT_UNPREPARE_DAWER = None
+        self.ESP_BACK_UNPREPARE_DAWER = None
         self.TIME_ENDED = False
 
 # Singleton instance of the robot state

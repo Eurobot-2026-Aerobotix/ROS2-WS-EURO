@@ -287,7 +287,7 @@ def task_tracking_task(strategy, stm32, lidar=None):
 
         # Distance guard: do not cancel tracked task when robot is still far
         # from the current global goal (threshold in millimeters).
-        max_cancel_distance_mm = 300.0
+        max_cancel_distance_mm = 100.0
         latest_pose = getattr(strategy, 'latest_robot_pose', None)
         goal_x = getattr(strategy, 'global_pos_x', None)
         goal_y = getattr(strategy, 'global_pos_y', None)
@@ -341,6 +341,7 @@ def task_tracking_task(strategy, stm32, lidar=None):
             state.ESP_DISPATCH_EPOCH = int(getattr(state, 'ESP_DISPATCH_EPOCH', 0)) + 1
             state.ESP_FRONT_IDLE = True
             state.ESP_BACK_IDLE = True
+            _enqueue_unprepare_for_prepared_esps(strategy, reason='task_cancel')
             strategy.get_logger().warning(
                 f"🧹 Cleared STM/ESP queues for task-tracking emergency recovery (epoch={state.ESP_DISPATCH_EPOCH})"
             )
@@ -799,6 +800,7 @@ def stm32_task(strategy, stm32,lidar):
                     state.ESP_DISPATCH_EPOCH = int(getattr(state, 'ESP_DISPATCH_EPOCH', 0)) + 1
                     state.ESP_FRONT_IDLE = True
                     state.ESP_BACK_IDLE = True
+                    _enqueue_unprepare_for_prepared_esps(strategy, reason='emergency_stop')
                     strategy.get_logger().warning(
                         f"🧹 Cleared STM/ESP queues for steal-only emergency recovery (epoch={state.ESP_DISPATCH_EPOCH})"
                     )
@@ -1045,7 +1047,7 @@ def talaa(strategy, front_controller=None,front=True):
         state.color_pt = convert_color_pattern(color_pattern, robot_color)
         color_to_N20=int(str(state.color_pt).replace('0', '3').replace('1', '4'))
         print(f"Converted color pattern: {state.color_pt}, N20 command: {color_to_N20}")
-        front_controller.n20(color_to_N20)
+        _send_esp_n20(front_controller, front, color_to_N20)
         return state.color_pt
     else:
         strategy.get_logger().warning("⚠️ Failed to get color pattern")
@@ -1115,6 +1117,120 @@ def _is_stale_esp_command(cmd) -> bool:
     return cmd_epoch != current_epoch
 
 
+def _set_esp_last_sent(front: bool, n20=None, kabech=None, dawer=None) -> None:
+    if n20 is not None:
+        if front:
+            state.ESP_FRONT_LAST_N20 = int(n20)
+        else:
+            state.ESP_BACK_LAST_N20 = int(n20)
+    if kabech is not None:
+        if front:
+            state.ESP_FRONT_LAST_KABECH = int(kabech)
+        else:
+            state.ESP_BACK_LAST_KABECH = int(kabech)
+    if dawer is not None:
+        if front:
+            state.ESP_FRONT_LAST_DAWER = int(dawer)
+        else:
+            state.ESP_BACK_LAST_DAWER = int(dawer)
+
+
+def _send_esp_n20(controller, front: bool, value: int) -> None:
+    value_i = int(value)
+    controller.n20(value_i)
+    _set_esp_last_sent(front, n20=value_i)
+
+
+def _send_esp_kabech(controller, front: bool, value: int) -> None:
+    value_i = int(value)
+    controller.kabech(value_i)
+    _set_esp_last_sent(front, kabech=value_i)
+
+
+def _send_esp_dawer(controller, front: bool, value: int) -> None:
+    value_i = int(value)
+    controller.dawer(value_i)
+    _set_esp_last_sent(front, dawer=value_i)
+
+
+def _snapshot_unprepare_restore(front: bool) -> None:
+    # Keep the original pre-prepare snapshot until unprepare runs.
+    if front and bool(getattr(state, 'ESP_FRONT_PREPARED', False)):
+        return
+    if (not front) and bool(getattr(state, 'ESP_BACK_PREPARED', False)):
+        return
+
+    if front:
+        state.ESP_FRONT_UNPREPARE_N20 = getattr(state, 'ESP_FRONT_LAST_N20', None)
+        state.ESP_FRONT_UNPREPARE_DAWER = getattr(state, 'ESP_FRONT_LAST_DAWER', None)
+    else:
+        state.ESP_BACK_UNPREPARE_N20 = getattr(state, 'ESP_BACK_LAST_N20', None)
+        state.ESP_BACK_UNPREPARE_DAWER = getattr(state, 'ESP_BACK_LAST_DAWER', None)
+
+
+def _apply_unprepare(controller, front: bool) -> None:
+    """Restore n20/dawer captured before prepare; force kabech to 0."""
+    if front:
+        restore_n20 = getattr(state, 'ESP_FRONT_UNPREPARE_N20', None)
+        restore_dawer = getattr(state, 'ESP_FRONT_UNPREPARE_DAWER', None)
+    else:
+        restore_n20 = getattr(state, 'ESP_BACK_UNPREPARE_N20', None)
+        restore_dawer = getattr(state, 'ESP_BACK_UNPREPARE_DAWER', None)
+
+    if restore_n20 is None:
+        restore_n20 = (
+            getattr(state, 'ESP_FRONT_LAST_N20', None)
+            if front
+            else getattr(state, 'ESP_BACK_LAST_N20', None)
+        )
+    if restore_n20 is None:
+        restore_n20 = 2222
+
+    if restore_dawer is None:
+        restore_dawer = (
+            getattr(state, 'ESP_FRONT_LAST_DAWER', None)
+            if front
+            else getattr(state, 'ESP_BACK_LAST_DAWER', None)
+        )
+    if restore_dawer is None:
+        restore_dawer = 0
+
+    _send_esp_n20(controller, front, int(restore_n20))
+    _send_esp_dawer(controller, front, int(restore_dawer))
+    _send_esp_kabech(controller, front, 0)
+
+
+def _enqueue_unprepare_for_prepared_esps(strategy, reason: str) -> None:
+    """Queue unprepare for prepared ESP sides after emergency/cancel transitions."""
+    queued = []
+    dispatch_epoch = int(getattr(state, 'ESP_DISPATCH_EPOCH', 0))
+
+    if bool(getattr(state, 'ESP_FRONT_PREPARED', False)):
+        strategy.queues['ESP_front'].append({
+            'command': 'unprepare',
+            'params': {'reason': reason},
+            'wait': False,
+            '_dispatch_epoch': dispatch_epoch,
+        })
+        state.ESP_FRONT_IDLE = False
+        queued.append('front')
+
+    if bool(getattr(state, 'ESP_BACK_PREPARED', False)):
+        strategy.queues['ESP_back'].append({
+            'command': 'unprepare',
+            'params': {'reason': reason},
+            'wait': False,
+            '_dispatch_epoch': dispatch_epoch,
+        })
+        state.ESP_BACK_IDLE = False
+        queued.append('back')
+
+    if queued:
+        strategy.get_logger().warning(
+            f"🔄 Queued ESP unprepare for {', '.join(queued)} (reason={reason}, epoch={dispatch_epoch})"
+        )
+
+
 def pick_up(controller,pneumatic,strategy,front):
     
     strategy.get_logger().info(f"🚀 pick_up() called for {'FRONT' if front else 'BACK'}")
@@ -1131,12 +1247,12 @@ def pick_up(controller,pneumatic,strategy,front):
     if _should_abort_esp_action(strategy, front, "pick_up()"):
         return
 
-    controller.kabech(1)
+    _send_esp_kabech(controller, front, 1)
     time.sleep(0.8)
     if _should_abort_esp_action(strategy, front, "pick_up()"):
         return
 
-    controller.n20(1111)
+    _send_esp_n20(controller, front, 1111)
     stana(controller)
     if _should_abort_esp_action(strategy, front, "pick_up()"):
         return
@@ -1155,18 +1271,20 @@ def pick_up(controller,pneumatic,strategy,front):
     if front:
         state.color_pt_front = color_pattern
         state.ESP_FRONT_IDLE=True
+        state.ESP_FRONT_PREPARED = False
         _update_robot_holder_status(strategy, front=True, empty=False)
         strategy.get_logger().info(f"📦 Front picked up - NEW Color pattern: {state.color_pt_front}")
     else:
         state.color_pt_back = color_pattern
         state.ESP_BACK_IDLE=True
+        state.ESP_BACK_PREPARED = False
         _update_robot_holder_status(strategy, front=False, empty=False)
         strategy.get_logger().info(f"📦 Back picked up - NEW Color pattern: {state.color_pt_back}")
     stana(controller)
     if _should_abort_esp_action(strategy, front, "pick_up()"):
         return
 
-    controller.kabech(0)
+    _send_esp_kabech(controller, front, 0)
 
 
 
@@ -1260,17 +1378,19 @@ def put_down(controller,pneumatic,strategy,front,params=None):
     if front:
         strategy.get_logger().info("Setting ESP_FRONT_IDLE to True in put_down")
         state.ESP_FRONT_IDLE=True
+        state.ESP_FRONT_PREPARED = False
         _update_robot_holder_status(strategy, front=True, empty=True)
     else: 
         strategy.get_logger().info("Setting ESP_BACK_IDLE to True in put_down")
         state.ESP_BACK_IDLE=True
+        state.ESP_BACK_PREPARED = False
     if not front:
         _update_robot_holder_status(strategy, front=False, empty=True)
     
     if state.SHUTDOWN_REQUESTED:
         return
     
-    controller.n20(0)
+    _send_esp_n20(controller, front, 0)
     
     stana(controller)
     if state.SHUTDOWN_REQUESTED:
@@ -1308,19 +1428,26 @@ def front_task(strategy, front_controller=None,pneumatic_controller=None):
             params = cmd.get('params', {})
             wait = cmd.get('wait', False)
             if command == 'prepare':
+                _snapshot_unprepare_restore(front=True)
                 action = params.get('action')
                 if action == 'pick_up':
-                    front_controller.n20(2222)
-                    front_controller.dawer(0)
+                    _send_esp_n20(front_controller, True, 2222)
+                    _send_esp_dawer(front_controller, True, 0)
                     strategy.get_logger().info(f"🔧 Front prepare for pick_up: n20(2222)")
                 elif action == 'put_down':
                     cmd_to_n20=int(str(state.color_pt_front).replace('0','2').replace('1','4'))
-                    front_controller.dawer(1)
-                    front_controller.n20(cmd_to_n20)
+                    _send_esp_dawer(front_controller, True, 1)
+                    _send_esp_n20(front_controller, True, cmd_to_n20)
                 else:
                     front_controller.n20(2222)
-                    front_controller.kabech(2)
                     front_controller.dawer(0)
+                    front_controller.kabech(2)
+                state.ESP_FRONT_PREPARED = True
+
+            elif command == 'unprepare':
+                _apply_unprepare(front_controller, True)
+                state.ESP_FRONT_PREPARED = False
+                strategy.get_logger().info("↩️ Front unprepare executed")
 
             elif command =='put_down':
                 put_down(front_controller,pneumatic_controller,strategy,True,params)
@@ -1363,19 +1490,26 @@ def back_task(strategy, back_controller=None,pneumatic_controller=None):
             wait = cmd.get('wait', False)
             
             if command == 'prepare':
+                _snapshot_unprepare_restore(front=False)
                 action = params.get('action')
                 if action == 'pick_up':
-                    back_controller.n20(2222)
-                    back_controller.dawer(0)
+                    _send_esp_n20(back_controller, False, 2222)
+                    _send_esp_dawer(back_controller, False, 0)
                     strategy.get_logger().info(f"🔧 Back prepare for pick_up: n20(2222)")
                 elif action == 'put_down':
                     cmd_to_n20=int(str(state.color_pt_back).replace('0','2').replace('1','4'))
-                    back_controller.dawer(1)
-                    back_controller.n20(cmd_to_n20)
+                    _send_esp_dawer(back_controller, False, 1)
+                    _send_esp_n20(back_controller, False, cmd_to_n20)
                 else:
                     back_controller.n20(2222)
-                    back_controller.kabech(2)
                     back_controller.dawer(0)
+                    back_controller.kabech(2)
+                state.ESP_BACK_PREPARED = True
+
+            elif command == 'unprepare':
+                _apply_unprepare(back_controller, False)
+                state.ESP_BACK_PREPARED = False
+                strategy.get_logger().info("↩️ Back unprepare executed")
 
             elif command =='put_down':
                 put_down(back_controller,pneumatic_controller,strategy,False,params)
@@ -1489,14 +1623,14 @@ def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=No
                     pneumatic_controller.front(16)
                     pneumatic_controller.back(16)
                 if front_controller:
-                    front_controller.kabech(0)
-                    front_controller.dawer(0)
-                    front_controller.n20(0)
+                    _send_esp_kabech(front_controller, True, 0)
+                    _send_esp_dawer(front_controller, True, 0)
+                    _send_esp_n20(front_controller, True, 0)
                     stana(front_controller)
                 if back_controller:
-                    back_controller.kabech(0)
-                    back_controller.dawer(0)
-                    back_controller.n20(0)
+                    _send_esp_kabech(back_controller, False, 0)
+                    _send_esp_dawer(back_controller, False, 0)
+                    _send_esp_n20(back_controller, False, 0)
                     stana(back_controller)
                 # Allow time for messages to be sent
                 time.sleep(0.1)
