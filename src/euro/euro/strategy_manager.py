@@ -362,6 +362,7 @@ class StrategyManager(Node):
                     type=tracked_type,
                     options={},
                     score=0.0,
+                    device=str(self.last_task_device or ''),
                 )
                 self.task_scheduler.track_task(tracked_task)
                 self.get_logger().info(
@@ -776,6 +777,7 @@ class StrategyManager(Node):
                             options={},
                             score=0.0,
                             task_name=str(generated_task.get('name', '') or ''),
+                            device=str(last_device or ''),
                         )
                         self.task_scheduler.track_task(tracked_task)
                         self.get_logger().info(

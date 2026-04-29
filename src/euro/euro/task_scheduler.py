@@ -20,6 +20,7 @@ class Task:
     end_action: str = ""          # '', 'pick_up', or 'put_down'
     batch_known_id: str = ""      # e.g. 's3', 'f5'
     task_name: str = ""           # source task name from strategy list
+    device: str = ""              # 'ESP_front' or 'ESP_back' when known
 
 class TaskScheduler:
     """Simple task scheduler that generates tasks based on the current map state."""
@@ -202,6 +203,18 @@ class TaskScheduler:
         return ""
 
     @staticmethod
+    def _infer_device_from_sequence(sequence: List[Dict[str, Any]]) -> str:
+        """Infer terminal ESP device from task sequence."""
+        if not sequence:
+            return ""
+        for cmd in reversed(sequence):
+            device = str(cmd.get('device', '')).strip().lower()
+            command = str(cmd.get('command', '')).strip().lower()
+            if device in ('esp_front', 'esp_back') and command in ('pick_up', 'pick_up_fx', 'put_down'):
+                return 'ESP_front' if device == 'esp_front' else 'ESP_back'
+        return ""
+
+    @staticmethod
     def _infer_batch_known_id_from_name(task_name: str) -> str:
         """
         Best-effort extraction of batch known_id from task name.
@@ -233,6 +246,7 @@ class TaskScheduler:
         task_name = str(runtime_task.get('name', '') or '')
         sequence = runtime_task.get('sequence', []) or []
         end_action = self._infer_end_action_from_sequence(sequence)
+        device = self._infer_device_from_sequence(sequence)
         batch_known_id = self._infer_batch_known_id_from_name(task_name)
 
         inferred_type = 'runtime'
@@ -251,6 +265,7 @@ class TaskScheduler:
             end_action=end_action,
             batch_known_id=batch_known_id,
             task_name=task_name,
+            device=device,
         )
 
     def track_runtime_task_dict(self, runtime_task: Dict[str, Any]) -> Task:
@@ -1818,6 +1833,14 @@ class TaskScheduler:
 
     def _select_putdown_device(self, task: Task) -> Optional[str]:
         """Choose putdown device based on holder occupancy (front/back)."""
+        tracked = self.tracked_task
+        if tracked is not None and str(getattr(tracked, 'end_action', '')).strip().lower() == 'pick_up':
+            tracked_device = str(getattr(tracked, 'device', '')).strip().lower()
+            if tracked_device == 'esp_front':
+                return 'front'
+            if tracked_device == 'esp_back':
+                return 'back'
+
         front_loaded = not bool(getattr(self.map, 'robot_front_empty', True))
         back_loaded = not bool(getattr(self.map, 'robot_back_empty', True))
 
@@ -1827,6 +1850,10 @@ class TaskScheduler:
             return 'back'
         if not front_loaded and not back_loaded:
             return None
+
+        preferred_drop = str(task.options.get('drop', '')).strip().lower()
+        if preferred_drop in ('front', 'back') and front_loaded and back_loaded:
+            return preferred_drop
 
         # When both holders are loaded, recompute from live heading so we don't
         # keep a stale queued preference after robot orientation changes.
