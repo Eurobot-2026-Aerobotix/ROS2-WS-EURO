@@ -79,26 +79,28 @@ class HybridAStarNode(Node):
         # Load all parameters
         self.load_parameters()
         
-        # Create ReentrantCallbackGroup to allow parallel service/client execution
-        # This fixes multithreading deadlock when update_map calls get_stable_batches
+        # Separate callback groups to allow true parallel execution between
+        # path planning and map-management flows on MultiThreadedExecutor.
         from rclpy.callback_groups import ReentrantCallbackGroup
-        self.reentrant_group = ReentrantCallbackGroup()
+        self.path_callback_group = ReentrantCallbackGroup()
+        self.map_callback_group = ReentrantCallbackGroup()
+        self.misc_callback_group = ReentrantCallbackGroup()
 
         # TF for current robot pose lookup (map -> base_link/base_footprint)
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.last_robot_pose_mm: Optional[Tuple[float, float, float]] = None
         
-        # Create clients for GetStableBatches service with reentrant callback group
+        # Create clients for GetStableBatches service on map callback group
         # 1. Web handler service (for pathfinding simulation batches)
         self.get_stable_batches_client_web = self.create_client(
             GetStableBatches, '/aruco_mapper/get_stable_batches_web',
-            callback_group=self.reentrant_group)
+            callback_group=self.map_callback_group)
         
         # 2. ArUco mapper service (for real robot batches)
         self.get_stable_batches_client = self.create_client(
             GetStableBatches, '/aruco_mapper/get_stable_batches',
-            callback_group=self.reentrant_group)
+            callback_group=self.map_callback_group)
         
         # Initialize map manager (handles obstacles, batches, and topics)
         # Pass both clients - web client has priority
@@ -108,37 +110,37 @@ class HybridAStarNode(Node):
             self.get_stable_batches_client_web
         )
         
-        # Create services with reentrant callback group for parallel execution
+        # Path service isolated in its own callback group.
         self.path_service = self.create_service(
             ComputePath, '/compute_path', self.handle_compute_path,
-            callback_group=self.reentrant_group)
+            callback_group=self.path_callback_group)
 
         self.put_down_service = self.create_service(
             PutDown, '/put_down', self.handle_put_down,
-            callback_group=self.reentrant_group)
+            callback_group=self.misc_callback_group)
         
         self.batch_color_service = self.create_service(
             GetBatchColorPattern, '/get_batch_color_pattern', self.handle_get_batch_color_pattern,
-            callback_group=self.reentrant_group)
+            callback_group=self.misc_callback_group)
         
         self.delete_batch_service = self.create_service(
             DeleteBatch, '/delete_batch', self.handle_delete_batch,
-            callback_group=self.reentrant_group)
+            callback_group=self.misc_callback_group)
 
         # Active batches query service (used by DecisionMaker via web_handler)
         self.get_active_batches_service = self.create_service(
             GetActiveBatches, '/pathfinder/get_active_batches', self.handle_get_active_batches,
-            callback_group=self.reentrant_group)
+            callback_group=self.misc_callback_group)
 
         # Backward-compatible alias
         self.get_active_batches_service_alias = self.create_service(
             GetActiveBatches, '/get_active_batches', self.handle_get_active_batches,
-            callback_group=self.reentrant_group)
+            callback_group=self.misc_callback_group)
 
         # Set team color used for timed 85s PAMI wall symmetry behavior.
         self.set_team_color_service = self.create_service(
             SetTeamColor, '/set_team_color', self.map_manager.handle_set_team_color,
-            callback_group=self.reentrant_group)
+            callback_group=self.map_callback_group)
 
         # Topic publisher for active batches (same payload fields as GetActiveBatches response)
         self.active_batches_pub = self.create_publisher(ActiveBatches, '/active_obstacles', 10)
@@ -147,22 +149,22 @@ class HybridAStarNode(Node):
         # Delegate update_map service to MapManager
         self.update_map_service = self.create_service(
             Trigger, '/update_map', self.map_manager.handle_update_map,
-            callback_group=self.reentrant_group)
+            callback_group=self.map_callback_group)
 
         # Start game flow: begin periodic update_map only after baseline lock completes
         self.start_game_service = self.create_service(
             Trigger, '/start_game', self.map_manager.handle_start_game,
-            callback_group=self.reentrant_group)
+            callback_group=self.map_callback_group)
         
         # Delegate clear_map service to MapManager
         self.clear_map_service = self.create_service(
             Trigger, '/clear_map', self.map_manager.handle_clear_map,
-            callback_group=self.reentrant_group)
+            callback_group=self.map_callback_group)
         
         # Delegate reset_map service to MapManager (same as update_map but with 'rrr' types_filter)
         self.reset_map_service = self.create_service(
             Trigger, '/reset_map', self.map_manager.handle_reset_map,
-            callback_group=self.reentrant_group)
+            callback_group=self.map_callback_group)
         
         # Initialize pathfinder
         grid_width = int(self.params['map']['width_mm'] / 
