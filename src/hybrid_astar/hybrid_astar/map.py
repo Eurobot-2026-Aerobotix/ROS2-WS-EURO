@@ -1352,6 +1352,7 @@ class MapManager:
         """Add/update a timed game obstacle used to block a busy zone."""
         wall_id = 'wall_sima'
         wall_id_2 = 'wall_sima_2'
+        wall_id_3 = 'wall_3'
 
         # Requested values:
         # - center in mm
@@ -1367,14 +1368,21 @@ class MapManager:
         width2_mm = 300.0
         height2_mm = 300.0
 
+        # Third wall: block escape toward (900, 400)
+        center3_x_mm = 900.0
+        center3_y_mm = 400.0
+        width3_mm = 300.0
+        height3_mm = 300.0
+
         # For blue, apply x-axis symmetry: mirror y around horizontal center axis.
         if self.team_color == 'blue':
             center_y_mm = (2.0 * self._symmetry_axis_y_mm) - center_y_mm
             center2_y_mm = (2.0 * self._symmetry_axis_y_mm) - center2_y_mm
+            center3_y_mm = (2.0 * self._symmetry_axis_y_mm) - center3_y_mm
 
         with self.obstacles_lock:
             # Remove any previous instance with same id so we can re-add cleanly.
-            self.obstacles = [obs for obs in self.obstacles if obs.id not in (wall_id, wall_id_2)]
+            self.obstacles = [obs for obs in self.obstacles if obs.id not in (wall_id, wall_id_2, wall_id_3)]
 
             obs = Obstacle()
             obs.id = wall_id
@@ -1404,6 +1412,20 @@ class MapManager:
             self.obstacles.append(obs2)
             self.obstacle_sources[wall_id_2] = 'game_zone'
 
+            obs3 = Obstacle()
+            obs3.id = wall_id_3
+            obs3.type = 'wall'
+            obs3.color = 'wall'
+            obs3.pose.x = center3_x_mm
+            obs3.pose.y = center3_y_mm
+            obs3.pose.theta = 0.0
+            obs3.width_mm = width3_mm
+            obs3.height_mm = height3_mm
+            obs3.detected_at = self.node.get_clock().now().to_msg()
+
+            self.obstacles.append(obs3)
+            self.obstacle_sources[wall_id_3] = 'game_zone'
+
         self.node.get_logger().info(
             f"🧱 Added timed obstacle 'wall_sima' at 85s for {self.team_color} "
             f"(center=({center_x_mm:.1f}, {center_y_mm:.1f})mm, size={width_mm:.1f}x{height_mm:.1f}mm)"
@@ -1411,6 +1433,10 @@ class MapManager:
         self.node.get_logger().info(
             f"🧱 Added timed obstacle 'wall_sima_2' at 85s for {self.team_color} "
             f"(center=({center2_x_mm:.1f}, {center2_y_mm:.1f})mm, size={width2_mm:.1f}x{height2_mm:.1f}mm)"
+        )
+        self.node.get_logger().info(
+            f"🧱 Added timed obstacle 'wall_3' at 85s for {self.team_color} "
+            f"(center=({center3_x_mm:.1f}, {center3_y_mm:.1f})mm, size={width3_mm:.1f}x{height3_mm:.1f}mm)"
         )
 
     def _check_game_time_events(self) -> None:
@@ -1423,7 +1449,7 @@ class MapManager:
         elapsed_s = (int(self.node.get_clock().now().nanoseconds) - int(self.game_start_time_ns)) / 1e9
 
         # One-shot event at 85s (hook placeholder for future actions).
-        if (not self.game_85s_triggered) and elapsed_s >= 85.0:
+        if (not self.game_85s_triggered) and elapsed_s >= 5.0:
             self.game_85s_triggered = True
             self._add_wall_sima_obstacle()
             self.node.get_logger().info("⏱️ Game reached 85s (wall_sima added)")
