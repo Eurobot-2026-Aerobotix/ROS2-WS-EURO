@@ -1291,7 +1291,7 @@ class HybridAStarNode(Node):
                     smoothed, 
                     grid_resolution=grid_resolution,
                     max_added_distance_mm=1000.0,  # Allow up to 1000mm extra distance for straighter paths
-                    enable_direct_simplification=False,
+                    enable_direct_simplification=True,
                 )
 
                 # Post-optimization cleanup: remove waypoints that can be skipped
