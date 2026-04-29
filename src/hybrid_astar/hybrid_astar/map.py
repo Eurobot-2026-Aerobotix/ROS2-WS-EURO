@@ -1978,11 +1978,19 @@ class MapManager:
                     # Preserved manual put_down batches must not be considered disappeared.
                     disappeared_ids -= retained_manual_putdown_ids
                     
-                    # 2. Remove obstacles ONLY for batches that disappeared OR are FX (FX always refreshed)
-                    # Keep existing obstacles for SX batches that are still present
-                    fx_batches_ids = {batch.known_id for batch in filtered_batches if batch.known_id.startswith('f')}
-                    fx_batches_ids -= retained_manual_putdown_ids
-                    batches_to_remove = disappeared_ids | fx_batches_ids  # Disappeared + all FX
+                    # 2. Remove obstacles ONLY for batches that disappeared
+                    # For FX batches: only remove if NOT in received list (i.e., LOST)
+                    # FX batches with 4 members stay and are updated in place (not deleted every cycle)
+                    fx_batches_ids_full = {batch.known_id for batch in filtered_batches 
+                                          if batch.known_id.startswith('f') and len(getattr(batch, 'members', [])) == 4}
+                    fx_batches_ids_full -= retained_manual_putdown_ids
+                    
+                    # Only remove FX batches that are incomplete (not 4 members) AND are being refreshed
+                    fx_batches_ids_incomplete = {batch.known_id for batch in filtered_batches 
+                                                 if batch.known_id.startswith('f') and len(getattr(batch, 'members', [])) != 4}
+                    fx_batches_ids_incomplete -= retained_manual_putdown_ids
+                    
+                    batches_to_remove = disappeared_ids | fx_batches_ids_incomplete  # Disappeared + incomplete FX
                     
                     if batches_to_remove:
                         with self.obstacles_lock:
@@ -2011,28 +2019,32 @@ class MapManager:
                                     self.pending_baseline_lock_ids.discard(bid)
                                     self.short_pattern_ids.discard(bid)
                                     self.tentative_baseline_ids.discard(bid)
-                                for bid in fx_batches_ids:
-                                    # Remove FX batches for refresh (they'll be re-added)
+                                for bid in fx_batches_ids_incomplete:
+                                    # Remove INCOMPLETE FX batches for refresh (they'll be re-added)
                                     self.batches_fx.pop(bid, None)
                                     self.batches_fx_status_type.pop(bid, None)
                                     self.batches_with_obstacles.discard(bid)  # Remove from tracking
                             
                             # Log removal
-                            if disappeared_ids and fx_batches_ids:
+                            if disappeared_ids and fx_batches_ids_incomplete:
                                 self.node.get_logger().info(
-                                    f"🗑️  Removed {removed} obstacles: {len(disappeared_ids)} disappeared, {len(fx_batches_ids)} FX to refresh"
+                                    f"🗑️  Removed {removed} obstacles: {len(disappeared_ids)} disappeared, {len(fx_batches_ids_incomplete)} incomplete FX to refresh"
                                 )
                             elif disappeared_ids:
                                 self.node.get_logger().info(
                                     f"🗑️  Removed {removed} obstacles from {len(disappeared_ids)} disappeared batches: {disappeared_ids}"
                                 )
-                            elif fx_batches_ids:
+                            elif fx_batches_ids_incomplete:
                                 self.node.get_logger().debug(
-                                    f"🔄 Refreshing {len(fx_batches_ids)} FX batches (removed {removed} old obstacles)"
+                                    f"🔄 Refreshing {len(fx_batches_ids_incomplete)} incomplete FX batches (removed {removed} old obstacles)"
+                                )
+                            if fx_batches_ids_full:
+                                self.node.get_logger().debug(
+                                    f"✅ Keeping {len(fx_batches_ids_full)} complete FX batches (4 members) without deletion: {fx_batches_ids_full}"
                                 )
                     else:
                         # No batches to remove, initialize empty set for consistency
-                        fx_batches_ids = set()
+                        fx_batches_ids_incomplete = set()
                     
                     # 3. Filter out manually deleted batches (don't re-add them)
                     if self.deleted_batch_ids:
@@ -2056,14 +2068,32 @@ class MapManager:
                                 f"{retained_manual_putdown_ids}"
                             )
                     
-                    # 4. Filter out already-tracked SX/GX batches (keep existing obstacles, only add new ones)
-                    # FX batches are always processed (refreshed every update)
-                    new_batches = [b for b in filtered_batches 
-                                   if b.known_id not in self.active_batch_ids or b.known_id.startswith('f')]
+                    # 4. Filter batches based on type and member count:
+                    # - SX/GX: keep existing, only add new ones
+                    # - FX with 4 members: keep existing obstacles, don't refresh (only update if lost)
+                    # - FX with <4 members: always refresh (refresh every update)
+                    new_batches = []
+                    fx_full_kept = []
+                    
+                    for b in filtered_batches:
+                        # FX batch with 4 members - keep if already tracked, don't delete/recreate
+                        if b.known_id.startswith('f') and len(getattr(b, 'members', [])) == 4:
+                            if b.known_id in self.active_batch_ids:
+                                fx_full_kept.append(b.known_id)
+                                # Skip adding to new_batches - keep existing obstacles
+                                continue
+                        # SX/GX already tracked - keep existing
+                        if b.known_id not in self.active_batch_ids or b.known_id.startswith('f'):
+                            new_batches.append(b)
+                    
+                    if fx_full_kept:
+                        self.node.get_logger().debug(
+                            f"✅ Keeping {len(fx_full_kept)} complete FX batches without recreation: {fx_full_kept}"
+                        )
                     if len(new_batches) < len(filtered_batches):
                         kept_count = len(filtered_batches) - len(new_batches)
                         self.node.get_logger().debug(
-                            f"♻️  Keeping {kept_count} existing SX/GX batches, adding {len(new_batches)} new/FX ones"
+                            f"♻️  Keeping {kept_count} existing batches, processing {len(new_batches)} new/incomplete FX ones"
                         )
                     filtered_batches = new_batches
             else:
