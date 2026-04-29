@@ -328,7 +328,7 @@ def task_tracking_task(strategy, stm32, lidar=None):
                 f"🚨 Task-tracking cancellation detected during {strategy.last_task_command} - triggering emergency stop"
             )
             strategy.remove_esp_waiting = True
-            stm32.soft_stop()
+            stm32.stop()
             state.last_stm_command = "emergency"
             state.IDLE = False
             state.IDLE_FOR_SYSTEMS = True
