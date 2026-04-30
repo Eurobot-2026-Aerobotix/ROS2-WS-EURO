@@ -1015,7 +1015,12 @@ def main(args=None):
     
     stm32 = STM32Controller('rpi_stm32')
     executor.add_node(stm32)
-    
+
+    # Start executor spinning in a background thread so service calls made during
+    # startup (set_team_color, clear_map, update_map) can get responses immediately.
+    executor_thread = threading.Thread(target=executor.spin, daemon=True)
+    executor_thread.start()
+
     # Wait for STM32 service to become available
     strategy.get_logger().info("Waiting for STM32 service to become available...")
     if stm32.navi_client.wait_for_service(timeout_sec=20.0):
@@ -1165,10 +1170,6 @@ def main(args=None):
             strategy.queues['PAMI'].append({'command': 'publish_strategies'})
             strategy.get_logger().info("📤 Queued PAMI strategy publish at startup")
         
-        # Spin executor briefly to initialize publishers before sending reset
-        for _ in range(5):
-            executor.spin_once(timeout_sec=0.01)
-
         # Ensure startup reset/clear completes before the first update_map.
         # Without this wait, update_map can run first and then get wiped by the
         # delayed reset thread, which breaks the expected first-update flow.
@@ -1314,8 +1315,7 @@ def main(args=None):
     try:
         shutdown_requested = False
         while rclpy.ok() and not shutdown_requested:
-            # Spin once to process callbacks
-            executor.spin_once(timeout_sec=0.1)
+            time.sleep(0.1)
             # Check if 'q' was pressed
             if select.select([sys.stdin], [], [], 0)[0]:
                 key = sys.stdin.read(1)

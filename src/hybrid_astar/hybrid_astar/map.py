@@ -1449,7 +1449,7 @@ class MapManager:
         elapsed_s = (int(self.node.get_clock().now().nanoseconds) - int(self.game_start_time_ns)) / 1e9
 
         # One-shot event at 85s (hook placeholder for future actions).
-        if (not self.game_85s_triggered) and elapsed_s >= 5.0:
+        if (not self.game_85s_triggered) and elapsed_s >= 85.0:
             self.game_85s_triggered = True
             self._add_wall_sima_obstacle()
             self.node.get_logger().info("⏱️ Game reached 85s (wall_sima added)")
