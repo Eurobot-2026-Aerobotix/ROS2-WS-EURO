@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+import threading
+
 import rclpy
 from rclpy.node import Node
 
@@ -199,6 +201,12 @@ class PathfinderClient(Node):
         self.enemy_x = msg.pose.position.x
         self.enemy_y = msg.pose.position.y
 
+    def _wait_for_future(self, future, timeout_sec: float) -> bool:
+        """Wait for an async service future without blocking the executor's wait set."""
+        event = threading.Event()
+        future.add_done_callback(lambda _: event.set())
+        return event.wait(timeout=timeout_sec)
+
     # =========================================================
     # PATH PLANNING
     # =========================================================
@@ -349,7 +357,7 @@ class PathfinderClient(Node):
         future = self.path_client.call_async(request)
         
         # Wait for future to complete with proper spinning
-        rclpy.spin_until_future_complete(self, future, timeout_sec=30.0)
+        self._wait_for_future(future, timeout_sec=30.0)
         
         if not future.done():
             self.get_logger().error('❌ Path service call timed out after 30s')
@@ -415,7 +423,7 @@ class PathfinderClient(Node):
         future = self.update_map_client.call_async(request)
         
         # Wait for future to complete with proper spinning
-        rclpy.spin_until_future_complete(self, future, timeout_sec=10.0)
+        self._wait_for_future(future, timeout_sec=10.0)
         
         if not future.done():
             self.get_logger().error('❌ Map update service call timed out after 10s')
@@ -456,7 +464,7 @@ class PathfinderClient(Node):
         future = self.reset_stability_client.call_async(request)
         
         # Wait for future to complete with proper spinning
-        rclpy.spin_until_future_complete(self, future, timeout_sec=10.0)
+        self._wait_for_future(future, timeout_sec=10.0)
         
         if not future.done():
             self.get_logger().error('❌ Reset stability service call timed out after 10s')
@@ -497,7 +505,7 @@ class PathfinderClient(Node):
         future = self.clear_map_client.call_async(request)
         
         # Wait for future to complete with proper spinning
-        rclpy.spin_until_future_complete(self, future, timeout_sec=10.0)
+        self._wait_for_future(future, timeout_sec=10.0)
         
         if not future.done():
             self.get_logger().error('❌ Clear map service call timed out after 10s')
@@ -538,7 +546,7 @@ class PathfinderClient(Node):
         future = self.start_game_client.call_async(request)
         
         # Wait for future to complete with proper spinning
-        rclpy.spin_until_future_complete(self, future, timeout_sec=10.0)
+        self._wait_for_future(future, timeout_sec=10.0)
         
         if not future.done():
             self.get_logger().error('❌ Start game service call timed out after 10s')
@@ -581,7 +589,7 @@ class PathfinderClient(Node):
         future = self.set_team_color_client.call_async(request)
         
         # Wait for future to complete with proper spinning
-        rclpy.spin_until_future_complete(self, future, timeout_sec=5.0)
+        self._wait_for_future(future, timeout_sec=5.0)
         
         if not future.done():
             self.get_logger().error('❌ Set team color service call timed out after 5s')
@@ -621,7 +629,7 @@ class PathfinderClient(Node):
         future = self.batch_color_client.call_async(request)
         
         # Wait for future to complete with proper spinning
-        rclpy.spin_until_future_complete(self, future, timeout_sec=10.0)
+        self._wait_for_future(future, timeout_sec=10.0)
         
         if not future.done():
             self.get_logger().error('❌ Batch color service call timed out after 10s')
@@ -659,7 +667,7 @@ class PathfinderClient(Node):
         future = self.delete_batch_client.call_async(request)
         
         # Wait for future to complete with proper spinning
-        rclpy.spin_until_future_complete(self, future, timeout_sec=5.0)
+        self._wait_for_future(future, timeout_sec=5.0)
         
         if not future.done():
             self.get_logger().error(f'❌ Delete batch service call timed out after 5s')
@@ -711,7 +719,7 @@ class PathfinderClient(Node):
 
         # Keep this call responsive: short timeout, then fallback to cache
         timeout_sec = 1.5
-        rclpy.spin_until_future_complete(self, future, timeout_sec=timeout_sec)
+        self._wait_for_future(future, timeout_sec=timeout_sec)
 
         if not future.done() or not future.result():
             now = time.time()
@@ -800,7 +808,7 @@ class PathfinderClient(Node):
         request.insert_offset_mm = float(insert_offset_mm)
 
         future = self.put_down_client.call_async(request)
-        rclpy.spin_until_future_complete(self, future, timeout_sec=5.0)
+        self._wait_for_future(future, timeout_sec=5.0)
 
         if not future.done():
             self.get_logger().error('❌ put_down service call timed out after 5s')
