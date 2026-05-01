@@ -9,6 +9,7 @@ Allows the robot to get closer to obstacles by considering its actual footprint.
 import heapq
 import numpy as np
 import math
+import time
 from typing import List, Tuple, Optional, Dict
 
 
@@ -387,6 +388,7 @@ class HybridAStarPathfinder:
         grid_resolution: float,
         max_iterations: int,
         allow_goal_collision: bool,
+        deadline: Optional[float] = None,
     ) -> Optional[List[Tuple[float, float, float]]]:
         """Core Hybrid A* search (assumes caller already handled start/goal validity policy)."""
         start_x, start_y, _ = start_pose
@@ -408,6 +410,9 @@ class HybridAStarPathfinder:
         iterations = 0
         while open_set and iterations < max_iterations:
             iterations += 1
+
+            if deadline is not None and iterations % 500 == 0 and time.time() > deadline:
+                return None
 
             _, _, current = heapq.heappop(open_set)
             current_x, current_y, current_theta = current
@@ -519,6 +524,7 @@ class HybridAStarPathfinder:
         grid_resolution: float,
         max_iterations: int,
         allow_goal_collision: bool,
+        deadline: Optional[float] = None,
     ) -> Optional[List[Tuple[float, float, float]]]:
         """Try planning through a bridge point in the top region (y >= 1500mm)."""
         candidates = self._generate_bridge_candidates(
@@ -539,12 +545,16 @@ class HybridAStarPathfinder:
         best_bridge = None
 
         for bridge_pose in candidates:
+            if deadline is not None and time.time() > deadline:
+                break
+
             path1 = self._find_path_core(
                 start_pose=start_pose,
                 goal_pose=bridge_pose,
                 grid_resolution=grid_resolution,
                 max_iterations=stage_iterations,
                 allow_goal_collision=False,
+                deadline=deadline,
             )
             if not path1:
                 continue
@@ -555,6 +565,7 @@ class HybridAStarPathfinder:
                 grid_resolution=grid_resolution,
                 max_iterations=stage_iterations,
                 allow_goal_collision=allow_goal_collision,
+                deadline=deadline,
             )
             if not path2:
                 continue
@@ -1006,24 +1017,29 @@ class HybridAStarPathfinder:
         theta_idx = int((theta + math.pi) / self.orientation_step) % self.num_orientations
         return (grid_x, grid_y, theta_idx)
     
-    def find_path(self, start_pose: Tuple[float, float, float], 
-                  goal_pose: Tuple[float, float, float], 
+    def find_path(self, start_pose: Tuple[float, float, float],
+                  goal_pose: Tuple[float, float, float],
                   grid_resolution: float,
                   max_iterations: int = 50000,
-                  allow_goal_collision: bool = False) -> Optional[List[Tuple[float, float, float]]]:
+                  allow_goal_collision: bool = False,
+                  time_limit_sec: float = 25.0) -> Optional[List[Tuple[float, float, float]]]:
         """
         Find path using Hybrid A*.
-        
+
         Args:
             start_pose: (x, y, theta) in mm and radians
             goal_pose: (x, y, theta) in mm and radians
             grid_resolution: Grid cell size in mm
             max_iterations: Max search iterations
             allow_goal_collision: If True, allows goal to be in collision (for batch pickup)
-            
+            time_limit_sec: Wall-clock budget for the entire search (default 25s to stay under
+                            the 30s service timeout in pathfinder_controller)
+
         Returns:
             List of (x, y, theta) waypoints or None
         """
+        deadline = time.time() + time_limit_sec if time_limit_sec > 0 else None
+
         # Reset per-call diagnostics
         self.last_start_in_collision = False
         self.last_used_start_fallback = False
@@ -1107,6 +1123,7 @@ class HybridAStarPathfinder:
                 grid_resolution=grid_resolution,
                 max_iterations=max(3000, int(max_iterations // 3)),
                 allow_goal_collision=False,
+                deadline=deadline,
             )
 
             if escape_prefix_path is not None and len(escape_prefix_path) > 1:
@@ -1141,6 +1158,7 @@ class HybridAStarPathfinder:
             grid_resolution=grid_resolution,
             max_iterations=max_iterations,
             allow_goal_collision=allow_goal_collision,
+            deadline=deadline,
         )
         if path is not None:
             if escape_prefix_path is not None:
@@ -1155,6 +1173,7 @@ class HybridAStarPathfinder:
             grid_resolution=grid_resolution,
             max_iterations=max_iterations,
             allow_goal_collision=allow_goal_collision,
+            deadline=deadline,
         )
         if bridge_path is not None:
             if escape_prefix_path is not None:

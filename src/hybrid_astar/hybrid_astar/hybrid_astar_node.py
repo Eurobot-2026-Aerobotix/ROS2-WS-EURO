@@ -1068,7 +1068,8 @@ class HybridAStarNode(Node):
                 goal_pose=(goal_x, goal_y, goal_theta),
                 grid_resolution=grid_resolution,
                 max_iterations=self.params['pathfinding']['max_iterations'],
-                allow_goal_collision=allow_goal_collision
+                allow_goal_collision=allow_goal_collision,
+                time_limit_sec=5.0,
             )
 
             # can_rotate is enabled by default.
