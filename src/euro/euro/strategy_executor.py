@@ -891,7 +891,10 @@ def stm32_task(strategy, stm32,lidar):
                 elif strategy.end_game:
                     strategy.get_logger().info("🏁 End-game active - STM dispatch blocked")
         
-        time.sleep(0.1)  # 100ms
+        if len(strategy.queues['STM']) == 0:
+            time.sleep(0.005)  # 5ms when idle for faster dispatch
+        else:
+            time.sleep(0.1)  # 100ms
 def handle_color_pattner(strategy,front):
     """Handle color pattern retrieval"""
     x = strategy.latest_robot_pose.x
