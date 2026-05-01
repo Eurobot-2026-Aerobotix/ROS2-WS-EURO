@@ -173,7 +173,7 @@ def generate_hybrid_path(json_file_path: str) -> bool:
                         # Try to find a safe orientation at this position
                         # Test angles in 5° increments
                         safe_angle = None
-                        for test_deg in range(-180, 180, 5):
+                        for test_deg in range(-180, 181, 5):
                             test_angle = math.radians(test_deg)
                             # Check if this angle is collision-free
                             if not pathfinder.is_collision(x, y, test_angle, grid_resolution):
@@ -586,7 +586,7 @@ def generate_hybrid_path(json_file_path: str) -> bool:
                         print(f"  ⚠ Waypoint {i+1} at ({x:.1f},{y:.1f}): rotation {math.degrees(theta):.1f}°→{math.degrees(travel_angle):.1f}° hits obstacle at {math.degrees(collision_angle):.1f}°")
                         # Try to find a safe orientation
                         safe_angle = None
-                        for test_deg in range(-180, 180, 5):
+                        for test_deg in range(-180, 181, 5):
                             test_angle = math.radians(test_deg)
                             if pathfinder.is_collision(x, y, test_angle, grid_resolution):
                                 continue
@@ -639,7 +639,7 @@ def generate_hybrid_path(json_file_path: str) -> bool:
                                 # Check if we can go directly from previous waypoint to next waypoint
                                 if len(final_path) > 0:
                                     prev_x, prev_y, prev_theta = final_path[-1]
-                                    direct_angle = math.atan2(next_y - prev_x, next_x - prev_x)
+                                    direct_angle = math.atan2(next_y - prev_y, next_x - prev_x)
                                     direct_dist = math.sqrt((next_x - prev_x)**2 + (next_y - prev_y)**2)
                                     
                                     # Check if direct path is collision-free
