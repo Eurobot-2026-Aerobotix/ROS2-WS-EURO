@@ -1184,7 +1184,7 @@ def _apply_unprepare(controller, front: bool) -> None:
             else getattr(state, 'ESP_BACK_LAST_N20', None)
         )
     if restore_n20 is None:
-        restore_n20 = 2222
+        restore_n20 = 0
 
     if restore_dawer is None:
         restore_dawer = (
