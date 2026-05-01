@@ -875,7 +875,7 @@ class StrategyManager(Node):
                         failed_target_id = current_failed_target
                         failed_target_attempts = 1
 
-                    if failed_target_attempts >= 5:
+                    if failed_target_attempts >= 2:
                         self.get_logger().warning(
                             f"⚠️ Task generation failed 5 times for '{failed_target_id}', skipping it"
                         )
