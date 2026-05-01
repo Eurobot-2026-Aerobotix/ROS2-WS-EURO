@@ -2435,6 +2435,17 @@ class MapManager:
             pattern = target_batch.pattern if target_batch.pattern else ""
             _parsed_state, baseline_status = self._parse_batch_state(target_batch.state)
 
+            if _parsed_state == 'LOST':
+                self.node.get_logger().info(
+                    f"🗑️  Locked baseline for SX '{known_id}' returned LOST; stopping tentative retry"
+                )
+                self.short_pattern_ids.discard(known_id)
+                self.tentative_baseline_ids.discard(known_id)
+                self.pending_baseline_lock_ids.discard(known_id)
+                if not self.short_pattern_ids and not self.tentative_baseline_ids:
+                    self._stop_short_pattern_retry_timer()
+                return
+
             if baseline_status == 'T':
                 already_locked = (
                     known_id in self.locked_baseline_batch_ids
@@ -2927,6 +2938,16 @@ class MapManager:
                 self._apply_manual_pattern_override(batch)
                 new_pattern = batch.pattern if batch.pattern else ""
                 _parsed_state, baseline_status = self._parse_batch_state(batch.state)
+
+                if _parsed_state == 'LOST':
+                    self.node.get_logger().info(
+                        f"🗑️  Short-pattern re-check for '{known_id}': LOST → stopping retry"
+                    )
+                    self.short_pattern_ids.discard(known_id)
+                    self.tentative_baseline_ids.discard(known_id)
+                    if not self.short_pattern_ids and not self.tentative_baseline_ids:
+                        self._stop_short_pattern_retry_timer()
+                    break
 
                 with self.batches_lock:
                     existing = self.batches_sx.get(known_id) or self.batches_fx.get(known_id)
