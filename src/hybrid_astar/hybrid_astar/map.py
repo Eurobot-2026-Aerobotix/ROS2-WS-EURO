@@ -171,6 +171,13 @@ class MapManager:
         self.short_pattern_retry_active = False
         self.short_pattern_retry_interval_sec = params.get('rates', {}).get('short_pattern_retry_sec', 2.0)
 
+        # Post-lock updates via /aruco_mapper/all_batches
+        self.all_batches_sub = None
+        self.all_batches_sub_active = False
+        self.all_batches_topic = params.get('topics', {}).get('all_batches', '/aruco_mapper/all_batches')
+        self.pending_baseline_request_ids: set = set()
+        self.fx_pending_baseline_batches: Dict[str, Batch] = {}
+
         # Game-start driven periodic update_map flow
         self.start_game_requested = False
         self.game_update_timer_active = False
@@ -263,6 +270,7 @@ class MapManager:
     def _try_publish_beacon_ready(self) -> None:
         """Publish beacon-ready only once, after baseline locking is fully stable."""
         if self.beacon_ready_published:
+            self._maybe_start_all_batches_subscription()
             return
 
         if not self.baselines_locked:
@@ -279,6 +287,32 @@ class MapManager:
 
         self._publish_beacon_status(1)
         self.beacon_ready_published = True
+        self._maybe_start_all_batches_subscription()
+
+    def _maybe_start_all_batches_subscription(self) -> None:
+        """Start /aruco_mapper/all_batches subscription after baseline lock is fully stable."""
+        if self.all_batches_sub_active:
+            return
+
+        if not self.baselines_locked:
+            return
+
+        if self.known_ids_to_retry or self.pending_baseline_lock_ids or self.short_pattern_ids or self.tentative_baseline_ids:
+            return
+
+        if not self._all_active_batches_baseline_locked():
+            return
+
+        self.all_batches_sub = self.node.create_subscription(
+            ArucoMapperState,
+            self.all_batches_topic,
+            self._handle_all_batches_topic,
+            10
+        )
+        self.all_batches_sub_active = True
+        self.node.get_logger().info(
+            f"📡 Subscribed to {self.all_batches_topic} for post-lock batch updates"
+        )
 
     def _invalidate_sx_baseline_lock(self, known_id: str, state: str) -> None:
         """Clear SX baseline-lock markers when mapper state regresses.
@@ -624,6 +658,17 @@ class MapManager:
         # Stop any running retry timer
         self._stop_retry_timer()
         
+        # Stop post-lock all-batches subscription
+        if self.all_batches_sub_active and self.all_batches_sub is not None:
+            try:
+                self.node.destroy_subscription(self.all_batches_sub)
+            except Exception:
+                pass
+        self.all_batches_sub = None
+        self.all_batches_sub_active = False
+        self.pending_baseline_request_ids.clear()
+        self.fx_pending_baseline_batches.clear()
+
         # Clear all obstacles
         with self.obstacles_lock:
             obstacle_count = len(self.obstacles)
@@ -662,6 +707,8 @@ class MapManager:
         self.known_ids_to_retry.clear()
         self.deleted_batch_ids.clear()
         self.active_batch_ids.clear()
+        self.pending_baseline_request_ids.clear()
+        self.fx_pending_baseline_batches.clear()
         self.short_pattern_ids.clear()
         self.tentative_baseline_ids.clear()
         self._stop_short_pattern_retry_timer()
@@ -1040,6 +1087,8 @@ class MapManager:
                 self.active_batch_ids.discard(bid)
                 self.known_ids_to_retry.discard(bid)
                 self._last_locked_baseline_request_s.pop(bid, None)
+                self.pending_baseline_request_ids.discard(bid)
+                self.fx_pending_baseline_batches.pop(bid, None)
 
         self.node.get_logger().info(
             f"🗑️  Removed {len(relevant_batch_ids)} batch(es) {reason}: {relevant_batch_ids} (obstacles_removed={removed_obs})"
@@ -1618,6 +1667,17 @@ class MapManager:
         self.retry_client = client_to_use
         self.retry_service_name = service_name
 
+        # Stop post-lock all-batches subscription
+        if self.all_batches_sub_active and self.all_batches_sub is not None:
+            try:
+                self.node.destroy_subscription(self.all_batches_sub)
+            except Exception:
+                pass
+        self.all_batches_sub = None
+        self.all_batches_sub_active = False
+        self.pending_baseline_request_ids.clear()
+        self.fx_pending_baseline_batches.clear()
+
         # Rearm initial update flow so the next /update_map call behaves like a fresh first update.
         # reset_map is a reset/reinitialization step, not a normal incremental update.
         self.first_update_map = True
@@ -1634,6 +1694,8 @@ class MapManager:
         self.game_timeout_stopped = False
         self._stop_game_update_timer()
         self.known_ids_to_retry.clear()
+        self.pending_baseline_request_ids.clear()
+        self.fx_pending_baseline_batches.clear()
         self.short_pattern_ids.clear()
         self.tentative_baseline_ids.clear()
         self.batches_sx_baseline_status_type.clear()
@@ -2594,6 +2656,147 @@ class MapManager:
                 self.node.get_logger().error("❌ Failed to lock baseline patterns: no response")
         except Exception as e:
             self.node.get_logger().error(f"❌ Error locking baseline patterns: {e}")
+
+    # ------------------------------------------------------------------
+    # Post-lock /aruco_mapper/all_batches updates
+    # ------------------------------------------------------------------
+
+    def _handle_all_batches_topic(self, msg: ArucoMapperState) -> None:
+        """Handle incremental batch updates after baseline lock is stable."""
+        if not self.all_batches_sub_active:
+            return
+
+        if not self.baselines_locked:
+            return
+
+        # Remove LOST batches immediately.
+        lost_ids = {
+            batch.known_id
+            for batch in (msg.batches or [])
+            if self._parse_batch_state(batch.state)[0] == 'LOST'
+        }
+        if lost_ids:
+            self._remove_lost_batches(lost_ids, reason="reported LOST by /aruco_mapper/all_batches")
+            for bid in lost_ids:
+                self.pending_baseline_request_ids.discard(bid)
+                self.fx_pending_baseline_batches.pop(bid, None)
+
+        # For new batches, request locked baseline to get final pattern.
+        for batch in (msg.batches or []):
+            known_id = str(getattr(batch, 'known_id', '') or '').strip()
+            if not known_id:
+                continue
+
+            state, _ = self._parse_batch_state(batch.state)
+            if state == 'LOST':
+                continue
+
+            if known_id in self.deleted_batch_ids:
+                continue
+
+            is_sx = known_id.startswith('s')
+            is_fx = known_id.startswith('f') or not (known_id.startswith('s') or known_id.startswith('g'))
+
+            if is_sx:
+                # New SX after lock: request a locked baseline to get pattern.
+                if known_id not in self.locked_baseline_all_batch_ids:
+                    self._request_locked_baseline_for_sx(known_id)
+                continue
+
+            if is_fx:
+                member_count = len(batch.members) if getattr(batch, 'members', None) else 0
+
+                with self.batches_lock:
+                    already_known = known_id in self.batches_fx
+
+                if already_known or known_id in self.pending_baseline_request_ids:
+                    continue
+
+                # Save as temporary and request locked baseline to conclude pattern.
+                with self.batches_lock:
+                    self.batches_fx[known_id] = batch
+                    _, status_type = self._parse_batch_state(batch.state)
+                    if status_type:
+                        self.batches_fx_status_type[known_id] = status_type
+                    else:
+                        self.batches_fx_status_type.pop(known_id, None)
+
+                self.fx_pending_baseline_batches[known_id] = batch
+
+                # Add FX obstacles immediately (even if EMERGING) when members exist.
+                if member_count > 0:
+                    fx_state = ArucoMapperState()
+                    fx_state.stamp = msg.stamp
+                    fx_state.initialized = msg.initialized
+                    fx_state.batches = [batch]
+                    self._handle_aruco_mapper_state(fx_state, 'fx')
+
+                self._request_locked_baseline_for_known_id(known_id)
+
+    def _request_locked_baseline_for_known_id(self, known_id: str) -> bool:
+        """Request locked baseline for a single batch (FX or GX), SX uses its own path."""
+        if not known_id:
+            return False
+
+        if known_id.startswith('s'):
+            return self._request_locked_baseline_for_sx(known_id)
+
+        if known_id in self.pending_baseline_request_ids:
+            return True
+
+        now_s = time.monotonic()
+        last_req_s = float(self._last_locked_baseline_request_s.get(known_id, 0.0))
+        if now_s - last_req_s < max(self.baseline_request_cooldown_sec, 0.0):
+            return False
+
+        client = None
+        if self.retry_client and self.retry_client.service_is_ready():
+            client = self.retry_client
+        elif self.get_stable_batches_client.service_is_ready():
+            client = self.get_stable_batches_client
+            self.retry_client = client
+            self.retry_service_name = "/aruco_mapper/get_stable_batches"
+        elif self.get_stable_batches_client_web and self.get_stable_batches_client_web.service_is_ready():
+            client = self.get_stable_batches_client_web
+            self.retry_client = client
+            self.retry_service_name = "/aruco_mapper/get_stable_batches_web"
+        else:
+            self.node.get_logger().warn(
+                f"⚠️ Cannot request locked baseline for '{known_id}': batch service not ready"
+            )
+            return False
+
+        self.pending_baseline_request_ids.add(known_id)
+        self._last_locked_baseline_request_s[known_id] = now_s
+        self.node.get_logger().info(
+            f"🔒 Requesting locked baseline for batch '{known_id}'"
+        )
+
+        req = GetStableBatches.Request()
+        req.batch_types_filter = "sfg"
+        req.specific_known_id = known_id
+        req.only_locked_baselines = True
+        future = client.call_async(req)
+        future.add_done_callback(
+            lambda f, kid=known_id, c=client, s=self.retry_service_name: self._handle_locked_baseline_from_topic(f, kid, c, s)
+        )
+        return True
+
+    def _handle_locked_baseline_from_topic(self, future, known_id: str, client, service_name: str) -> None:
+        """Handle locked-baseline response requested from /aruco_mapper/all_batches."""
+        try:
+            self._handle_get_stable_batches_response(
+                future,
+                None,
+                client,
+                service_name,
+                known_id,
+                False,
+                False,
+            )
+        finally:
+            self.pending_baseline_request_ids.discard(known_id)
+            self.fx_pending_baseline_batches.pop(known_id, None)
 
     def _retry_timer_callback(self):
         """Timer callback to retry EMERGING SX known_ids only."""
