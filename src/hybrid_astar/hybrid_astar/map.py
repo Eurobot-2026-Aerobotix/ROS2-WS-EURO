@@ -1837,11 +1837,13 @@ class MapManager:
                         filtered_batches.append(batch)
                         non_emerging_count += 1
                     else:
-                        # Only retry EMERGING SX batches
+                        # EMERGING: SX -> retry, FX -> accept, GX -> skip
                         if batch.known_id.startswith('s'):
                             self._invalidate_sx_baseline_lock(batch.known_id, state)
                             emerging_ids.add(batch.known_id)
                             self.node.get_logger().info(f"  ⏳ [SX] '{batch.known_id}': {state} → will retry")
+                        elif batch.known_id.startswith('f') or not (batch.known_id.startswith('s') or batch.known_id.startswith('g')):
+                            filtered_batches.append(batch)
                         else:
                             skipped_count += 1
                 
@@ -1850,7 +1852,7 @@ class MapManager:
                 
                 self.node.get_logger().info(
                     f"📊 First update summary: {non_emerging_count} non-EMERGING, {len(emerging_ids)} SX EMERGING queued for retry, "
-                    f"{skipped_count} FX skipped"
+                    f"{skipped_count} GX skipped"
                 )
 
                 # First update completed with non-empty data; clear empty-response retry counter.
@@ -1920,8 +1922,11 @@ class MapManager:
                             emerging_ids.add(batch.known_id)
                             skipped_count += 1
                         else:
-                            # EMERGING FX/GX - skip
-                            skipped_count += 1
+                            # EMERGING FX -> accept, GX -> skip
+                            if is_fx:
+                                filtered_batches.append(batch)
+                            else:
+                                skipped_count += 1
                 
                 # Update retry list (add new EMERGING batches, keep existing ones)
                 self.known_ids_to_retry.update(emerging_ids)
@@ -2675,6 +2680,8 @@ class MapManager:
             for batch in (msg.batches or [])
             if self._parse_batch_state(batch.state)[0] == 'LOST'
         }
+        # Ignore GX in topic-driven updates.
+        lost_ids = {bid for bid in lost_ids if not str(bid or '').startswith('g')}
         if lost_ids:
             self._remove_lost_batches(lost_ids, reason="reported LOST by /aruco_mapper/all_batches")
             for bid in lost_ids:
@@ -2692,6 +2699,9 @@ class MapManager:
                 continue
 
             if known_id in self.deleted_batch_ids:
+                continue
+
+            if known_id.startswith('g'):
                 continue
 
             is_sx = known_id.startswith('s')
