@@ -157,16 +157,21 @@ class HybridAStarPathfinder:
         clearance_mm: float = 100.0,
         step_mm: float = 25.0,
         max_distance_mm: float = 2000.0,
+        excluded_ids: Optional[set] = None,
     ) -> Optional[Tuple[Tuple[float, float, float], float]]:
         """
         Move strictly in the requested direction until a start pose is found that:
         1) is collision-free with a minimum obstacle clearance, and
-        2) has at least one forward motion primitive.
+        2) has at least one forward motion primitive,
+        3) the straight-line segment from start to the candidate is clear
+           (ignoring obstacles in excluded_ids, i.e. the ones the robot is
+           already overlapping at the colliding start).
 
         Returns:
             ((x, y, theta), travel_distance_mm) or None
         """
         sx, sy, stheta = start_pose
+        excluded_ids = excluded_ids or set()
 
         if direction == 'reverse':
             move_dx = -math.cos(stheta)
@@ -192,7 +197,7 @@ class HybridAStarPathfinder:
                 dist_mm += step_mm
                 continue
 
-            # Require 100mm obstacle clearance (expanded footprint check)
+            # Require clearance at the destination (no exclusions — escape pose must be truly free)
             if self._is_collision_with_margin(x, y, stheta, grid_resolution, clearance_mm):
                 dist_mm += step_mm
                 continue
@@ -203,13 +208,25 @@ class HybridAStarPathfinder:
                 has_forward_move = True
                 break
 
-            if has_forward_move:
-                self._vprint(
-                    f"✅ {direction.capitalize()} escape found: ({x:.1f}, {y:.1f}), dist={dist_mm:.1f}mm, clearance={clearance_mm:.1f}mm"
-                )
-                return ((x, y, stheta), dist_mm)
+            if not has_forward_move:
+                dist_mm += step_mm
+                continue
 
-            dist_mm += step_mm
+            # Verify that the straight-line path from start to this candidate is
+            # free from all obstacles OTHER than the ones the start is already in.
+            if not self._is_line_collision_free_excluding(
+                start_pose, (x, y, stheta), grid_resolution, excluded_ids
+            ):
+                self._vprint(
+                    f"  ✗ {direction.capitalize()} candidate at dist={dist_mm:.1f}mm blocked by obstacle on escape path"
+                )
+                dist_mm += step_mm
+                continue
+
+            self._vprint(
+                f"✅ {direction.capitalize()} escape found: ({x:.1f}, {y:.1f}), dist={dist_mm:.1f}mm, clearance={clearance_mm:.1f}mm"
+            )
+            return ((x, y, stheta), dist_mm)
 
         self._vprint(
             f"⚠ {direction.capitalize()} escape failed up to {max_distance_mm:.1f}mm with {clearance_mm:.1f}mm clearance"
@@ -223,6 +240,7 @@ class HybridAStarPathfinder:
         clearance_mm: float = 100.0,
         step_mm: float = 25.0,
         max_distance_mm: float = 2000.0,
+        excluded_ids: Optional[set] = None,
     ) -> Optional[Tuple[Tuple[float, float, float], str, float]]:
         """
         Try both reverse and forward escape for a colliding start and pick the easiest one.
@@ -243,6 +261,7 @@ class HybridAStarPathfinder:
                 clearance_mm=clearance_mm,
                 step_mm=step_mm,
                 max_distance_mm=max_distance_mm,
+                excluded_ids=excluded_ids,
             )
             if result is None:
                 continue
@@ -266,18 +285,23 @@ class HybridAStarPathfinder:
         step_mm: float = 50.0,
         max_distance_mm: float = 2200.0,
         preferred_min_y_mm: Optional[float] = 1500.0,
+        excluded_ids: Optional[set] = None,
     ) -> Optional[Tuple[Tuple[float, float, float], float, str]]:
         """
         Omnidirectional fallback escape for colliding starts.
 
         Searches concentric rings around the original start and returns the first
-        collision-free pose that can generate at least one forward primitive.
+        collision-free pose that:
+          - has at least one forward primitive,
+          - has a straight-line path from start that is clear of all obstacles
+            except those in excluded_ids (the ones the start is already inside).
         Preference is given to candidates in y >= preferred_min_y_mm when provided.
 
         Returns:
             (pose, distance_mm, mode) where mode in {'radial_top', 'radial_any'}
         """
         sx, sy, stheta = start_pose
+        excluded_ids = excluded_ids or set()
 
         angle_count = 24
         preferred_candidates: List[Tuple[float, Tuple[float, float, float]]] = []
@@ -295,6 +319,7 @@ class HybridAStarPathfinder:
                 if gx < 0 or gx >= self.grid_width or gy < 0 or gy >= self.grid_height:
                     continue
 
+                # Destination must be truly free (no exclusions)
                 if self._is_collision_with_margin(x, y, stheta, grid_resolution, clearance_mm):
                     continue
 
@@ -304,6 +329,12 @@ class HybridAStarPathfinder:
                     break
 
                 if not has_forward_move:
+                    continue
+
+                # Escape path must be clear (ignoring start's own obstacles)
+                if not self._is_line_collision_free_excluding(
+                    start_pose, (x, y, stheta), grid_resolution, excluded_ids
+                ):
                     continue
 
                 pose = (x, y, stheta)
@@ -862,6 +893,121 @@ class HybridAStarPathfinder:
 
         return results
     
+    def _get_start_excluded_sources(
+        self,
+        x: float,
+        y: float,
+        theta: float,
+        grid_resolution: float,
+    ) -> set:
+        """
+        Return the set of collision-source IDs to ignore when checking the escape
+        path from a colliding start pose.
+
+        For each obstacle the robot overlaps at (x, y, theta), derive its batch
+        prefix (everything up to and including the last '_' before 'member', e.g.
+        'sx_s5_member1' → prefix 'sx_s5_') and exclude all sources whose ID
+        starts with that prefix.  Obstacles without 'member' in their ID are
+        excluded individually.
+        """
+        colliding = self.get_collision_debug_info(x, y, theta, grid_resolution, max_items=50)
+        excluded_ids: set = set()
+        batch_prefixes: set = set()
+
+        for info in colliding:
+            src_id = info['id']
+            excluded_ids.add(src_id)
+            if 'member' in src_id:
+                # e.g. 'sx_s5_member1' → prefix = 'sx_s5_'
+                prefix = src_id.rsplit('member', 1)[0]
+                if prefix:
+                    batch_prefixes.add(prefix)
+
+        # Expand to all sources whose ID starts with a matching batch prefix
+        for src in self.collision_sources:
+            sid = src['id']
+            for prefix in batch_prefixes:
+                if sid.startswith(prefix):
+                    excluded_ids.add(sid)
+                    break
+
+        return excluded_ids
+
+    def _is_collision_excluding(
+        self,
+        x: float,
+        y: float,
+        theta: float,
+        grid_resolution: float,
+        excluded_ids: set,
+    ) -> bool:
+        """
+        Collision check that treats grid cells belonging *exclusively* to excluded
+        sources as free.  Any cell that is also covered by a non-excluded source
+        (or an unknown occupied cell) is still considered a collision.
+        """
+        if not excluded_ids:
+            return self.is_collision(x, y, theta, grid_resolution)
+
+        theta_idx = int((theta + math.pi) / self.orientation_step) % self.num_orientations
+        footprint = self.footprints[theta_idx]
+
+        center_gx = int(x / grid_resolution)
+        center_gy = int(y / grid_resolution)
+
+        for dx_cell, dy_cell in footprint:
+            gx = center_gx + dx_cell
+            gy = center_gy + dy_cell
+
+            if gx < 0 or gx >= self.grid_width or gy < 0 or gy >= self.grid_height:
+                return True  # boundary = collision
+
+            if not self.grid[gy, gx]:
+                continue
+
+            # Determine whether every source covering this cell is excluded
+            cell_has_non_excluded = False
+            cell_matched = False
+            for src in self.collision_sources:
+                if (
+                    int(src.get('grid_x_start', 0)) <= gx < int(src.get('grid_x_end', 0))
+                    and int(src.get('grid_y_start', 0)) <= gy < int(src.get('grid_y_end', 0))
+                ):
+                    cell_matched = True
+                    if src['id'] not in excluded_ids:
+                        cell_has_non_excluded = True
+                        break
+
+            if not cell_matched:
+                # Cell is occupied but not attributed to any known source → real collision
+                return True
+
+            if cell_has_non_excluded:
+                return True
+
+        return False
+
+    def _is_line_collision_free_excluding(
+        self,
+        pose1: Tuple[float, float, float],
+        pose2: Tuple[float, float, float],
+        grid_resolution: float,
+        excluded_ids: set,
+    ) -> bool:
+        """Line collision check that ignores cells belonging only to excluded sources."""
+        x1, y1, theta1 = pose1
+        x2, y2, theta2 = pose2
+        dist = math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
+        num_checks = max(10, int(dist / 5.0))
+        for i in range(num_checks + 1):
+            t = i / max(num_checks, 1)
+            x = x1 + t * (x2 - x1)
+            y = y1 + t * (y2 - y1)
+            theta = theta1 + t * (theta2 - theta1)
+            if self._is_collision_excluding(x, y, theta, grid_resolution, excluded_ids):
+                return False
+        return True
+
     def get_robot_corners(self, x: float, y: float, theta: float) -> List[Tuple[float, float]]:
         """
         Get the 4 corners of the robot's rectangular footprint.
@@ -1075,10 +1221,19 @@ class HybridAStarPathfinder:
             for idx, info in enumerate(self.get_collision_debug_info(start_x, start_y, start_theta, grid_resolution), start=1):
                 self._vprint(f"   Collision[{idx}]: {info}")
 
+            # Identify which obstacles (and their batch siblings) the robot is already
+            # overlapping — these will be ignored when checking the escape-path segment.
+            start_excluded_ids = self._get_start_excluded_sources(
+                start_x, start_y, start_theta, grid_resolution
+            )
+            if start_excluded_ids:
+                self._vprint(f"   Ignoring {len(start_excluded_ids)} source(s) on escape path: {start_excluded_ids}")
+
             best_escape = self._find_best_start_escape_pose(
                 start_pose,
                 grid_resolution,
                 clearance_mm=100.0,
+                excluded_ids=start_excluded_ids,
             )
             if best_escape is None:
                 radial_escape = self._find_radial_escape_pose(
@@ -1086,6 +1241,7 @@ class HybridAStarPathfinder:
                     grid_resolution,
                     clearance_mm=100.0,
                     preferred_min_y_mm=1500.0,
+                    excluded_ids=start_excluded_ids,
                 )
                 if radial_escape is None:
                     self._vprint("✗ Could not find any start escape pose (forward/reverse/radial)")
