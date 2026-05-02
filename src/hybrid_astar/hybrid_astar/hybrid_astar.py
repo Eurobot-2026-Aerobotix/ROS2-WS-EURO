@@ -1385,24 +1385,33 @@ class HybridAStarPathfinder:
         
         return smoothed
     
-    def _is_line_collision_free(self, pose1: Tuple[float, float, float], 
-                                pose2: Tuple[float, float, float], 
+    def _is_line_collision_free(self, pose1: Tuple[float, float, float],
+                                pose2: Tuple[float, float, float],
                                 grid_resolution: float) -> bool:
-        """Check if line between two poses is collision-free."""
-        x1, y1, theta1 = pose1
-        x2, y2, theta2 = pose2
-        
+        """Check if line between two poses is collision-free.
+
+        Uses the actual travel angle (atan2 from pose1 to pose2) as the robot
+        heading for all samples.  Interpolating the stored waypoint thetas would
+        use stale discretised orientations that don't reflect how the robot
+        actually travels, causing the footprint to miss obstacles at certain
+        heading-transition points.
+        """
+        x1, y1, _ = pose1
+        x2, y2, _ = pose2
+
         dist = math.sqrt((x2 - x1)**2 + (y2 - y1)**2)
-        # Use denser sampling: check every 5mm to catch tight clearances
+        if dist < 1e-6:
+            return True
+
+        travel_theta = math.atan2(y2 - y1, x2 - x1)
         num_checks = max(10, int(dist / 5.0))
-        
+
         for i in range(num_checks + 1):
-            t = i / max(num_checks, 1)
+            t = i / num_checks
             x = x1 + t * (x2 - x1)
             y = y1 + t * (y2 - y1)
-            theta = theta1 + t * (theta2 - theta1)
-            
-            if self.is_collision(x, y, theta, grid_resolution):
+
+            if self.is_collision(x, y, travel_theta, grid_resolution):
                 return False
-        
+
         return True
