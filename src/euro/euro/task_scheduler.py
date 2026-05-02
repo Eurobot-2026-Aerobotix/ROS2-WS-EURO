@@ -586,6 +586,33 @@ class TaskScheduler:
 
         return planned
 
+    def _trim_aligned_last_waypoint(
+        self,
+        waypoint_plan: List[Tuple[float, float, str]],
+        target_x: float,
+        target_y: float,
+        tolerance_deg: float = 3.0,
+    ) -> List[Tuple[float, float, str]]:
+        """Remove last pathfinder waypoint when its incoming segment is collinear with target.
+
+        If wp(n-1)->wp(n) and wp(n)->target share the same heading (within tolerance),
+        wp(n) is redundant — the robot is already on the approach axis and can go directly
+        to target from wp(n-1).
+        """
+        if len(waypoint_plan) < 2:
+            return waypoint_plan
+
+        prev_x, prev_y, _ = waypoint_plan[-2]
+        last_x, last_y, _ = waypoint_plan[-1]
+
+        heading_in = math.degrees(math.atan2(last_y - prev_y, last_x - prev_x))
+        heading_out = math.degrees(math.atan2(target_y - last_y, target_x - last_x))
+
+        if abs(self._normalize_angle_deg(heading_out - heading_in)) < tolerance_deg:
+            return waypoint_plan[:-1]
+
+        return waypoint_plan
+
     def _choose_pickup_face_by_heading(self, target: Pose2D) -> Optional[str]:
         """Pick front/back based on availability and which side faces target best."""
         front_available = bool(getattr(self.map, 'robot_front_empty', False))
@@ -1401,7 +1428,10 @@ class TaskScheduler:
             start_pose=start_pose,
             default_command=stm_command,
         )
-        
+        waypoint_plan = self._trim_aligned_last_waypoint(
+            waypoint_plan, float(pickup_x), float(pickup_y)
+        )
+
         # Build task sequence compatible with strategy_executor
         task_sequence: List[Dict[str, Any]] = []
 
