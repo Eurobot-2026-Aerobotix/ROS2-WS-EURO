@@ -405,7 +405,7 @@ class HybridAStarNode(Node):
     path: list,
     grid_resolution: float,
     max_added_distance_mm: float = 0.0,  # your threshold
-    sample_step_mm: float = 10.0,  # Reduced from 50mm for better collision detection
+    sample_step_mm: float = 20.0,
     enable_direct_simplification: bool = False,
 ) -> list:
         """
@@ -666,7 +666,7 @@ class HybridAStarNode(Node):
 
                     ux = dir_x / mag
                     uy = dir_y / mag
-                    step_mm = 25.0
+                    step_mm = 50.0
                     max_distance_mm = 1500.0
                     num_steps = int(max_distance_mm / step_mm)
                     last_reason = f"{label} no valid point within {max_distance_mm:.0f}mm"
@@ -1144,6 +1144,7 @@ class HybridAStarNode(Node):
             
             
             # Run Hybrid A* algorithm (same as local script)
+            _t_astar = time.time()
             path = self.pathfinder.find_path(
                 start_pose=(start_x, start_y, start_theta),
                 goal_pose=(goal_x, goal_y, goal_theta),
@@ -1152,6 +1153,7 @@ class HybridAStarNode(Node):
                 allow_goal_collision=allow_goal_collision,
                 time_limit_sec=5.0,
             )
+            _dt_astar = (time.time() - _t_astar) * 1000.0
 
             # can_rotate is enabled by default.
             # If start escape fallback was required, report can_rotate=False.
@@ -1161,25 +1163,28 @@ class HybridAStarNode(Node):
             bridge_point = getattr(self.pathfinder, 'last_bridge_point', None)
             if used_start_fallback:
                 response.can_rotate = False
-            
+
             if path:
-                self.get_logger().info(f"✅ Found path: {len(path)} waypoints")
+                self.get_logger().info(f"✅ Found path: {len(path)} waypoints  [{_dt_astar:.1f}ms]")
                 if used_bridge_fallback and bridge_point is not None:
                     bx, by, _ = bridge_point
                     self.get_logger().info(
                         f"🧭 Bridge fallback used (y>=1500mm) via ({bx:.1f}, {by:.1f})"
                     )
                 # Smooth path (always enabled, same as local script)
+                _t_smooth = time.time()
                 smoothed = self.pathfinder.smooth_path(path, grid_resolution)
+                _dt_smooth = (time.time() - _t_smooth) * 1000.0
                 reduction = 100 * (1 - len(smoothed) / len(path)) if len(path) > 0 else 0
-                self.get_logger().info(f"🔄 Smoothed to {len(smoothed)} waypoints ({reduction:.1f}% reduction)")
-                
+                self.get_logger().info(f"🔄 Smoothed to {len(smoothed)} waypoints ({reduction:.1f}% reduction)  [{_dt_smooth:.1f}ms]")
+
                 # Ensure final waypoint is the exact requested goal pose.
                 if len(smoothed) > 0:
                     smoothed[-1] = (goal_x, goal_y, goal_theta)
-                
+
                 # Validate that each waypoint can safely rotate to travel angle
                 # Validate that each waypoint can safely rotate to travel angle
+                _t_rot_val = time.time()
                 validated = []
                 for i in range(len(smoothed)):
                     x, y, theta = smoothed[i]
@@ -1244,8 +1249,11 @@ class HybridAStarNode(Node):
                         validated.append((x, y, theta))
                 
                 smoothed = validated
-                
+                _dt_rot_val = (time.time() - _t_rot_val) * 1000.0
+                self.get_logger().info(f"🔁 Rotation validation done  [{_dt_rot_val:.1f}ms]")
+
                 # Remove waypoints that are too close (rotation-only waypoints)
+                _t_close_rm = time.time()
                 optimized = [smoothed[0]]  # Always keep first waypoint
                 
                 i = 1
@@ -1284,11 +1292,15 @@ class HybridAStarNode(Node):
                 if len(smoothed) > 0:
                     optimized.append(smoothed[-1])  # Always keep last waypoint
                 
+                _dt_close_rm = (time.time() - _t_close_rm) * 1000.0
                 if len(optimized) < len(smoothed):
-                    self.get_logger().info(f"🎯 Optimized to {len(optimized)} waypoints (removed {len(smoothed)-len(optimized)} rotation-only waypoints)")
+                    self.get_logger().info(f"🎯 Optimized to {len(optimized)} waypoints (removed {len(smoothed)-len(optimized)} rotation-only waypoints)  [{_dt_close_rm:.1f}ms]")
                     smoothed = optimized
-                
+                else:
+                    self.get_logger().info(f"🎯 Close-waypoint removal: no change  [{_dt_close_rm:.1f}ms]")
+
                 # FINAL VALIDATION: Check each waypoint can safely rotate to travel toward next waypoint
+                _t_final_val = time.time()
                 final_path = []
                 for i in range(len(smoothed)):
                     x, y, theta = smoothed[i]
@@ -1369,8 +1381,13 @@ class HybridAStarNode(Node):
                         final_path.append((x, y, theta))
                 
                 smoothed = final_path
+                _dt_final_val = (time.time() - _t_final_val) * 1000.0
+                self.get_logger().info(f"✔️  Final rotation validation done  [{_dt_final_val:.1f}ms]")
+
+                _t_optloop = time.time()
                 for _filter_round in range(5):
                     _before = list(smoothed)
+                    _t_round = time.time()
                     smoothed = self.optimize_path_with_intersections(
                         smoothed,
                         grid_resolution=grid_resolution,
@@ -1378,11 +1395,16 @@ class HybridAStarNode(Node):
                         enable_direct_simplification=True,
                     )
                     smoothed = self.final_segment_orientation(smoothed, grid_resolution)
+                    _dt_round = (time.time() - _t_round) * 1000.0
+                    self.get_logger().info(f"🔀 Opt round {_filter_round + 1}: {len(_before)}→{len(smoothed)} waypoints  [{_dt_round:.1f}ms]")
                     if smoothed == _before:
                         break
+                _dt_optloop = (time.time() - _t_optloop) * 1000.0
+                self.get_logger().info(f"🔀 Optimization loop total  [{_dt_optloop:.1f}ms]")
 
                 # Post-optimization cleanup: remove waypoints that can be skipped
                 # without translation (rotation-only points created/left after simplification).
+                _t_post_cleanup = time.time()
                 if len(smoothed) >= 3:
                     def _rotation_safe_here(x, y, theta_from, theta_to):
                         d = theta_to - theta_from
@@ -1444,8 +1466,11 @@ class HybridAStarNode(Node):
                         self.get_logger().info(
                             f"🧹 Removed {skipped_no_translation} no-translation waypoint(s) after simplification"
                         )
+                _dt_post_cleanup = (time.time() - _t_post_cleanup) * 1000.0
+                self.get_logger().info(f"🧹 Post-cleanup done  [{_dt_post_cleanup:.1f}ms]")
 
                 # Final heading cleanup: align waypoint orientation to outgoing segment when safe.
+                _t_heading = time.time()
                 if len(smoothed) >= 2:
                     aligned = list(smoothed)
 
@@ -1475,6 +1500,8 @@ class HybridAStarNode(Node):
                             aligned[i] = (x, y, desired_theta)
 
                     smoothed = aligned
+                _dt_heading = (time.time() - _t_heading) * 1000.0
+                self.get_logger().info(f"🧭 Heading cleanup done  [{_dt_heading:.1f}ms]")
 
                 if used_start_fallback and len(smoothed) > 0:
                     # Keep the robot's requested start pose as waypoint[0] in the

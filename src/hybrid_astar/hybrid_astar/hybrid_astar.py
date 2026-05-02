@@ -652,9 +652,13 @@ class HybridAStarPathfinder:
                     if self.point_in_rectangle(cell_x, cell_y, 0, 0, theta):
                         footprint.append((dx_cell, dy_cell))
             
-            # Store as Python list (MUCH faster iteration than NumPy array in Python loop!)
-            self.footprints[theta_idx] = footprint
-        
+            # Store as numpy int32 array for vectorized collision checks
+            self.footprints[theta_idx] = (
+                np.array(footprint, dtype=np.int32)
+                if footprint
+                else np.empty((0, 2), dtype=np.int32)
+            )
+
         avg_cells = sum(len(fp) for fp in self.footprints.values()) / len(self.footprints)
         self._vprint(f"✅ Footprints precomputed (avg {avg_cells:.1f} cells per orientation)")
     
@@ -1044,44 +1048,34 @@ class HybridAStarPathfinder:
     
     def is_collision(self, x: float, y: float, theta: float, grid_resolution: float) -> bool:
         """
-        Optimized collision check using precomputed footprint masks.
-        Early-exit on first collision for maximum speed.
-        
+        Vectorized collision check using precomputed footprint masks.
+
         Args:
             x, y: Robot center position (mm)
             theta: Robot orientation (radians)
             grid_resolution: Grid cell size (mm)
-            
+
         Returns:
             True if collision, False otherwise
         """
-        # Discretize orientation to get footprint mask
         theta_idx = int((theta + math.pi) / self.orientation_step) % self.num_orientations
-        
-        # Get footprint offsets (numpy array)
-        footprint = self.footprints[theta_idx]
-        
-        if len(footprint) == 0:
+        footprint = self.footprints[theta_idx]  # shape (N, 2), dtype int32
+
+        if footprint.shape[0] == 0:
             return False
-        
-        # Get robot center in grid coordinates (use integer division for speed)
+
         center_gx = int(x / grid_resolution)
         center_gy = int(y / grid_resolution)
-        
-        # Check all cells in precomputed footprint with early exit
-        for dx_cell, dy_cell in footprint:
-            gx = center_gx + dx_cell
-            gy = center_gy + dy_cell
-            
-            # Check boundaries (early exit)
-            if gx < 0 or gx >= self.grid_width or gy < 0 or gy >= self.grid_height:
-                return True
-            
-            # Check occupancy (early exit)
-            if self.grid[gy, gx]:
-                return True
-        
-        return False
+
+        gxs = footprint[:, 0] + center_gx
+        gys = footprint[:, 1] + center_gy
+
+        # Out-of-bounds → treat as collision
+        if (gxs.min() < 0 or gxs.max() >= self.grid_width or
+                gys.min() < 0 or gys.max() >= self.grid_height):
+            return True
+
+        return bool(self.grid[gys, gxs].any())
     
     def point_in_rectangle(self, px: float, py: float, rect_x: float, rect_y: float, rect_theta: float) -> bool:
         """
@@ -1404,7 +1398,7 @@ class HybridAStarPathfinder:
             return True
 
         travel_theta = math.atan2(y2 - y1, x2 - x1)
-        num_checks = max(10, int(dist / 5.0))
+        num_checks = max(5, int(dist / 20.0))
 
         for i in range(num_checks + 1):
             t = i / num_checks
