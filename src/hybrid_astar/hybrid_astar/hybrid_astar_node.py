@@ -946,6 +946,87 @@ class HybridAStarNode(Node):
 
         return optimized
     
+    def final_segment_orientation(
+        self,
+        path: list,
+        grid_resolution: float,
+    ) -> list:
+        """
+        Adjust path[-2] so the last segment path[-2]->path[-1] aligns with goal_theta.
+
+        Finds where the line through path[-3]->path[-2] intersects the final heading
+        line through path[-1]. If the intersection is collision-free and on the correct
+        approach side, replaces path[-2] with it.
+        """
+        if len(path) < 3:
+            return path
+
+        x1, y1, _ = path[-3]
+        x2, y2, _ = path[-2]
+        x3, y3, theta_final = path[-1]
+
+        dx12 = x2 - x1
+        dy12 = y2 - y1
+
+        if abs(math.cos(theta_final)) < 1e-6:
+            if abs(dx12) < 1e-6:
+                return path
+            t = (x3 - x1) / dx12
+            ix, iy = x3, y1 + t * dy12
+        else:
+            m3 = math.tan(theta_final)
+            if abs(dx12) < 1e-6:
+                ix = x1
+                iy = y3 + m3 * (ix - x3)
+            else:
+                m12 = dy12 / dx12
+                if abs(m12 - m3) < 1e-6:
+                    return path
+                ix = (m12 * x1 - m3 * x3 + y3 - y1) / (m12 - m3)
+                iy = y1 + m12 * (ix - x1)
+
+        # Verify intersection approaches p3 from the correct side
+        approach_theta = math.atan2(y3 - iy, x3 - ix)
+        angle_diff = approach_theta - theta_final
+        while angle_diff > math.pi:
+            angle_diff -= 2 * math.pi
+        while angle_diff < -math.pi:
+            angle_diff += 2 * math.pi
+        if abs(angle_diff) > math.radians(10):
+            self.get_logger().info(
+                f"🔸 final_segment_orientation: intersection on wrong side "
+                f"(angle_diff={math.degrees(angle_diff):.1f}°), skipping"
+            )
+            return path
+
+        new_p2 = (ix, iy, approach_theta)
+
+        if self.pathfinder.is_collision(ix, iy, approach_theta, grid_resolution):
+            self.get_logger().info(
+                f"🔸 final_segment_orientation: intersection ({ix:.1f},{iy:.1f}) in collision, skipping"
+            )
+            return path
+
+        if not self.pathfinder._is_line_collision_free(path[-3], new_p2, grid_resolution):
+            self.get_logger().info(
+                f"🔸 final_segment_orientation: segment p1->new_p2 blocked, skipping"
+            )
+            return path
+
+        if not self.pathfinder._is_line_collision_free(new_p2, path[-1], grid_resolution):
+            self.get_logger().info(
+                f"🔸 final_segment_orientation: segment new_p2->goal blocked, skipping"
+            )
+            return path
+
+        result = list(path)
+        result[-2] = new_p2
+        self.get_logger().info(
+            f"✅ final_segment_orientation: p2 ({x2:.1f},{y2:.1f}) → ({ix:.1f},{iy:.1f}), "
+            f"approach θ={math.degrees(approach_theta):.1f}° (goal θ={math.degrees(theta_final):.1f}°)"
+        )
+        return result
+
     def _is_goal_on_batch(self, goal_x: float, goal_y: float, obstacles: List[dict]) -> bool:
         """
         Check if goal position overlaps with any batch obstacle.
@@ -1288,12 +1369,17 @@ class HybridAStarNode(Node):
                         final_path.append((x, y, theta))
                 
                 smoothed = final_path
-                smoothed = self.optimize_path_with_intersections(
-                    smoothed, 
-                    grid_resolution=grid_resolution,
-                    max_added_distance_mm=1000.0,  # Allow up to 1000mm extra distance for straighter paths
-                    enable_direct_simplification=True,
-                )
+                for _filter_round in range(5):
+                    _before = list(smoothed)
+                    smoothed = self.optimize_path_with_intersections(
+                        smoothed,
+                        grid_resolution=grid_resolution,
+                        max_added_distance_mm=1000.0,
+                        enable_direct_simplification=True,
+                    )
+                    smoothed = self.final_segment_orientation(smoothed, grid_resolution)
+                    if smoothed == _before:
+                        break
 
                 # Post-optimization cleanup: remove waypoints that can be skipped
                 # without translation (rotation-only points created/left after simplification).
