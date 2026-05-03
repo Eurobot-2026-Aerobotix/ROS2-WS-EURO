@@ -1211,7 +1211,7 @@ class TaskScheduler:
 
         if time_left_s < max(go_home_time, self.must_dropoff_time):
             # If time is running out, prioritize dropoff tasks
-            queue = [t for t in queue if t.batch_id[0] == "f"] + [t for t in queue if t.batch_id[0] != "f"]
+            queue = [t for t in queue if t.target_id[0] == "f"] + [t for t in queue if t.target_id[0] != "f"]
         
         if time_left_s < max(go_home_time, self.must_dropoff_time)/1.7:
             # If time is running out, prioritize dropoff tasks
