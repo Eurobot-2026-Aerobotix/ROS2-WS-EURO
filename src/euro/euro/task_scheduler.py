@@ -1977,7 +1977,7 @@ class TaskScheduler:
             )
 
             intermediate_sequence: List[Dict[str, Any]] = []
-            for waypoint_x, waypoint_y, waypoint_command in waypoint_plan:
+            for waypoint_x, waypoint_y, waypoint_command in waypoint_plan[:-1]:
                 intermediate_sequence.append({
                     'device': 'STM',
                     'command': waypoint_command,
@@ -2077,7 +2077,7 @@ class TaskScheduler:
             )
 
             intermediate_sequence: List[Dict[str, Any]] = []
-            for waypoint_x, waypoint_y, waypoint_command in waypoint_plan:
+            for waypoint_x, waypoint_y, waypoint_command in waypoint_plan[:-1]:
                 intermediate_sequence.append({
                     'device': 'STM',
                     'command': waypoint_command,
