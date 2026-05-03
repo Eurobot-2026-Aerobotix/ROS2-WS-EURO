@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -c \"import sys; sys.path.insert\\(0, 'src/hybrid_astar/hybrid_astar'\\); import hybrid_astar; print\\('OK'\\)\")"
+    ]
+  }
+}

@@ -1431,6 +1431,9 @@ class TaskScheduler:
         waypoint_plan = self._trim_aligned_last_waypoint(
             waypoint_plan, float(pickup_x), float(pickup_y)
         )
+        if waypoint_plan:
+            lx, ly, _ = waypoint_plan[-1]
+            waypoint_plan[-1] = (lx, ly, stm_command)
 
         # Build task sequence compatible with strategy_executor
         task_sequence: List[Dict[str, Any]] = []
