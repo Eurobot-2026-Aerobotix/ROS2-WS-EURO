@@ -490,11 +490,17 @@ class TaskScheduler:
         target_y_mm: float,
         default_command: str,
         previous_command: Optional[str] = None,
+        force: Optional[str] = None,
     ) -> str:
         """
         Choose forward/backward motion for one segment by minimizing rotation and
         avoiding frequent mode switches.
+        When `force` is set the caller has a hard constraint (e.g. pickup face);
+        return it immediately so cost/hysteresis logic is bypassed for that segment.
         """
+        if force in ('go_to', 'go_to_backwards'):
+            return force
+
         dx = float(target_x_mm) - float(start_x_mm)
         dy = float(target_y_mm) - float(start_y_mm)
         if math.hypot(dx, dy) < 1e-6:
@@ -552,8 +558,14 @@ class TaskScheduler:
         stm32_commands: List[str],
         start_pose: Optional[Dict[str, float]],
         default_command: str,
+        forced_last_command: Optional[str] = None,
     ) -> List[Tuple[float, float, str]]:
-        """Return per-waypoint motion commands, selecting forward/backward per segment."""
+        """Return per-waypoint motion commands, selecting forward/backward per segment.
+
+        When `forced_last_command` is set the last waypoint uses that direction exactly,
+        and the switch_penalty on preceding segments naturally biases toward the same
+        direction, keeping the whole path consistent.
+        """
         waypoints = self._commands_to_unique_waypoints(stm32_commands)
         if not waypoints:
             return []
@@ -562,7 +574,8 @@ class TaskScheduler:
         previous_command: Optional[str] = None
         planned: List[Tuple[float, float, str]] = []
 
-        for waypoint_x, waypoint_y in waypoints:
+        for i, (waypoint_x, waypoint_y) in enumerate(waypoints):
+            is_last = (i == len(waypoints) - 1)
             motion_cmd = self._choose_motion_command_for_segment(
                 current_x,
                 current_y,
@@ -571,6 +584,7 @@ class TaskScheduler:
                 waypoint_y,
                 default_command,
                 previous_command,
+                force=forced_last_command if is_last else None,
             )
             planned.append((waypoint_x, waypoint_y, motion_cmd))
 
@@ -1431,10 +1445,12 @@ class TaskScheduler:
             stm32_commands=stm32_commands,
             start_pose=start_pose,
             default_command=stm_command,
+            forced_last_command=stm_command,
         )
         waypoint_plan = self._trim_aligned_last_waypoint(
             waypoint_plan, float(pickup_x), float(pickup_y)
         )
+        # Re-apply after trim in case trim changed the last waypoint.
         if waypoint_plan:
             lx, ly, _ = waypoint_plan[-1]
             waypoint_plan[-1] = (lx, ly, stm_command)
