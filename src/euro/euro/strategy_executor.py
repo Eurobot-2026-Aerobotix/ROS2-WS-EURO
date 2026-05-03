@@ -1374,6 +1374,13 @@ def put_down(controller,pneumatic,strategy,front,params=None):
                 f"✅ Pathfinder put_down synced ({'front' if front else 'back'}, color={put_down_color}, use_pose={use_pose}) "
                 f"-> {len(obstacle_ids)} obstacles"
             )
+            try:
+                scheduler = getattr(strategy, 'task_scheduler', None)
+                tracked = getattr(scheduler, 'tracked_task', None)
+                if tracked is not None and getattr(tracked, 'type', '') == 'put_down':
+                    strategy.map.mark_putdown_completed(tracked.target_id)
+            except Exception:
+                pass
         else:
             strategy.get_logger().warning(
                 f"⚠️ Pathfinder put_down failed ({'front' if front else 'back'}, color={put_down_color}): {message}"

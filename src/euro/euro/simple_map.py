@@ -187,6 +187,8 @@ class Map:
         self._last_topic_batches_update_s = 0.0
         self._warned_missing_active_obstacles_msg = False
         self.speed_filter = 0
+        # Dropoff zones where the robot has completed a put_down; never reset to "empty" by topic.
+        self.completed_putdown_ids: set = set()
 
     @staticmethod
     def _normalize_batch_id(known_id: Optional[str]) -> str:
@@ -396,6 +398,16 @@ class Map:
         )
         return True
 
+    def mark_putdown_completed(self, known_id: str) -> None:
+        """Mark a dropoff zone as permanently full after a successful put_down.
+        Prevents topic-driven remove_batch from reverting it to 'empty'."""
+        normalized_id = self._normalize_batch_id(known_id)
+        if not normalized_id:
+            return
+        self.completed_putdown_ids.add(normalized_id)
+        if normalized_id[0] == "f" and normalized_id in self.drop_offs:
+            self.drop_offs[normalized_id]["status"] = "full"
+
     def remove_batch(self, known_id: str, persistently: bool = True) -> None:
         normalized_id = self._normalize_batch_id(known_id)
         if not normalized_id:
@@ -406,13 +418,16 @@ class Map:
             self.deleted_batch_ids.add(normalized_id)
 
         if normalized_id[0] == "f" and normalized_id in self.drop_offs:
-            self.drop_offs[normalized_id]["status"] = "empty"
+            # Never reset a zone where the robot already completed a put_down.
+            if normalized_id not in self.completed_putdown_ids:
+                self.drop_offs[normalized_id]["status"] = "empty"
 
     def clear_deleted_batch_ids(self) -> None:
         self.deleted_batch_ids.clear()
 
     def clear_batches(self) -> None:
         self.batches.clear()
+        self.completed_putdown_ids.clear()
         for dropoff in self.drop_offs.values():
             dropoff["status"] = "empty"
 
