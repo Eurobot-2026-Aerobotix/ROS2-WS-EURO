@@ -2743,9 +2743,18 @@ class MapManager:
                 member_count = len(batch.members) if getattr(batch, 'members', None) else 0
 
                 with self.batches_lock:
-                    already_known = known_id in self.batches_fx
+                    existing_batch = self.batches_fx.get(known_id)
+                    existing_member_count = (
+                        len(existing_batch.members)
+                        if existing_batch and getattr(existing_batch, 'members', None)
+                        else 0
+                    )
+                    already_known = existing_batch is not None
 
-                if already_known or known_id in self.pending_baseline_request_ids:
+                member_count_grew = member_count > existing_member_count
+
+                # Skip if nothing new to learn (same or fewer members).
+                if (already_known or known_id in self.pending_baseline_request_ids) and not member_count_grew:
                     continue
 
                 # Save as temporary and request locked baseline to conclude pattern.
@@ -2767,7 +2776,9 @@ class MapManager:
                     fx_state.batches = [batch]
                     self._handle_aruco_mapper_state(fx_state, 'fx')
 
-                self._request_locked_baseline_for_known_id(known_id)
+                # Only request a new locked baseline if one isn't already in-flight.
+                if known_id not in self.pending_baseline_request_ids:
+                    self._request_locked_baseline_for_known_id(known_id)
 
     def _request_locked_baseline_for_known_id(self, known_id: str) -> bool:
         """Request locked baseline for a single batch (FX or GX), SX uses its own path."""
