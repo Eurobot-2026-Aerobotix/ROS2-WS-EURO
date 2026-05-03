@@ -369,13 +369,27 @@ class MapManager:
         return len(normalized) == 4 and all(c in ('y', 'b') for c in normalized)
 
     def _apply_manual_pattern_override(self, batch: Batch) -> None:
-        """Replace batch.pattern with manual override when available."""
+        """Replace batch.pattern, direction, and member colors with manual override when available."""
         known_id = str(getattr(batch, 'known_id', '') or '').strip().lower()
         if not known_id:
             return
         override = self.manual_pattern_overrides.get(known_id)
-        if override:
-            batch.pattern = override
+        if not override:
+            return
+
+        batch.pattern = override
+        direction = self._default_direction_for_known_id(known_id)
+        batch.direction = direction
+
+        # Update member colors by sorting members positionally then assigning from pattern
+        members = list(batch.members) if batch.members else []
+        if len(members) >= 4 and len(override) >= 4:
+            if direction == 'horizontal':
+                members_sorted = sorted(members, key=lambda m: getattr(m.map_pos, 'x', 0.0))
+            else:
+                members_sorted = sorted(members, key=lambda m: getattr(m.map_pos, 'y', 0.0))
+            for i, member in enumerate(members_sorted):
+                member.color = 'yellow' if override[i] == 'y' else 'blue'
 
     def _default_direction_for_known_id(self, known_id: str) -> str:
         """Return a deterministic default direction for a known batch id."""
@@ -1885,7 +1899,7 @@ class MapManager:
                             self.node.get_logger().info(f"  🗑️  [{batch_type}] '{batch.known_id}': LOST → removed from retry")
                         skipped_count += 1
                         continue
-                    
+
                     if state != 'EMERGING':
                         # Accept all non-EMERGING batches (TRACKING, DEGRADED, etc.)
                         filtered_batches.append(batch)
@@ -1897,7 +1911,6 @@ class MapManager:
                     else:
                         # Handle EMERGING batches
                         if state == 'LOST':
-                            # LOST: Remove from retry queue and skip (will be removed as disappeared)
                             if batch.known_id in self.known_ids_to_retry:
                                 self.known_ids_to_retry.discard(batch.known_id)
                                 self.node.get_logger().info(f"  🗑️  [{batch_type}] '{batch.known_id}': LOST → removed from retry")
@@ -1951,6 +1964,8 @@ class MapManager:
                     batch_type = 'FX' if is_fx else ('SX' if batch.known_id.startswith('s') else 'GX')
 
                     if state == 'LOST':
+                        if batch.known_id in self.manual_pattern_overrides:
+                            continue
                         # LOST batches are removed immediately and must not be processed further.
                         self.known_ids_to_retry.discard(batch.known_id)
                         self.node.get_logger().info(
