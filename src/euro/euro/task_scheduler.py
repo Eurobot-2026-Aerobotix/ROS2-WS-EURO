@@ -1186,7 +1186,7 @@ class TaskScheduler:
         time_left_s = self.map.get_time_left()
         if (time_left_s > self.must_prioritize_own_batches_time):
             own_batches = ["s1", "s2", "s3", "s4", "f1", "f2", "f3", "f4", "f5", "f6"]
-            if (self.map.robot_position.y > 1500):
+            if (self.map.robot_color[0] == "b"):
                 own_batches = ["s5", "s6", "s7", "s8", "f5", "f6", "f7", "f8", "f9", "f10"]
             queue = [t for t in queue if t.target_id in own_batches] + [t for t in queue if t.target_id not in own_batches]
 
@@ -1196,6 +1196,10 @@ class TaskScheduler:
         )
 
         if time_left_s < max(go_home_time, self.must_dropoff_time):
+            # If time is running out, prioritize dropoff tasks
+            queue = [t for t in queue if t.batch_id[0] == "f"] + [t for t in queue if t.batch_id[0] != "f"]
+        
+        if time_left_s < max(go_home_time, self.must_dropoff_time)/1.7:
             # If time is running out, prioritize dropoff tasks
             queue = [t for t in queue if t.type == "dropoff"] + [t for t in queue if t.type != "dropoff"]
         
