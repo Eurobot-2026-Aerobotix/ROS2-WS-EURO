@@ -651,7 +651,7 @@ class TaskScheduler:
 
         front_diff = abs(self._normalize_angle_deg(bearing_to_target - robot_theta))
         back_diff = abs(self._normalize_angle_deg(bearing_to_target - (robot_theta + 180.0)))
-        return 'front' if front_diff > back_diff else 'back'
+        return 'front' if front_diff < back_diff else 'back'
 
     def _choose_putdown_face_by_heading(self, target: Pose2D) -> Optional[str]:
         """Pick front/back for dropoff based on loaded side(s) and heading."""
@@ -745,7 +745,7 @@ class TaskScheduler:
                     pickup_pos,
                     key=lambda p: self.map.distance_from(self.map.enemy_absolute, p),
                 )
-            if self.map.distance_from(self.map.enemy_absolute, pickup_pos[0]) > 400.0:
+            if self.map.distance_from(self.map.enemy_absolute, pickup_pos[0]) > 300.0:
                 selected_pos = min(
                     pickup_pos,
                     key=lambda p: self.map.distance_from(self.map.robot_position, p),
