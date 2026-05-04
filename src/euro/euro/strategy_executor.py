@@ -1005,24 +1005,35 @@ def convert_color_pattern(color_pattern, robot_color):
     return binary_str
 
 
-def stana(controller):
-    """Wait for controller to be idle, with shutdown check"""
-    waiting_started = False
-    # Use shorter timeout to allow quicker shutdown response
+def stana(controller, last_value=None):
+    """Wait for controller to be idle, with shutdown check and failsafe.
 
-    idle = controller.IDLE(timeout=5.0)
-    if not waiting_started and idle:
-        idle=False
-    if not idle and waiting_started==False:
-        waiting_started = True
-        controller.get_logger().info("⏳ Waiting for controller to be idle...")
-    while not idle and not state.SHUTDOWN_REQUESTED:
-        idle = controller.IDLE(timeout=5.0)
-        if not waiting_started and idle:
-            idle=False
-        if not idle and waiting_started==False:
-            waiting_started = True
+    last_value: the n20 value that was sent before this call (e.g. 2222).
+    On failsafe timeout, sends n20(0) to reset then resends n20(last_value).
+    """
+    failsafe_timeout = 5.0
+    start_time = time.time()
+    logged = False
+
+    while not controller.IDLE(timeout=5.0) and not state.SHUTDOWN_REQUESTED:
+        if not logged:
             controller.get_logger().info("⏳ Waiting for controller to be idle...")
+            logged = True
+
+        if time.time() - start_time > failsafe_timeout:
+            controller.get_logger().warning("⚠️ Failsafe timeout reached - sending n20(0) and retrying")
+            _send_esp_n20(controller, front=True, value=0)
+            time.sleep(0.5)
+
+            while not controller.IDLE(timeout=5.0) and not state.SHUTDOWN_REQUESTED:
+                time.sleep(0.1)
+
+            if last_value is not None:
+                controller.get_logger().info(f"🔄 Resending n20({last_value}) after failsafe reset")
+                _send_esp_n20(controller, front=True, value=last_value)
+
+            break
+
         time.sleep(0.1)
     
 def talaa(strategy, front_controller=None,front=True):
@@ -1051,10 +1062,13 @@ def talaa(strategy, front_controller=None,front=True):
         color_to_N20=int(str(state.color_pt).replace('0', '3').replace('1', '4'))
         print(f"Converted color pattern: {state.color_pt}, N20 command: {color_to_N20}")
         _send_esp_n20(front_controller, front, color_to_N20)
+        stana(front_controller, last_value=color_to_N20 )
         return state.color_pt
     else:
         strategy.get_logger().warning("⚠️ Failed to get color pattern")
         return None
+    
+
 
 #1 louta wl 2 fel wost wl 3 lfouk
 def _update_robot_holder_status(strategy, front: bool, empty: bool) -> None:
@@ -1256,7 +1270,7 @@ def pick_up(controller,pneumatic,strategy,front):
         return
 
     _send_esp_n20(controller, front, 1111)
-    stana(controller)
+    stana(controller, last_value=1111)
     if _should_abort_esp_action(strategy, front, "pick_up()"):
         return
 
@@ -1283,7 +1297,7 @@ def pick_up(controller,pneumatic,strategy,front):
         state.ESP_BACK_PREPARED = False
         _update_robot_holder_status(strategy, front=False, empty=False)
         strategy.get_logger().info(f"📦 Back picked up - NEW Color pattern: {state.color_pt_back}")
-    stana(controller)
+    #stana(controller)
     if _should_abort_esp_action(strategy, front, "pick_up()"):
         return
 
@@ -1401,8 +1415,7 @@ def put_down(controller,pneumatic,strategy,front,params=None):
         return
     
     _send_esp_n20(controller, front, 0)
-    
-    stana(controller)
+    stana(controller, last_value=0)
     if state.SHUTDOWN_REQUESTED:
         return
     time.sleep(0.5)
@@ -1636,12 +1649,12 @@ def rasp_pi_task(strategy, round_timer, rpi_controller=None, stm32_controller=No
                     _send_esp_kabech(front_controller, True, 0)
                     _send_esp_dawer(front_controller, True, 0)
                     _send_esp_n20(front_controller, True, 0)
-                    stana(front_controller)
+                    stana(front_controller, last_value=0)
                 if back_controller:
                     _send_esp_kabech(back_controller, False, 0)
                     _send_esp_dawer(back_controller, False, 0)
                     _send_esp_n20(back_controller, False, 0)
-                    stana(back_controller)
+                    stana(back_controller, last_value=0)
                 # Allow time for messages to be sent
                 time.sleep(0.1)
             elif command == 'prepare_for_start':
