@@ -1470,6 +1470,7 @@ def front_task(strategy, front_controller=None,pneumatic_controller=None):
             elif command == 'unprepare':
                 _apply_unprepare(front_controller, True)
                 state.ESP_FRONT_PREPARED = False
+                state.ESP_FRONT_IDLE = True
                 strategy.get_logger().info("↩️ Front unprepare executed")
 
             elif command =='put_down':
@@ -1532,6 +1533,7 @@ def back_task(strategy, back_controller=None,pneumatic_controller=None):
             elif command == 'unprepare':
                 _apply_unprepare(back_controller, False)
                 state.ESP_BACK_PREPARED = False
+                state.ESP_BACK_IDLE = True
                 strategy.get_logger().info("↩️ Back unprepare executed")
 
             elif command =='put_down':
