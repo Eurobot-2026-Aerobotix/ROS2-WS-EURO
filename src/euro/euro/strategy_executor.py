@@ -1391,7 +1391,7 @@ def put_down(controller,pneumatic,strategy,front,params=None):
             try:
                 scheduler = getattr(strategy, 'task_scheduler', None)
                 tracked = getattr(scheduler, 'tracked_task', None)
-                if tracked is not None and getattr(tracked, 'type', '') == 'put_down':
+                if tracked is not None and getattr(tracked, 'type', '') in ('put_down', 'dropoff'):
                     strategy.map.mark_putdown_completed(tracked.target_id)
             except Exception:
                 pass
