@@ -367,6 +367,8 @@ class Map:
             return
         if normalized_id in self.deleted_batch_ids:
             return
+        if normalized_id in self.completed_putdown_ids:
+            return
 
         self.batches[normalized_id] = BatchInfo(
             known_id=normalized_id,

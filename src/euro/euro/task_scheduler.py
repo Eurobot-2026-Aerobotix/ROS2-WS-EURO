@@ -1529,6 +1529,7 @@ class TaskScheduler:
                 'command': 'put_down',
                 'params': {
                     'from_fx_pickup_combo': True,
+                    'batch_known_id': normalized_id,
                 },
                 'wait': True
             })
