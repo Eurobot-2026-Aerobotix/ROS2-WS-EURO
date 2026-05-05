@@ -1723,6 +1723,7 @@ class TaskScheduler:
             'command': 'put_down',
             'params': {
                 'from_task_scheduler': True,
+                'batch_known_id': normalized_id,
                 'putdown_insert_distance_mm': float(insert_distance_mm),
                 'use_putdown_angle': True,
                 'putdown_theta_deg': float(theta_to_center_deg),

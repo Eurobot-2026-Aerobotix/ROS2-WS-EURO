@@ -1317,6 +1317,7 @@ def put_down(controller,pneumatic,strategy,front,params=None):
     insert_offset_mm = float(
         params.get('insert_distance_mm', params.get('putdown_insert_distance_mm', 0.0)) or 0.0
     )
+    batch_known_id = str(params.get('batch_known_id', '') or '')
 
     color_pattern = state.color_pt_front if front else state.color_pt_back
     strategy.get_logger().info(f"color_pattern {color_pattern}")
@@ -1389,10 +1390,8 @@ def put_down(controller,pneumatic,strategy,front,params=None):
                 f"-> {len(obstacle_ids)} obstacles"
             )
             try:
-                scheduler = getattr(strategy, 'task_scheduler', None)
-                tracked = getattr(scheduler, 'tracked_task', None)
-                if tracked is not None and getattr(tracked, 'type', '') == 'put_down':
-                    strategy.map.mark_putdown_completed(tracked.target_id)
+                if batch_known_id and hasattr(strategy, 'map') and strategy.map is not None:
+                    strategy.map.mark_putdown_completed(batch_known_id)
             except Exception:
                 pass
         else:
