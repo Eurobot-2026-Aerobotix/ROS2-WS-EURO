@@ -1035,6 +1035,7 @@ class TaskScheduler:
             'pickup_time_guard': 0,
             'pickup_choose_side_failed': 0,
             'dropoff_not_empty': 0,
+            'dropoff_already_putdown': 0,
             'dropoff_impossible': 0,
             'dropoff_time_guard': 0,
             'dropoff_choose_side_failed': 0,
@@ -1137,6 +1138,13 @@ class TaskScheduler:
                     if self.ros_node is not None:
                         self.ros_node.get_logger().debug(
                             f"⏭️ Skip dropoff {dropoff_id}: target marked impossible"
+                        )
+                    continue
+                if normalized_dropoff_id in getattr(self.map, 'completed_putdown_ids', set()):
+                    skip_stats['dropoff_already_putdown'] += 1
+                    if self.ros_node is not None:
+                        self.ros_node.get_logger().debug(
+                            f"⏭️ Skip dropoff {dropoff_id}: putdown already completed there"
                         )
                     continue
                 if (dropoff_id not in ["f3", "f5", "f8"]) and (dropoff["status"] != "empty"):
