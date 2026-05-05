@@ -714,6 +714,7 @@ def stm32_task(strategy, stm32,lidar):
     strategy.get_logger().info("🚀 STM32 task started")
     
     main_loop_count = 0
+    last_status_log_time = time.time()
     while rclpy.ok() and not state.SHUTDOWN_REQUESTED:
         if _enforce_time_ended(strategy):
             time.sleep(0.05)
@@ -721,8 +722,10 @@ def stm32_task(strategy, stm32,lidar):
 
         main_loop_count += 1
         
-        # Log main loop status every 50 iterations (5 seconds)
-        if main_loop_count % 50 == 0:
+        # Log main loop status every 5 seconds
+        now = time.time()
+        if now - last_status_log_time >= 5.0:
+            last_status_log_time = now
             strategy.get_logger().info(f"🔁 STM32 main loop #{main_loop_count}: queue_size={len(strategy.queues['STM'])}, IDLE={state.IDLE}, EMERGENCY_STOP={state.EMERGENCY_STOP}")
         
         # Check if there are commands in the queue and robot is idle.
@@ -1031,7 +1034,8 @@ def stana(controller, last_value=None):
             if last_value is not None:
                 controller.get_logger().info(f"🔄 Resending n20({last_value}) after failsafe reset")
                 _send_esp_n20(controller, front=True, value=last_value)
-
+            while not controller.IDLE(timeout=5.0) and not state.SHUTDOWN_REQUESTED:
+                time.sleep(0.1)
             break
 
         time.sleep(0.1)
