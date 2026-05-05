@@ -1287,10 +1287,8 @@ class TaskScheduler:
         tracked_type = str(self.tracked_task.type).strip().lower()
         if tracked_type == "pick_up":
             tracked_type = "pickup"
-            self.tracked_task.type = "pickup"
         elif tracked_type == "put_down":
             tracked_type = "dropoff"
-            self.tracked_task.type = "dropoff"
 
         invalid_reason = None
 
