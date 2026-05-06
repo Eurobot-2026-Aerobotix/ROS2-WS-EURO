@@ -1250,6 +1250,32 @@ class TaskScheduler:
                 task.options["drop"] = "back"
             queue.insert(0, task)  # Prioritize return home task
 
+        # Priority override for center dropoff tasks whose batch still looks hostile
+        # to the robot color. Keep pickups in place and only permute dropoff slots.
+        urgent_dropoff_ids = {"f3", "f5", "f8"}
+        robot_color_char = str(self.map.robot_color[0]) if self.map.robot_color else ""
+        urgent_dropoff_tasks: List[Task] = []
+        normal_dropoff_tasks: List[Task] = []
+        for task in queue:
+            if task.type != "dropoff":
+                continue
+
+            batch = self.map.batches.get(task.target_id)
+            is_urgent_dropoff = (
+                str(task.target_id).lower() in urgent_dropoff_ids
+                and batch is not None
+                and robot_color_char
+                and batch.color.count(robot_color_char) < len(batch.color) / 2.0
+            )
+            if is_urgent_dropoff:
+                urgent_dropoff_tasks.append(task)
+            else:
+                normal_dropoff_tasks.append(task)
+
+        if urgent_dropoff_tasks:
+            dropoff_iter = iter(urgent_dropoff_tasks + normal_dropoff_tasks)
+            queue = [next(dropoff_iter) if task.type == "dropoff" else task for task in queue]
+
         # Fallback: when nothing is schedulable and time is low, force go-home.
         if len(queue) == 0 and time_left_s < (float(self.must_go_home_time) * 2.0):
             task = Task(target_id="nest", type="return_home")
