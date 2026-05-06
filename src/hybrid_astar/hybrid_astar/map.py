@@ -2791,6 +2791,18 @@ class MapManager:
 
                 # Add FX obstacles immediately (even if EMERGING) when members exist.
                 if member_count > 0:
+                    # If member count grew, tear down the old obstacles so the guard
+                    # in _handle_aruco_mapper_state doesn't skip the rebuild.
+                    if member_count_grew and known_id in self.batches_with_obstacles:
+                        with self.obstacles_lock:
+                            old_obs = [o for o in self.obstacles if f"fx_{known_id}_" in o.id]
+                            for o in old_obs:
+                                self.obstacles.remove(o)
+                                self.obstacle_sources.pop(o.id, None)
+                        self.batches_with_obstacles.discard(known_id)
+                        self.node.get_logger().info(
+                            f"🔄 FX '{known_id}' grew {existing_member_count}→{member_count} members, rebuilding obstacles"
+                        )
                     fx_state = ArucoMapperState()
                     fx_state.stamp = msg.stamp
                     fx_state.initialized = msg.initialized
