@@ -1966,19 +1966,23 @@ class TaskScheduler:
                 )
             robot_color = "yellow"
 
-        def _bezier_command_for_p1(p1_x: float, p1_y: float) -> str:
+        def _bezier_command_for_p1(p1_x: float, p1_y: float):
+            """Return (command, orient_deg) for the bezier curve toward P1."""
             robot_x = float(self.map.robot_position.x)
             robot_y = float(self.map.robot_position.y)
             robot_theta = float(self.map.robot_position.theta)
             departure_angle = math.degrees(math.atan2(p1_y - robot_y, p1_x - robot_x))
             angle_diff = ((departure_angle - robot_theta + 180.0) % 360.0) - 180.0
-            return 'bezier' if abs(angle_diff) <= 90.0 else 'bezier_backwards'
+            if abs(angle_diff) <= 90.0:
+                return 'bezier', departure_angle
+            else:
+                return 'bezier_backwards', ((departure_angle + 180.0 + 180.0) % 360.0) - 180.0
 
-        final_bezier_command = _bezier_command_for_p1(791.09, 267.57)
+        final_bezier_command, final_orient_deg = _bezier_command_for_p1(791.09, 267.57)
 
         # Blue return-home: path to staging point, wait end-game, then bezier to blue home.
         if robot_color == "blue":
-            blue_bezier_command = _bezier_command_for_p1(897.99, 2390.29)
+            blue_bezier_command, blue_orient_deg = _bezier_command_for_p1(897.99, 2390.29)
             if self.pathfinder is None:
                 if self.ros_node is not None:
                     self.ros_node.get_logger().warning(
@@ -2032,6 +2036,23 @@ class TaskScheduler:
                     'x': blue_stage_x,
                     'y': blue_stage_y,
                     'theta': blue_stage_theta_deg,
+                }
+            })
+
+            tasks.append({
+                'name': 'return_home_orientate_blue',
+                'sequence': [
+                    {
+                        'device': 'STM',
+                        'command': 'orientate',
+                        'params': [blue_orient_deg, 0.0],
+                        'wait': True
+                    }
+                ],
+                'global_goal': {
+                    'x': blue_stage_x,
+                    'y': blue_stage_y,
+                    'theta': blue_orient_deg,
                 }
             })
 
@@ -2136,7 +2157,25 @@ class TaskScheduler:
             }
             tasks.append(intermediate_task)
         
-        # Task 2: Wait for end game
+        # Task 2: Orientate to bezier departure angle
+        tasks.append({
+            'name': 'return_home_orientate',
+            'sequence': [
+                {
+                    'device': 'STM',
+                    'command': 'orientate',
+                    'params': [final_orient_deg, 0.0],
+                    'wait': True
+                }
+            ],
+            'global_goal': {
+                'x': 803.0,
+                'y': 879.0,
+                'theta': final_orient_deg,
+            }
+        })
+
+        # Task 3: Wait for end game
         wait_task = {
             'name': 'return_home_wait_end_game',
             'sequence': [
@@ -2155,7 +2194,7 @@ class TaskScheduler:
         }
         tasks.append(wait_task)
         
-        # Task 3: Bezier backwards movement to home
+        # Task 4: Bezier movement to home
         home_task = {
             'name': 'return_home_bezier',
             'sequence': [
