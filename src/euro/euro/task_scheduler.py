@@ -2003,7 +2003,8 @@ class TaskScheduler:
         1. If robot color is yellow, navigate to intermediate waypoint (803, 879)
         2. Wait for end game (RASP_PI wait_end_game with 12 second param)
         3. Perform final bezier movement to home position (251.19, 277.60, θ=0.36)
-           Command direction depends on selected drop side.
+           Command direction (bezier/bezier_backwards) chosen by comparing robot heading
+           to the departure tangent of the curve (P0→P1 direction).
         
         Returns:
             List of executable task dicts, or None if build fails
@@ -2017,18 +2018,29 @@ class TaskScheduler:
                 )
             robot_color = "yellow"
 
-        normalized_drop = str(drop_option or '').strip().lower()
-        if normalized_drop == 'back':
-            final_bezier_command = 'bezier'
-        elif normalized_drop == 'front':
-            final_bezier_command = 'bezier_backwards'
-        else:
-            final_bezier_command = 'bezier_backwards'
+        def _bezier_command_for_p1(p1_x: float, p1_y: float, stage_x: float, stage_y: float):
+            """Return (command, orient_deg) for the bezier curve toward P1.
+            Command is decided from the robot's current heading.
+            Orient angle is computed from the fixed staging position so it is always consistent.
+            """
+            robot_theta = float(self.map.robot_position.theta)
+            robot_x = float(self.map.robot_position.x)
+            robot_y = float(self.map.robot_position.y)
+            # Command: use live robot position to decide forward/backward now
+            departure_angle_now = math.degrees(math.atan2(p1_y - robot_y, p1_x - robot_x))
+            angle_diff = ((departure_angle_now - robot_theta + 180.0) % 360.0) - 180.0
+            # Orient: fixed angle from staging point → P1 (robot will be there when orientate runs)
+            departure_angle_stage = math.degrees(math.atan2(p1_y - stage_y, p1_x - stage_x))
+            if abs(angle_diff) <= 90.0:
+                return 'bezier', departure_angle_stage
+            else:
+                return 'bezier_backwards', ((departure_angle_stage + 180.0 + 180.0) % 360.0) - 180.0
+
+        final_bezier_command, final_orient_deg = _bezier_command_for_p1(791.09, 267.57, 803.0, 879.0)
 
         # Blue return-home: path to staging point, wait end-game, then bezier to blue home.
         if robot_color == "blue":
-            # Preserve prior blue behavior when drop side is unspecified.
-            blue_bezier_command = 'bezier' if normalized_drop == '' else final_bezier_command
+            blue_bezier_command, blue_orient_deg = _bezier_command_for_p1(897.99, 2390.29, 899.23, 2197.79)
             if self.pathfinder is None:
                 if self.ros_node is not None:
                     self.ros_node.get_logger().warning(
@@ -2082,6 +2094,23 @@ class TaskScheduler:
                     'x': blue_stage_x,
                     'y': blue_stage_y,
                     'theta': blue_stage_theta_deg,
+                }
+            })
+
+            tasks.append({
+                'name': 'return_home_orientate_blue',
+                'sequence': [
+                    {
+                        'device': 'STM',
+                        'command': 'orientate',
+                        'params': [blue_orient_deg, 0.0],
+                        'wait': True
+                    }
+                ],
+                'global_goal': {
+                    'x': blue_stage_x,
+                    'y': blue_stage_y,
+                    'theta': blue_orient_deg,
                 }
             })
 
@@ -2186,7 +2215,25 @@ class TaskScheduler:
             }
             tasks.append(intermediate_task)
         
-        # Task 2: Wait for end game
+        # Task 2: Orientate to bezier departure angle
+        tasks.append({
+            'name': 'return_home_orientate',
+            'sequence': [
+                {
+                    'device': 'STM',
+                    'command': 'orientate',
+                    'params': [final_orient_deg, 0.0],
+                    'wait': True
+                }
+            ],
+            'global_goal': {
+                'x': 803.0,
+                'y': 879.0,
+                'theta': final_orient_deg,
+            }
+        })
+
+        # Task 3: Wait for end game
         wait_task = {
             'name': 'return_home_wait_end_game',
             'sequence': [
@@ -2205,7 +2252,7 @@ class TaskScheduler:
         }
         tasks.append(wait_task)
         
-        # Task 3: Bezier backwards movement to home
+        # Task 4: Bezier movement to home
         home_task = {
             'name': 'return_home_bezier',
             'sequence': [
