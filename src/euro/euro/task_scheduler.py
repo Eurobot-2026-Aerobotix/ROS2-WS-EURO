@@ -771,7 +771,7 @@ class TaskScheduler:
             batch = getattr(self.map, 'batches', {}).get(task.target_id)
             if batch is not None:
                 robot_color_char = str(self.map.robot_color[0]) if self.map.robot_color else ""
-                if robot_color_char and batch.color.count(robot_color_char) > len(batch.color) / 2.0:
+                if (robot_color_char and batch.color.count(robot_color_char) > len(batch.color) / 2.0) and (self.map.get_time_left() > 20.0):
                     return False
             center_x = float(dropoff["x"])
             center_y = float(dropoff["y"])
@@ -903,6 +903,11 @@ class TaskScheduler:
             if putdown_face is None:
                 return False
             task.options["drop"] = putdown_face
+            robot_color_char = str(self.map.robot_color[0]) if self.map.robot_color else ""
+            if (robot_color_char and batch.color.count(robot_color_char) > len(batch.color) / 2.0):
+                task.options["push_own_batch"] = True
+            else:
+                task.options["push_own_batch"] = False
         return True
     
     def predict_enemy_goal(self) -> None:
