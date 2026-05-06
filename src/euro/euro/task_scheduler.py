@@ -904,7 +904,7 @@ class TaskScheduler:
                 return False
             task.options["drop"] = putdown_face
             robot_color_char = str(self.map.robot_color[0]) if self.map.robot_color else ""
-            if (robot_color_char and batch.color.count(robot_color_char) > len(batch.color) / 2.0):
+            if (batch is not None and robot_color_char and batch.color.count(robot_color_char) > len(batch.color) / 2.0):
                 task.options["push_own_batch"] = True
             else:
                 task.options["push_own_batch"] = False
@@ -1265,7 +1265,7 @@ class TaskScheduler:
                 str(task.target_id).lower() in urgent_dropoff_ids
                 and batch is not None
                 and robot_color_char
-                and batch.color.count(robot_color_char) < len(batch.color) / 2.0
+                and batch.color.count(robot_color_char) <= len(batch.color) / 2.0
             )
             if is_urgent_dropoff:
                 urgent_dropoff_tasks.append(task)
@@ -2120,7 +2120,7 @@ class TaskScheduler:
                     {
                         'device': 'RASP_PI',
                         'command': 'wait_end_game',
-                        'params': [11.3],
+                        'params': [12.7],
                         'wait': True
                     }
                 ],
