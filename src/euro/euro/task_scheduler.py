@@ -771,7 +771,7 @@ class TaskScheduler:
             batch = getattr(self.map, 'batches', {}).get(task.target_id)
             if batch is not None:
                 robot_color_char = str(self.map.robot_color[0]) if self.map.robot_color else ""
-                if robot_color_char and batch.color.count(robot_color_char) > len(batch.color) / 2.0:
+                if (robot_color_char and batch.color.count(robot_color_char) > len(batch.color) / 2.0) and (self.map.get_time_left() > 20.0):
                     return False
             center_x = float(dropoff["x"])
             center_y = float(dropoff["y"])
@@ -903,6 +903,11 @@ class TaskScheduler:
             if putdown_face is None:
                 return False
             task.options["drop"] = putdown_face
+            robot_color_char = str(self.map.robot_color[0]) if self.map.robot_color else ""
+            if (robot_color_char and batch.color.count(robot_color_char) > len(batch.color) / 2.0):
+                task.options["push_own_batch"] = True
+            else:
+                task.options["push_own_batch"] = False
         return True
     
     def predict_enemy_goal(self) -> None:
@@ -1029,6 +1034,7 @@ class TaskScheduler:
             'pickup_fx_disabled': 0,
             'pickup_fx_unsupported': 0,
             'pickup_impossible': 0,
+            'pickup_np_quality': 0,
             'pickup_reserved_center': 0,
             'pickup_invalid_or_own_color': 0,
             'pickup_phi_mismatch': 0,
@@ -1056,6 +1062,16 @@ class TaskScheduler:
                     if self.ros_node is not None:
                         self.ros_node.get_logger().debug(
                             f"⏭️ Skip pickup {batch_id}: target marked impossible"
+                        )
+                    continue
+                batch_quality = str(getattr(batch, 'quality', '') or '').strip().upper()
+                if not batch_quality and hasattr(self.map, 'get_quality'):
+                    batch_quality = str(self.map.get_quality(batch_id) or '').strip().upper()
+                if batch_quality == 'NP':
+                    skip_stats['pickup_np_quality'] += 1
+                    if self.ros_node is not None:
+                        self.ros_node.get_logger().debug(
+                            f"⏭️ Skip pickup {batch_id}: NP quality"
                         )
                     continue
                 if (self.allow_fx == False) and (batch_id[0] == "f"):
@@ -1233,6 +1249,16 @@ class TaskScheduler:
             elif not self.map.robot_back_empty:
                 task.options["drop"] = "back"
             queue.insert(0, task)  # Prioritize return home task
+
+        # Fallback: when nothing is schedulable and time is low, force go-home.
+        if len(queue) == 0 and time_left_s < (float(self.must_go_home_time) * 2.0):
+            task = Task(target_id="nest", type="return_home")
+            task.options["drop"] = "none"
+            if not self.map.robot_front_empty:
+                task.options["drop"] = "front"
+            elif not self.map.robot_back_empty:
+                task.options["drop"] = "back"
+            queue.insert(0, task)
 
         if len(queue) == 0:
             tracked = self.tracked_task.target_id if self.tracked_task is not None else 'none'
