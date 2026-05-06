@@ -169,6 +169,11 @@ class Map:
         # Any id in this set will be filtered out from get_active_batches sync
         # to avoid re-adding batches that were already picked/deleted locally.
         self.deleted_batch_ids: Set[str] = set()
+        # Quality tracking for FX and SX batches independently of batch lifecycle.
+        # Survives non-persistent removals (batch temporarily disappears from topic).
+        # Only cleared on persistent deletion or full clear.
+        self.fx_qualities: Dict[str, str] = {}
+        self.sx_qualities: Dict[str, str] = {}
         self.robot_position: Pose2D = Pose2D()
         self.enemy_relative: EnemyRelativeObstacle = EnemyRelativeObstacle()
         self.enemy_absolute: Pose2D = Pose2D()
@@ -370,13 +375,29 @@ class Map:
         if normalized_id in self.completed_putdown_ids:
             return
 
+        normalized_quality = str(quality or '').strip().upper()
+
+        # Keep quality dicts in sync for persistent per-type tracking.
+        if normalized_id.startswith('f'):
+            quality_dict = self.fx_qualities
+        elif normalized_id.startswith('s'):
+            quality_dict = self.sx_qualities
+        else:
+            quality_dict = None
+
+        if quality_dict is not None:
+            if normalized_quality in ('P', 'NP'):
+                quality_dict[normalized_id] = normalized_quality
+            else:
+                quality_dict.pop(normalized_id, None)
+
         self.batches[normalized_id] = BatchInfo(
             known_id=normalized_id,
             x=x,
             y=y,
             phi_degrees=phi_degrees,
             color=color,
-            quality=str(quality or '').strip().upper(),
+            quality=normalized_quality,
         )
         if normalized_id[0] == "f" and normalized_id in self.drop_offs:
             if color != "unknown":
@@ -418,6 +439,9 @@ class Map:
         self.batches.pop(normalized_id, None)
         if persistently:
             self.deleted_batch_ids.add(normalized_id)
+            # Clear quality tracking only on permanent deletion.
+            self.fx_qualities.pop(normalized_id, None)
+            self.sx_qualities.pop(normalized_id, None)
 
         if normalized_id[0] == "f" and normalized_id in self.drop_offs:
             # Never reset a zone where the robot already completed a put_down.
@@ -429,6 +453,8 @@ class Map:
 
     def clear_batches(self) -> None:
         self.batches.clear()
+        self.fx_qualities.clear()
+        self.sx_qualities.clear()
         self.completed_putdown_ids.clear()
         for dropoff in self.drop_offs.values():
             dropoff["status"] = "empty"
@@ -436,6 +462,15 @@ class Map:
     def get_batch(self, known_id: str) -> Optional[BatchInfo]:
         normalized_id = self._normalize_batch_id(known_id)
         return self.batches.get(normalized_id)
+
+    def get_quality(self, known_id: str) -> str:
+        """Return 'P', 'NP', or '' for any FX/SX batch, even if temporarily removed from map."""
+        normalized_id = self._normalize_batch_id(known_id)
+        if normalized_id.startswith('f'):
+            return self.fx_qualities.get(normalized_id, '')
+        if normalized_id.startswith('s'):
+            return self.sx_qualities.get(normalized_id, '')
+        return ''
 
     def find_batch_by_position(
         self,
