@@ -30,6 +30,9 @@ from aruco_mapper_msgs.srv import GetStableBatches
 # Set to False to preserve LOST batches.
 ACTIVATE_LOST_BATCH_DELETING = True
 
+# When True, periodically logs each batch's obstacle count and P/NP status.
+DEBUG_BATCHES_MEMBERS = True
+
 
 class MapManager:
     """
@@ -248,6 +251,8 @@ class MapManager:
         self.game_update_timer = self.node.create_timer(
             game_update_interval, self._game_update_timer_callback
         )
+
+        self.node.create_timer(5.0, self._debug_batches_members_callback)
         
         self.node.get_logger().info('🗺️  Map Manager initialized')
         self.node.get_logger().info(
@@ -1551,6 +1556,40 @@ class MapManager:
         self.node.get_logger().debug(
             f"🔄 Game timer update_map triggered from {service_name}: {message}"
         )
+
+    def _debug_batches_members_callback(self):
+        if not DEBUG_BATCHES_MEMBERS:
+            return
+
+        with self.batches_lock:
+            all_ids = set(self.batches_fx.keys()) | set(self.batches_sx.keys())
+
+        if not all_ids:
+            return
+
+        with self.obstacles_lock:
+            obstacle_ids = [obs.id for obs in self.obstacles]
+
+        lines = ["[DEBUG_BATCHES_MEMBERS]"]
+        for known_id in sorted(all_ids):
+            obs_count = sum(
+                1 for oid in obstacle_ids
+                if f"fx_{known_id}_member" in oid or f"sx_{known_id}_member" in oid
+            )
+            with self.batches_lock:
+                if known_id in self.batches_fx:
+                    quality = self.batches_fx_status_type.get(known_id, '-')
+                    batch_type = 'FX'
+                else:
+                    quality = self.batches_sx_status_type.get(known_id, '-')
+                    batch_type = 'SX'
+            has_obstacles = known_id in self.batches_with_obstacles
+            lines.append(
+                f"  {batch_type} '{known_id}': {obs_count} obstacle(s), "
+                f"status={quality}, tracked={has_obstacles}"
+            )
+
+        self.node.get_logger().info('\n'.join(lines))
 
     def _trigger_update_map_async(self, can_lock_baseline: bool = True) -> tuple[bool, str, str]:
         """Trigger the same asynchronous GetStableBatches flow as /update_map."""
