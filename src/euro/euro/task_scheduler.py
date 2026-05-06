@@ -1951,7 +1951,8 @@ class TaskScheduler:
         1. If robot color is yellow, navigate to intermediate waypoint (803, 879)
         2. Wait for end game (RASP_PI wait_end_game with 12 second param)
         3. Perform final bezier movement to home position (251.19, 277.60, θ=0.36)
-           Command direction depends on selected drop side.
+           Command direction (bezier/bezier_backwards) chosen by comparing robot heading
+           to the departure tangent of the curve (P0→P1 direction).
         
         Returns:
             List of executable task dicts, or None if build fails
@@ -1965,18 +1966,19 @@ class TaskScheduler:
                 )
             robot_color = "yellow"
 
-        normalized_drop = str(drop_option or '').strip().lower()
-        if normalized_drop == 'back':
-            final_bezier_command = 'bezier'
-        elif normalized_drop == 'front':
-            final_bezier_command = 'bezier_backwards'
-        else:
-            final_bezier_command = 'bezier_backwards'
+        def _bezier_command_for_p1(p1_x: float, p1_y: float) -> str:
+            robot_x = float(self.map.robot_position.x)
+            robot_y = float(self.map.robot_position.y)
+            robot_theta = float(self.map.robot_position.theta)
+            departure_angle = math.degrees(math.atan2(p1_y - robot_y, p1_x - robot_x))
+            angle_diff = ((departure_angle - robot_theta + 180.0) % 360.0) - 180.0
+            return 'bezier' if abs(angle_diff) <= 90.0 else 'bezier_backwards'
+
+        final_bezier_command = _bezier_command_for_p1(791.09, 267.57)
 
         # Blue return-home: path to staging point, wait end-game, then bezier to blue home.
         if robot_color == "blue":
-            # Preserve prior blue behavior when drop side is unspecified.
-            blue_bezier_command = 'bezier' if normalized_drop == '' else final_bezier_command
+            blue_bezier_command = _bezier_command_for_p1(897.99, 2390.29)
             if self.pathfinder is None:
                 if self.ros_node is not None:
                     self.ros_node.get_logger().warning(
