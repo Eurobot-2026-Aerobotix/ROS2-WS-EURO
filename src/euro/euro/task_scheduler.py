@@ -1966,23 +1966,29 @@ class TaskScheduler:
                 )
             robot_color = "yellow"
 
-        def _bezier_command_for_p1(p1_x: float, p1_y: float):
-            """Return (command, orient_deg) for the bezier curve toward P1."""
+        def _bezier_command_for_p1(p1_x: float, p1_y: float, stage_x: float, stage_y: float):
+            """Return (command, orient_deg) for the bezier curve toward P1.
+            Command is decided from the robot's current heading.
+            Orient angle is computed from the fixed staging position so it is always consistent.
+            """
+            robot_theta = float(self.map.robot_position.theta)
             robot_x = float(self.map.robot_position.x)
             robot_y = float(self.map.robot_position.y)
-            robot_theta = float(self.map.robot_position.theta)
-            departure_angle = math.degrees(math.atan2(p1_y - robot_y, p1_x - robot_x))
-            angle_diff = ((departure_angle - robot_theta + 180.0) % 360.0) - 180.0
+            # Command: use live robot position to decide forward/backward now
+            departure_angle_now = math.degrees(math.atan2(p1_y - robot_y, p1_x - robot_x))
+            angle_diff = ((departure_angle_now - robot_theta + 180.0) % 360.0) - 180.0
+            # Orient: fixed angle from staging point → P1 (robot will be there when orientate runs)
+            departure_angle_stage = math.degrees(math.atan2(p1_y - stage_y, p1_x - stage_x))
             if abs(angle_diff) <= 90.0:
-                return 'bezier', departure_angle
+                return 'bezier', departure_angle_stage
             else:
-                return 'bezier_backwards', ((departure_angle + 180.0 + 180.0) % 360.0) - 180.0
+                return 'bezier_backwards', ((departure_angle_stage + 180.0 + 180.0) % 360.0) - 180.0
 
-        final_bezier_command, final_orient_deg = _bezier_command_for_p1(791.09, 267.57)
+        final_bezier_command, final_orient_deg = _bezier_command_for_p1(791.09, 267.57, 803.0, 879.0)
 
         # Blue return-home: path to staging point, wait end-game, then bezier to blue home.
         if robot_color == "blue":
-            blue_bezier_command, blue_orient_deg = _bezier_command_for_p1(897.99, 2390.29)
+            blue_bezier_command, blue_orient_deg = _bezier_command_for_p1(897.99, 2390.29, 899.23, 2197.79)
             if self.pathfinder is None:
                 if self.ros_node is not None:
                     self.ros_node.get_logger().warning(
