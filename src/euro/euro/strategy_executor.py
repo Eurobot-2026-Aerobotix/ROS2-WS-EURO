@@ -884,16 +884,6 @@ def stm32_task(strategy, stm32,lidar):
                 # Don't pop from queue - commands were just added and need to be executed
                 # Reset replanning flag now that we're back in main loop
                 state.replanning = False
-        else:
-            # Log why we're not processing commands (every 50 iterations to avoid spam)
-            if main_loop_count % 50 == 0:
-                if len(strategy.queues['STM']) == 0:
-                    strategy.get_logger().info("⏸️  STM queue empty - waiting for commands")
-                elif not state.IDLE:
-                    strategy.get_logger().info(f"⏸️  Robot not IDLE - waiting (IDLE={state.IDLE}, IDLE_FOR_SYSTEMS={state.IDLE_FOR_SYSTEMS}, EMERGENCY_STOP={state.EMERGENCY_STOP})")
-                elif strategy.end_game:
-                    strategy.get_logger().info("🏁 End-game active - STM dispatch blocked")
-        
         if len(strategy.queues['STM']) == 0:
             time.sleep(0.005)  # 5ms when idle for faster dispatch
         else:
