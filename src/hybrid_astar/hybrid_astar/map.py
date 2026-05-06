@@ -96,10 +96,11 @@ class MapManager:
         # Using known_id as key to avoid overwrites when batch_id is reused
         self.batches_fx: Dict[str, Batch] = {}
         self.batches_sx: Dict[str, Batch] = {}
-        # Optional FX status type extracted from mapper state suffixes:
+        # Optional FX/SX status type extracted from mapper state suffixes:
         #   TRACKING_P / EMERGING_P   -> 'P'
         #   TRACKING_NP / EMERGING_NP -> 'NP'
         self.batches_fx_status_type: Dict[str, str] = {}
+        self.batches_sx_status_type: Dict[str, str] = {}
         # Optional SX locked-baseline status suffix:
         #   *_T -> tentative locked-baseline, keep retrying only_locked_baselines
         #   *_C -> confirmed locked-baseline, safe to finalize obstacles
@@ -502,6 +503,7 @@ class MapManager:
             self.batches_fx.pop(known_id, None)
             self.batches_fx_status_type.pop(known_id, None)
             self.batches_sx.pop(known_id, None)
+            self.batches_sx_status_type.pop(known_id, None)
             self.batches_sx_baseline_status_type.pop(known_id, None)
             self.batches_with_obstacles.discard(known_id)
             self.locked_baseline_batch_ids.discard(known_id)
@@ -698,6 +700,7 @@ class MapManager:
             self.batches_fx.clear()
             self.batches_sx.clear()
             self.batches_fx_status_type.clear()
+            self.batches_sx_status_type.clear()
             self.batches_sx_baseline_status_type.clear()
             self.batches_with_obstacles.clear()  # Clear tracking
             self.manual_putdown_batch_ids.clear()
@@ -776,6 +779,7 @@ class MapManager:
                 self.node.get_logger().info(f"  ✅ Removed FX batch '{known_id}'")
             if known_id in self.batches_sx:
                 del self.batches_sx[known_id]
+                self.batches_sx_status_type.pop(known_id, None)
                 deleted = True
                 self.node.get_logger().info(f"  ✅ Removed SX batch '{known_id}'")
         
@@ -1091,6 +1095,7 @@ class MapManager:
                 self.batches_fx.pop(bid, None)
                 self.batches_fx_status_type.pop(bid, None)
                 self.batches_sx.pop(bid, None)
+                self.batches_sx_status_type.pop(bid, None)
                 self.batches_sx_baseline_status_type.pop(bid, None)
                 self.batches_with_obstacles.discard(bid)
                 self.locked_baseline_batch_ids.discard(bid)
@@ -2071,6 +2076,7 @@ class MapManager:
                             self.batches_fx.clear()
                             self.batches_fx_status_type.clear()
                             self.batches_sx.clear()
+                            self.batches_sx_status_type.clear()
                             self.batches_sx_baseline_status_type.clear()
                             self.batches_with_obstacles.clear()  # Clear tracking
                             self.locked_baseline_batch_ids.clear()
@@ -2120,6 +2126,7 @@ class MapManager:
                                     self.batches_fx.pop(bid, None)
                                     self.batches_fx_status_type.pop(bid, None)
                                     self.batches_sx.pop(bid, None)
+                                    self.batches_sx_status_type.pop(bid, None)
                                     self.batches_sx_baseline_status_type.pop(bid, None)
                                     self.batches_with_obstacles.discard(bid)  # Remove from tracking
                                     self.locked_baseline_batch_ids.discard(bid)
@@ -2482,6 +2489,11 @@ class MapManager:
                 with self.batches_lock:
                     self.batches_sx[known_id] = target_batch
                     self.batches_sx_baseline_status_type[known_id] = 'T'
+                    _, sx_status_type = self._parse_batch_state(target_batch.state)
+                    if sx_status_type in ('P', 'NP'):
+                        self.batches_sx_status_type[known_id] = sx_status_type
+                    else:
+                        self.batches_sx_status_type.pop(known_id, None)
                     self.batches_with_obstacles.discard(known_id)
 
                 prefix_sx = f"sx_{known_id}_"
@@ -2515,6 +2527,11 @@ class MapManager:
                     self.batches_sx_baseline_status_type[known_id] = baseline_status
                 else:
                     self.batches_sx_baseline_status_type.pop(known_id, None)
+                _, sx_status_type = self._parse_batch_state(target_batch.state)
+                if sx_status_type in ('P', 'NP'):
+                    self.batches_sx_status_type[known_id] = sx_status_type
+                else:
+                    self.batches_sx_status_type.pop(known_id, None)
                 self.batches_with_obstacles.discard(known_id)
 
             self.node.get_logger().info(
@@ -2585,6 +2602,10 @@ class MapManager:
                         if batch.known_id.startswith('s'):
                             _parsed_state, baseline_status = self._parse_batch_state(batch.state)
                             self.batches_sx[batch.known_id] = batch
+                            if baseline_status in ('P', 'NP'):
+                                self.batches_sx_status_type[batch.known_id] = baseline_status
+                            else:
+                                self.batches_sx_status_type.pop(batch.known_id, None)
                             if baseline_status == 'T':
                                 self.locked_baseline_batch_ids.discard(batch.known_id)
                                 self.locked_baseline_all_batch_ids.discard(batch.known_id)
@@ -2998,6 +3019,11 @@ class MapManager:
                     with self.batches_lock:
                         self.batches_sx[known_id] = batch
                         self.batches_sx_baseline_status_type[known_id] = 'T'
+                        _, sx_status_type = self._parse_batch_state(batch.state)
+                        if sx_status_type in ('P', 'NP'):
+                            self.batches_sx_status_type[known_id] = sx_status_type
+                        else:
+                            self.batches_sx_status_type.pop(known_id, None)
                         self.batches_with_obstacles.discard(known_id)
                     self.locked_baseline_batch_ids.discard(known_id)
                     self.locked_baseline_all_batch_ids.discard(known_id)
@@ -3038,6 +3064,11 @@ class MapManager:
 
                     with self.batches_lock:
                         self.batches_sx[known_id] = batch
+                        _, sx_status_type = self._parse_batch_state(batch.state)
+                        if sx_status_type in ('P', 'NP'):
+                            self.batches_sx_status_type[known_id] = sx_status_type
+                        else:
+                            self.batches_sx_status_type.pop(known_id, None)
                         self.batches_with_obstacles.discard(known_id)
 
                     prefix_sx = f"sx_{known_id}_"
@@ -3128,6 +3159,11 @@ class MapManager:
                             self.batches_fx_status_type.pop(batch.known_id, None)
                     elif source == 'sx':
                         self.batches_sx[batch.known_id] = batch
+                        _, sx_status_type = self._parse_batch_state(batch.state)
+                        if sx_status_type in ('P', 'NP'):
+                            self.batches_sx_status_type[batch.known_id] = sx_status_type
+                        else:
+                            self.batches_sx_status_type.pop(batch.known_id, None)
 
                     if batch.known_id in self.batches_with_obstacles:
                         self.node.get_logger().info(
@@ -3380,6 +3416,7 @@ class MapManager:
             
             if known_id in self.batches_sx:
                 del self.batches_sx[known_id]
+                self.batches_sx_status_type.pop(known_id, None)
                 deleted_from_sx = True
                 self.node.get_logger().info(f"🗑️  Deleted batch '{known_id}' from SX storage")
             
@@ -3395,6 +3432,7 @@ class MapManager:
             self.active_batch_ids.discard(known_id)
             self.known_ids_to_retry.discard(known_id)
             self.batches_sx_baseline_status_type.pop(known_id, None)
+            self.batches_sx_status_type.pop(known_id, None)
 
             # Persist manual deletion so beacon updates do not re-add this batch
             # (and therefore do not trigger new baseline-lock requests).
@@ -3500,8 +3538,8 @@ class MapManager:
                     patterns.append(batch.pattern.lower() if getattr(batch, 'pattern', None) else '')
                     theta_degrees.append(_theta_from_direction(direction))
                     centers.append(batch.center)
-                    qualities.append('')
-            
+                    qualities.append(str(self.batches_sx_status_type.get(known_id, '')))
+
             return {
                 'known_ids': known_ids,
                 'batch_types': batch_types,
