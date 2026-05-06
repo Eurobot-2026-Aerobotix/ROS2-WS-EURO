@@ -1029,6 +1029,7 @@ class TaskScheduler:
             'pickup_fx_disabled': 0,
             'pickup_fx_unsupported': 0,
             'pickup_impossible': 0,
+            'pickup_np_quality': 0,
             'pickup_reserved_center': 0,
             'pickup_invalid_or_own_color': 0,
             'pickup_phi_mismatch': 0,
@@ -1056,6 +1057,16 @@ class TaskScheduler:
                     if self.ros_node is not None:
                         self.ros_node.get_logger().debug(
                             f"⏭️ Skip pickup {batch_id}: target marked impossible"
+                        )
+                    continue
+                batch_quality = str(getattr(batch, 'quality', '') or '').strip().upper()
+                if not batch_quality and hasattr(self.map, 'get_quality'):
+                    batch_quality = str(self.map.get_quality(batch_id) or '').strip().upper()
+                if batch_quality == 'NP':
+                    skip_stats['pickup_np_quality'] += 1
+                    if self.ros_node is not None:
+                        self.ros_node.get_logger().debug(
+                            f"⏭️ Skip pickup {batch_id}: NP quality"
                         )
                     continue
                 if (self.allow_fx == False) and (batch_id[0] == "f"):
@@ -1233,6 +1244,16 @@ class TaskScheduler:
             elif not self.map.robot_back_empty:
                 task.options["drop"] = "back"
             queue.insert(0, task)  # Prioritize return home task
+
+        # Fallback: when nothing is schedulable and time is low, force go-home.
+        if len(queue) == 0 and time_left_s < (float(self.must_go_home_time) * 2.0):
+            task = Task(target_id="nest", type="return_home")
+            task.options["drop"] = "none"
+            if not self.map.robot_front_empty:
+                task.options["drop"] = "front"
+            elif not self.map.robot_back_empty:
+                task.options["drop"] = "back"
+            queue.insert(0, task)
 
         if len(queue) == 0:
             tracked = self.tracked_task.target_id if self.tracked_task is not None else 'none'
