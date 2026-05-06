@@ -2795,7 +2795,7 @@ class MapManager:
                     # in _handle_aruco_mapper_state doesn't skip the rebuild.
                     if member_count_grew and known_id in self.batches_with_obstacles:
                         with self.obstacles_lock:
-                            old_obs = [o for o in self.obstacles if f"fx_{known_id}_" in o.id]
+                            old_obs = [o for o in self.obstacles if f"fx_{known_id}_member" in o.id]
                             for o in old_obs:
                                 self.obstacles.remove(o)
                                 self.obstacle_sources.pop(o.id, None)
