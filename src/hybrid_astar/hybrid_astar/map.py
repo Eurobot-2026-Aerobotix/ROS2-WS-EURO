@@ -252,7 +252,7 @@ class MapManager:
             game_update_interval, self._game_update_timer_callback
         )
 
-        self.node.create_timer(5.0, self._debug_batches_members_callback)
+        self.node.create_timer(1.0, self._debug_batches_members_callback)
         
         self.node.get_logger().info('🗺️  Map Manager initialized')
         self.node.get_logger().info(
