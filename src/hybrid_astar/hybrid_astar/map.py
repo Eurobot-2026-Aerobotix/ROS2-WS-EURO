@@ -320,6 +320,22 @@ class MapManager:
             f"📡 Subscribed to {self.all_batches_topic} for post-lock batch updates"
         )
 
+    def _ensure_all_batches_subscription(self, reason: str) -> None:
+        """Subscribe to /aruco_mapper/all_batches if not already active."""
+        if self.all_batches_sub_active:
+            return
+
+        self.all_batches_sub = self.node.create_subscription(
+            ArucoMapperState,
+            self.all_batches_topic,
+            self._handle_all_batches_topic,
+            10
+        )
+        self.all_batches_sub_active = True
+        self.node.get_logger().info(
+            f"📡 Subscribed to {self.all_batches_topic} ({reason})"
+        )
+
     def _invalidate_sx_baseline_lock(self, known_id: str, state: str) -> None:
         """Clear SX baseline-lock markers when mapper state regresses.
 
@@ -1347,6 +1363,7 @@ class MapManager:
         baseline lock is complete.
         """
         self.start_game_requested = True
+        self._ensure_all_batches_subscription(reason="start_game")
         # Start/restart game-time counting from this request.
         now = self.node.get_clock().now()
         self.game_start_time_ns = int(now.nanoseconds)
@@ -2792,6 +2809,24 @@ class MapManager:
             return
 
         if not self.baselines_locked:
+            # Allow P/NP status refresh before baseline lock is stable.
+            for batch in (msg.batches or []):
+                known_id = str(getattr(batch, 'known_id', '') or '').strip()
+                if not known_id or known_id.startswith('g'):
+                    continue
+
+                status_suffix = self._parse_batch_state(batch.state)[1]
+                with self.batches_lock:
+                    if known_id.startswith('s'):
+                        if status_suffix in ('P', 'NP'):
+                            self.batches_sx_status_type[known_id] = status_suffix
+                        else:
+                            self.batches_sx_status_type.pop(known_id, None)
+                    else:
+                        if status_suffix in ('P', 'NP'):
+                            self.batches_fx_status_type[known_id] = status_suffix
+                        else:
+                            self.batches_fx_status_type.pop(known_id, None)
             return
 
         # Remove LOST batches immediately.
