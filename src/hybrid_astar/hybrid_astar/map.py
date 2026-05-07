@@ -2846,7 +2846,14 @@ class MapManager:
         # Ignore GX in topic-driven updates.
         lost_ids = {bid for bid in lost_ids if not str(bid or '').startswith('g')}
         if lost_ids:
-            self._remove_lost_batches(lost_ids, reason="reported LOST by /aruco_mapper/all_batches")
+            with self.batches_lock:
+                manual_putdown_ids = set(self.manual_putdown_batch_ids)
+            lost_non_manual_ids = lost_ids - manual_putdown_ids
+            if lost_ids - lost_non_manual_ids:
+                self.node.get_logger().info(
+                    f"📌 Ignoring LOST for manual put_down batches (preserved): {lost_ids - lost_non_manual_ids}"
+                )
+            self._remove_lost_batches(lost_non_manual_ids, reason="reported LOST by /aruco_mapper/all_batches")
             for bid in lost_ids:
                 self.pending_baseline_request_ids.discard(bid)
                 self.fx_pending_baseline_batches.pop(bid, None)
