@@ -2257,17 +2257,30 @@ class MapManager:
                 if filtered_batches:
                     for batch in filtered_batches:
                         if batch.known_id == specific_known_id:
-                            # Remove obstacles only if TRACKING (upgrade) or if we have members (new data)
                             parsed_state, _ = self._parse_batch_state(batch.state)
                             if parsed_state == 'TRACKING' or (batch.members and len(batch.members) > 0):
+                                new_member_count = len(batch.members) if batch.members else 0
+
+                                # For FX batches: don't downgrade obstacle count if the locked
+                                # baseline service is lagging behind what all_batches already reported.
+                                if specific_known_id and specific_known_id.startswith('f'):
+                                    with self.batches_lock:
+                                        cur = self.batches_fx.get(specific_known_id)
+                                        cur_count = len(cur.members) if (cur and cur.members) else 0
+                                    if new_member_count < cur_count:
+                                        self.node.get_logger().debug(
+                                            f"🔒 FX '{specific_known_id}': locked baseline has {new_member_count} members "
+                                            f"but {cur_count} already tracked — skipping rebuild to avoid regression"
+                                        )
+                                        break
+
                                 should_update = True
                                 with self.obstacles_lock:
                                     old_count = len(self.obstacles)
-                                    self.obstacles = [obs for obs in self.obstacles 
+                                    self.obstacles = [obs for obs in self.obstacles
                                                      if not (obs.id.startswith(f"fx_{specific_known_id}_") or obs.id.startswith(f"sx_{specific_known_id}_"))]
                                     removed = old_count - len(self.obstacles)
-                                
-                                # Clear from tracking so obstacles can be recreated
+
                                 with self.batches_lock:
                                     self.batches_with_obstacles.discard(specific_known_id)
                             break
