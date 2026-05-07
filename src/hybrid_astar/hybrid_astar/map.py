@@ -2797,6 +2797,14 @@ class MapManager:
                 # New SX after lock: request a locked baseline to get pattern.
                 if known_id not in self.locked_baseline_all_batch_ids:
                     self._request_locked_baseline_for_sx(known_id)
+                else:
+                    # Batch is already locked — just refresh P/NP quality status.
+                    _, sx_status_type = self._parse_batch_state(batch.state)
+                    with self.batches_lock:
+                        if sx_status_type in ('P', 'NP'):
+                            self.batches_sx_status_type[known_id] = sx_status_type
+                        else:
+                            self.batches_sx_status_type.pop(known_id, None)
                 continue
 
             if is_fx:
