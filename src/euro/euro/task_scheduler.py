@@ -83,6 +83,7 @@ class TaskScheduler:
         self.rpi_queue: List[Dict[str, Any]] = []
         self.tracked_task: Task = None
         self.tracked_task_invalid = False
+        self._never_cancel_tracked_task = False
         self.impossible_batches: Set[str] = set()
         self._non_skipped_pop_streak = 0
         self.last_failed_target_id: str = ""
@@ -1067,7 +1068,7 @@ class TaskScheduler:
                 batch_quality = str(getattr(batch, 'quality', '') or '').strip().upper()
                 if not batch_quality and hasattr(self.map, 'get_quality'):
                     batch_quality = str(self.map.get_quality(batch_id) or '').strip().upper()
-                if batch_quality == 'NP':
+                if (batch_quality == 'NP') and (batch_id[0] == "f"):
                     skip_stats['pickup_np_quality'] += 1
                     if self.ros_node is not None:
                         self.ros_node.get_logger().debug(
@@ -1351,6 +1352,32 @@ class TaskScheduler:
             tracked_type = "dropoff"
 
         invalid_reason = None
+
+        # Endgame auto-cancel: if not already disabled, and time_left < 15s,
+        # and robot is in vulnerable region based on color/y position, cancel tracked task
+        if not getattr(self, '_never_cancel_tracked_task', False):
+            try:
+                time_left_s = float(self.map.get_time_left())
+            except Exception:
+                time_left_s = float(getattr(self.map, 'time_left', 0.0) or 0.0)
+            robot_color_raw = str(getattr(self.map, 'robot_color', '') or '').lower()
+            robot_y = float(getattr(self.map.robot_position, 'y', 0.0))
+            is_blue = robot_color_raw.startswith('b') or robot_color_raw == 'blue'
+            is_yellow = robot_color_raw.startswith('y') or robot_color_raw == 'yellow'
+            if (
+                time_left_s < 15.0
+                and ((is_blue and robot_y > 1800.0) or (is_yellow and robot_y < 1200.0))
+            ):
+                old_target = self.tracked_task.target_id
+                self.tracked_task_invalid = True
+                self.untrack_task()
+                self._never_cancel_tracked_task = True
+                message = f"🛑 Auto-cancelled tracked task {old_target} due to endgame position (time_left={time_left_s:.1f}s, robot_color={robot_color_raw}, robot_y={robot_y:.1f}). Further auto-cancels disabled."
+                if self.ros_node is not None:
+                    self.ros_node.get_logger().warning(message)
+                else:
+                    print(f"[TaskScheduler] {message}")
+                return "auto_cancelled_endgame_position"
 
         if tracked_type == "pickup":
             batch = self.map.batches.get(self.tracked_task.target_id)

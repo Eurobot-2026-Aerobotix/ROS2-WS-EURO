@@ -31,7 +31,7 @@ from aruco_mapper_msgs.srv import GetStableBatches
 ACTIVATE_LOST_BATCH_DELETING = True
 
 # When True, periodically logs each batch's obstacle count and P/NP status.
-DEBUG_BATCHES_MEMBERS = True
+DEBUG_BATCHES_MEMBERS = False
 
 
 class MapManager:
