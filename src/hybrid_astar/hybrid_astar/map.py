@@ -1136,6 +1136,8 @@ class MapManager:
     
     def handle_obstacle_relative(self, msg: PoseStamped):
         """Handle incoming obstacle from /obstacle_relative topic (only keeps one enemy)"""
+        if self.game_timeout_stopped:
+            return
         with self.obstacles_lock:
             # Remove all existing enemy obstacles first (only keep one enemy)
             self.obstacles = [obs for obs in self.obstacles if obs.color != 'enemy']
@@ -1212,6 +1214,8 @@ class MapManager:
     
     def publish_current_obstacles(self):
         """Periodically publish current obstacle list"""
+        if self.game_timeout_stopped:
+            return
         self._purge_stale_enemy_obstacle()
 
         with self.obstacles_lock:
@@ -1576,6 +1580,8 @@ class MapManager:
 
     def _debug_batches_members_callback(self):
         if not DEBUG_BATCHES_MEMBERS:
+            return
+        if self.game_timeout_stopped:
             return
 
         with self.batches_lock:
@@ -2805,6 +2811,8 @@ class MapManager:
 
     def _handle_all_batches_topic(self, msg: ArucoMapperState) -> None:
         """Handle incremental batch updates after baseline lock is stable."""
+        if self.game_timeout_stopped:
+            return
         if not self.all_batches_sub_active:
             return
 
@@ -2997,6 +3005,8 @@ class MapManager:
 
     def _retry_timer_callback(self):
         """Timer callback to retry EMERGING SX known_ids only."""
+        if self.game_timeout_stopped:
+            return
         if not self.retry_timer_active:
             return
 
@@ -3059,6 +3069,8 @@ class MapManager:
     def _short_pattern_retry_callback(self):
         """Timer callback: request locked baselines for each short-pattern batch
         to see whether the pattern has been extended to 4 elements."""
+        if self.game_timeout_stopped:
+            return
         if not self.short_pattern_retry_active:
             return
 
