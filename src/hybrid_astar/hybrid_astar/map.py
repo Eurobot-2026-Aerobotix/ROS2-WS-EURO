@@ -2138,9 +2138,22 @@ class MapManager:
                                           if batch.known_id.startswith('f') and len(getattr(batch, 'members', [])) == 4}
                     fx_batches_ids_full -= retained_manual_putdown_ids
                     
-                    # Only remove FX batches that are incomplete (not 4 members) AND are being refreshed
-                    fx_batches_ids_incomplete = {batch.known_id for batch in filtered_batches 
-                                                 if batch.known_id.startswith('f') and len(getattr(batch, 'members', [])) != 4}
+                    # Only remove FX batches that are incomplete (not 4 members) AND are being refreshed.
+                    # Also include FX batches that report 4 members but currently have fewer than 4
+                    # obstacles in the map (grew from 3→4 members between two update_map calls).
+                    with self.obstacles_lock:
+                        _obs_ids = [obs.id for obs in self.obstacles]
+                    fx_batches_ids_incomplete = set()
+                    for batch in filtered_batches:
+                        if not batch.known_id.startswith('f'):
+                            continue
+                        member_count = len(getattr(batch, 'members', []))
+                        if member_count != 4:
+                            fx_batches_ids_incomplete.add(batch.known_id)
+                        elif batch.known_id in self.active_batch_ids:
+                            current_obs = sum(1 for oid in _obs_ids if f"fx_{batch.known_id}_member" in oid)
+                            if current_obs < 4:
+                                fx_batches_ids_incomplete.add(batch.known_id)
                     fx_batches_ids_incomplete -= retained_manual_putdown_ids
                     
                     batches_to_remove = disappeared_ids | fx_batches_ids_incomplete  # Disappeared + incomplete FX
@@ -2230,12 +2243,20 @@ class MapManager:
                     fx_full_kept = []
                     
                     for b in filtered_batches:
-                        # FX batch with 4 members - keep if already tracked, don't delete/recreate
+                        # FX batch with 4 members - keep if already tracked WITH 4 obstacles, don't delete/recreate
                         if b.known_id.startswith('f') and len(getattr(b, 'members', [])) == 4:
                             if b.known_id in self.active_batch_ids:
-                                fx_full_kept.append(b.known_id)
-                                # Skip adding to new_batches - keep existing obstacles
-                                continue
+                                with self.obstacles_lock:
+                                    current_obs_count = sum(
+                                        1 for obs in self.obstacles
+                                        if f"fx_{b.known_id}_member" in obs.id
+                                    )
+                                if current_obs_count >= 4:
+                                    fx_full_kept.append(b.known_id)
+                                    # Skip adding to new_batches - keep existing obstacles
+                                    continue
+                                # Obstacle count is stale (e.g. grew from 3→4 members between updates):
+                                # fall through so the batch is rebuilt with 4 obstacles.
                         # SX/GX already tracked - keep existing
                         if b.known_id not in self.active_batch_ids or b.known_id.startswith('f'):
                             new_batches.append(b)
