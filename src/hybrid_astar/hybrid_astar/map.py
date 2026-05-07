@@ -2827,18 +2827,24 @@ class MapManager:
             is_sx = known_id.startswith('s')
             is_fx = known_id.startswith('f') or not (known_id.startswith('s') or known_id.startswith('g'))
 
+            # Always refresh P/NP quality status from /aruco_mapper/all_batches.
+            status_suffix = self._parse_batch_state(batch.state)[1]
+            with self.batches_lock:
+                if is_sx:
+                    if status_suffix in ('P', 'NP'):
+                        self.batches_sx_status_type[known_id] = status_suffix
+                    else:
+                        self.batches_sx_status_type.pop(known_id, None)
+                elif is_fx:
+                    if status_suffix in ('P', 'NP'):
+                        self.batches_fx_status_type[known_id] = status_suffix
+                    else:
+                        self.batches_fx_status_type.pop(known_id, None)
+
             if is_sx:
                 # New SX after lock: request a locked baseline to get pattern.
                 if known_id not in self.locked_baseline_all_batch_ids:
                     self._request_locked_baseline_for_sx(known_id)
-                else:
-                    # Batch is already locked — just refresh P/NP quality status.
-                    _, sx_status_type = self._parse_batch_state(batch.state)
-                    with self.batches_lock:
-                        if sx_status_type in ('P', 'NP'):
-                            self.batches_sx_status_type[known_id] = sx_status_type
-                        else:
-                            self.batches_sx_status_type.pop(known_id, None)
                 continue
 
             if is_fx:
@@ -2862,11 +2868,6 @@ class MapManager:
                 # Save as temporary and request locked baseline to conclude pattern.
                 with self.batches_lock:
                     self.batches_fx[known_id] = batch
-                    _, status_type = self._parse_batch_state(batch.state)
-                    if status_type:
-                        self.batches_fx_status_type[known_id] = status_type
-                    else:
-                        self.batches_fx_status_type.pop(known_id, None)
 
                 self.fx_pending_baseline_batches[known_id] = batch
 
