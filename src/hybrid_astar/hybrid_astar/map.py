@@ -1918,21 +1918,22 @@ class MapManager:
                         filtered_batches.append(batch)
                         non_emerging_count += 1
                     else:
-                        # EMERGING: SX -> retry, FX -> accept, GX -> skip
+                        # EMERGING: SX -> retry, FX -> retry, GX -> skip
                         if batch.known_id.startswith('s'):
                             self._invalidate_sx_baseline_lock(batch.known_id, state)
                             emerging_ids.add(batch.known_id)
                             self.node.get_logger().info(f"  ⏳ [SX] '{batch.known_id}': {state} → will retry")
                         elif batch.known_id.startswith('f') or not (batch.known_id.startswith('s') or batch.known_id.startswith('g')):
-                            filtered_batches.append(batch)
+                            emerging_ids.add(batch.known_id)
+                            self.node.get_logger().info(f"  ⏳ [FX] '{batch.known_id}': {state} → will retry")
                         else:
                             skipped_count += 1
-                
-                # Store EMERGING IDs for retry (only SX and GX)
+
+                # Store EMERGING IDs for retry (SX and FX)
                 self.known_ids_to_retry = emerging_ids
-                
+
                 self.node.get_logger().info(
-                    f"📊 First update summary: {non_emerging_count} non-EMERGING, {len(emerging_ids)} SX EMERGING queued for retry, "
+                    f"📊 First update summary: {non_emerging_count} non-EMERGING, {len(emerging_ids)} EMERGING queued for retry, "
                     f"{skipped_count} GX skipped"
                 )
 
@@ -2002,9 +2003,12 @@ class MapManager:
                             emerging_ids.add(batch.known_id)
                             skipped_count += 1
                         else:
-                            # EMERGING FX -> accept, GX -> skip
+                            # EMERGING FX -> retry (same as SX), GX -> skip
                             if is_fx:
-                                filtered_batches.append(batch)
+                                if batch.known_id not in emerging_ids and batch.known_id not in self.known_ids_to_retry:
+                                    self.node.get_logger().info(f"  ⏭️  [{batch_type}] '{batch.known_id}': EMERGING → added to retry")
+                                emerging_ids.add(batch.known_id)
+                                skipped_count += 1
                             else:
                                 skipped_count += 1
                 
@@ -2689,6 +2693,7 @@ class MapManager:
                 locked_batch_ids = set()
                 sx_batches_ready_for_obstacles = []
                 tentative_sx_batches_for_obstacles = []
+                fx_batches_ready_for_obstacles = []
                 
                 # Update batches with locked patterns
                 with self.batches_lock:
@@ -2739,6 +2744,10 @@ class MapManager:
                                 self.batches_fx_status_type[batch.known_id] = status_type
                             else:
                                 self.batches_fx_status_type.pop(batch.known_id, None)
+                            locked_batch_ids.add(batch.known_id)
+                            self.batches_with_obstacles.discard(batch.known_id)
+                            if batch.members:
+                                fx_batches_ready_for_obstacles.append(batch)
                             self.node.get_logger().info(f"   🔒 Locked FX pattern: {batch.known_id} = '{batch.pattern}'")
                 
                 # CRITICAL: Add locked batches to active_batch_ids to prevent them from being removed
@@ -2800,6 +2809,28 @@ class MapManager:
                     sx_state.initialized = response.stable_state.initialized
                     sx_state.batches = sx_batches_ready_for_obstacles
                     self._handle_aruco_mapper_state(sx_state, 'sx')
+
+                if fx_batches_ready_for_obstacles:
+                    with self.batches_lock:
+                        for batch in fx_batches_ready_for_obstacles:
+                            self.batches_with_obstacles.discard(batch.known_id)
+                    with self.obstacles_lock:
+                        fx_ready_ids = {batch.known_id for batch in fx_batches_ready_for_obstacles}
+                        self.obstacles = [
+                            obs for obs in self.obstacles
+                            if not any(obs.id.startswith(f"fx_{bid}_") for bid in fx_ready_ids)
+                        ]
+                        self.obstacle_sources = {
+                            k: v for k, v in self.obstacle_sources.items()
+                            if not any(k.startswith(f"fx_{bid}_") for bid in fx_ready_ids)
+                        }
+                        for bid in fx_ready_ids:
+                            self.fx_safety_added.discard(f"fx_{bid}_safety")
+                    fx_lock_state = ArucoMapperState()
+                    fx_lock_state.stamp = response.stable_state.stamp
+                    fx_lock_state.initialized = response.stable_state.initialized
+                    fx_lock_state.batches = fx_batches_ready_for_obstacles
+                    self._handle_aruco_mapper_state(fx_lock_state, 'fx')
             else:
                 self.node.get_logger().error("❌ Failed to lock baseline patterns: no response")
         except Exception as e:
