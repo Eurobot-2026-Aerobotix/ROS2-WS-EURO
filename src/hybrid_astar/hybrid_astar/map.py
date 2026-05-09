@@ -1030,8 +1030,8 @@ class MapManager:
                 created_ids.append(obs.id)
 
             # Add safety zone obstacle (17cm x 17cm square) projected 375mm from robot
-            # Only add on first registration (existing_count == 0), not on appends
-            if existing_count == 0:
+            # Only when zone had pre-existing members (beacon stack), not on a fresh empty zone
+            if existing_count == 0 and zone_had_members:
                 safety_zone_size_mm = 170.0
                 heading_dot = (batch_center_x_mm - robot_x_mm) * ux + (batch_center_y_mm - robot_y_mm) * uy
                 safety_sign = 1.0 if heading_dot >= 0.0 else -1.0
