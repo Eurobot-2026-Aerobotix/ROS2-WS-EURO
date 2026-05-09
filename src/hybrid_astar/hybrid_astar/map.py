@@ -1924,8 +1924,13 @@ class MapManager:
                             emerging_ids.add(batch.known_id)
                             self.node.get_logger().info(f"  ⏳ [SX] '{batch.known_id}': {state} → will retry")
                         elif batch.known_id.startswith('f') or not (batch.known_id.startswith('s') or batch.known_id.startswith('g')):
-                            emerging_ids.add(batch.known_id)
-                            self.node.get_logger().info(f"  ⏳ [FX] '{batch.known_id}': {state} → will retry")
+                            with self.batches_lock:
+                                is_putdown = batch.known_id in self.manual_putdown_batch_ids
+                            if is_putdown:
+                                skipped_count += 1
+                            else:
+                                emerging_ids.add(batch.known_id)
+                                self.node.get_logger().info(f"  ⏳ [FX] '{batch.known_id}': {state} → will retry")
                         else:
                             skipped_count += 1
 
@@ -2005,9 +2010,12 @@ class MapManager:
                         else:
                             # EMERGING FX -> retry (same as SX), GX -> skip
                             if is_fx:
-                                if batch.known_id not in emerging_ids and batch.known_id not in self.known_ids_to_retry:
-                                    self.node.get_logger().info(f"  ⏭️  [{batch_type}] '{batch.known_id}': EMERGING → added to retry")
-                                emerging_ids.add(batch.known_id)
+                                with self.batches_lock:
+                                    is_putdown = batch.known_id in self.manual_putdown_batch_ids
+                                if not is_putdown:
+                                    if batch.known_id not in emerging_ids and batch.known_id not in self.known_ids_to_retry:
+                                        self.node.get_logger().info(f"  ⏭️  [{batch_type}] '{batch.known_id}': EMERGING → added to retry")
+                                    emerging_ids.add(batch.known_id)
                                 skipped_count += 1
                             else:
                                 skipped_count += 1
@@ -2320,6 +2328,10 @@ class MapManager:
                                             f"🔒 FX '{specific_known_id}': locked baseline has {new_member_count} members "
                                             f"but {cur_count} already tracked — skipping rebuild to avoid regression"
                                         )
+                                        break
+
+                                with self.batches_lock:
+                                    if specific_known_id in self.manual_putdown_batch_ids:
                                         break
 
                                 should_update = True
@@ -3215,13 +3227,14 @@ class MapManager:
                             self.batches_fx_status_type.pop(known_id, None)
                         self.batches_with_obstacles.discard(known_id)
 
-                    prefix_fx = f"fx_{known_id}_"
-                    with self.obstacles_lock:
-                        self.obstacles = [obs for obs in self.obstacles if not obs.id.startswith(prefix_fx)]
-                        self.obstacle_sources = {k: v for k, v in self.obstacle_sources.items() if not k.startswith(prefix_fx)}
-                        self.fx_safety_added.discard(f"fx_{known_id}_safety")
+                    member_prefix = f"fx_{known_id}_member"
+                    safety_id = f"fx_{known_id}_safety"
 
                     if _parsed_state == 'BASELINE_TEMPORARY':
+                        # Tentative: only refresh member obstacles, keep safety zone in place
+                        with self.obstacles_lock:
+                            self.obstacles = [obs for obs in self.obstacles if not obs.id.startswith(member_prefix)]
+                            self.obstacle_sources = {k: v for k, v in self.obstacle_sources.items() if not k.startswith(member_prefix)}
                         self.tentative_baseline_ids.add(known_id)
                         self.locked_baseline_batch_ids.discard(known_id)
                         self.locked_baseline_all_batch_ids.discard(known_id)
@@ -3229,6 +3242,11 @@ class MapManager:
                             f"[TEMP_BASELINE] ⏳ FX '{known_id}': still BASELINE_TEMPORARY, pattern='{new_pattern}' → retrying"
                         )
                     else:
+                        # Confirmed: clear everything including safety zone for clean rebuild
+                        with self.obstacles_lock:
+                            self.obstacles = [obs for obs in self.obstacles if not obs.id.startswith(member_prefix) and obs.id != safety_id]
+                            self.obstacle_sources = {k: v for k, v in self.obstacle_sources.items() if not k.startswith(member_prefix) and k != safety_id}
+                            self.fx_safety_added.discard(safety_id)
                         self.tentative_baseline_ids.discard(known_id)
                         self.short_pattern_ids.discard(known_id)
                         self.locked_baseline_batch_ids.add(known_id)
