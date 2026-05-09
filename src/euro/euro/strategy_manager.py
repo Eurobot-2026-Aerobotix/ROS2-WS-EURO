@@ -458,14 +458,11 @@ class StrategyManager(Node):
                             expected_stm_count = len(self.queues["STM"])
                             if state.IDLE_FOR_SYSTEMS and not state.IDLE:
                                 state.SYSTEMS_IDLE_COUNT=1
-                            elif state.IDLE:
-                                # STM fully done before wait started — no transition will fire
-                                state.SYSTEMS_IDLE_COUNT = expected_stm_count
                             
                             # Track if prepare command has been added
                             prepare_added = False
                             
-                            while state.SYSTEMS_IDLE_COUNT < expected_stm_count :
+                            while state.SYSTEMS_IDLE_COUNT < expected_stm_count and len((self.queues["STM"]))>0 :
                                 if int(getattr(state, 'ESP_DISPATCH_EPOCH', 0)) != cmd_enqueue_epoch:
                                     self.get_logger().warning(
                                         f"🛑 ESP32 command wait canceled due to dispatch epoch change ({cmd_enqueue_epoch} -> {state.ESP_DISPATCH_EPOCH})"
