@@ -1029,12 +1029,34 @@ class MapManager:
                 self.obstacle_sources[obs.id] = 'put_down'
                 created_ids.append(obs.id)
 
-            # Add safety zone obstacle (17cm x 17cm square) projected 375mm from robot
-            # Only when zone had pre-existing members, and not already present (avoid duplicates)
+            # 200x200 center safety — always on first registration, at the predefined FX zone position
+            if existing_count == 0:
+                center_safety_id = f"fx_{known_id}_safety_center"
+                fx_center_x_mm = self.putdown_fx_positions_mm[known_id]['x']
+                fx_center_y_mm = self.putdown_fx_positions_mm[known_id]['y']
+
+                center_safety_obs = Obstacle()
+                center_safety_obs.id = center_safety_id
+                center_safety_obs.type = 'safety_zone'
+                center_safety_obs.color = 'wall'
+                center_safety_obs.width_mm = 200.0
+                center_safety_obs.height_mm = 200.0
+                center_safety_obs.pose.x = fx_center_x_mm
+                center_safety_obs.pose.y = fx_center_y_mm
+                center_safety_obs.pose.theta = 0.0
+                center_safety_obs.detected_at = stamp
+                self.obstacles.append(center_safety_obs)
+                self.obstacle_sources[center_safety_obs.id] = 'put_down_safety'
+                created_ids.append(center_safety_obs.id)
+
+                self.node.get_logger().info(
+                    f"🛡️ Added center safety for {known_id}: 200mm x 200mm at ({fx_center_x_mm:.1f}, {fx_center_y_mm:.1f})mm"
+                )
+
+            # 170x170 projected safety at 375mm — only when zone had pre-existing members
             safety_obs_id = f"fx_{known_id}_safety"
             safety_already_added = any(obs.id == safety_obs_id for obs in self.obstacles)
             if zone_had_members and not safety_already_added:
-                safety_zone_size_mm = 170.0
                 heading_dot = (batch_center_x_mm - robot_x_mm) * ux + (batch_center_y_mm - robot_y_mm) * uy
                 safety_sign = 1.0 if heading_dot >= 0.0 else -1.0
                 safety_projection_mm = 375.0
@@ -1045,8 +1067,8 @@ class MapManager:
                 safety_obs.id = safety_obs_id
                 safety_obs.type = 'safety_zone'
                 safety_obs.color = 'wall'
-                safety_obs.width_mm = safety_zone_size_mm
-                safety_obs.height_mm = safety_zone_size_mm
+                safety_obs.width_mm = 170.0
+                safety_obs.height_mm = 170.0
                 safety_obs.pose.x = safety_center_x_mm
                 safety_obs.pose.y = safety_center_y_mm
                 safety_obs.pose.theta = robot_theta
@@ -1056,7 +1078,7 @@ class MapManager:
                 created_ids.append(safety_obs.id)
 
                 self.node.get_logger().info(
-                    f"🛡️ Added safety zone for {known_id}: 170mm x 170mm at ({safety_center_x_mm:.1f}, {safety_center_y_mm:.1f})mm "
+                    f"🛡️ Added projected safety for {known_id}: 170mm x 170mm at ({safety_center_x_mm:.1f}, {safety_center_y_mm:.1f})mm "
                     f"(375mm {'forward' if safety_sign > 0 else 'backward'} from robot)"
                 )
 
