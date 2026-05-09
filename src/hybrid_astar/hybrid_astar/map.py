@@ -2769,7 +2769,7 @@ class MapManager:
 
                 if self.tentative_baseline_ids:
                     self.node.get_logger().info(
-                        f"⏳ Locked baseline still tentative for {len(self.tentative_baseline_ids)} SX batches: "
+                        f"⏳ Locked baseline still tentative for {len(self.tentative_baseline_ids)} batches: "
                         f"{self.tentative_baseline_ids}"
                     )
                     self._start_short_pattern_retry_timer()
@@ -3092,7 +3092,7 @@ class MapManager:
             return
 
         self.node.get_logger().info(
-            f"🔁 Auto-retrying {len(self.known_ids_to_retry)} EMERGING SX batches"
+            f"🔁 Auto-retrying {len(self.known_ids_to_retry)} EMERGING batches"
         )
 
         for known_id in list(self.known_ids_to_retry):
