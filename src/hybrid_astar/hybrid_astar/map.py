@@ -1028,6 +1028,11 @@ class MapManager:
             self.batches_with_obstacles.add(known_id)
             self.manual_putdown_batch_ids.add(known_id)
             self.active_batch_ids.add(known_id)
+            # Cancel any pending beacon-driven retry for this known_id so the
+            # short-pattern / EMERGING retry loops don't overwrite the putdown.
+            self.tentative_baseline_ids.discard(known_id)
+            self.short_pattern_ids.discard(known_id)
+            self.known_ids_to_retry.discard(known_id)
 
         self.publish_obstacles(self.get_active_obstacles())
         if existing_count > 0:
@@ -3218,6 +3223,15 @@ class MapManager:
                     break
 
                 if is_fx:
+                    with self.batches_lock:
+                        is_putdown = known_id in self.manual_putdown_batch_ids
+                    if is_putdown:
+                        self.tentative_baseline_ids.discard(known_id)
+                        self.short_pattern_ids.discard(known_id)
+                        self.node.get_logger().info(
+                            f"📌 Short-pattern retry: skipping '{known_id}' — manual put_down batch, not overwriting"
+                        )
+                        break
                     with self.batches_lock:
                         self.batches_fx[known_id] = batch
                         _, fx_status_type = self._parse_batch_state(batch.state)
