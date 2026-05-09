@@ -2694,6 +2694,7 @@ class MapManager:
                 sx_batches_ready_for_obstacles = []
                 tentative_sx_batches_for_obstacles = []
                 fx_batches_ready_for_obstacles = []
+                tentative_fx_batches_for_obstacles = []
                 
                 # Update batches with locked patterns
                 with self.batches_lock:
@@ -2739,16 +2740,27 @@ class MapManager:
                                 )
                                 continue
                             self.batches_fx[batch.known_id] = batch
-                            _, status_type = self._parse_batch_state(batch.state)
+                            _parsed_state, status_type = self._parse_batch_state(batch.state)
                             if status_type:
                                 self.batches_fx_status_type[batch.known_id] = status_type
                             else:
                                 self.batches_fx_status_type.pop(batch.known_id, None)
-                            locked_batch_ids.add(batch.known_id)
                             self.batches_with_obstacles.discard(batch.known_id)
-                            if batch.members:
-                                fx_batches_ready_for_obstacles.append(batch)
-                            self.node.get_logger().info(f"   🔒 Locked FX pattern: {batch.known_id} = '{batch.pattern}'")
+                            if _parsed_state == 'BASELINE_TEMPORARY':
+                                self.tentative_baseline_ids.add(batch.known_id)
+                                self.locked_baseline_batch_ids.discard(batch.known_id)
+                                self.locked_baseline_all_batch_ids.discard(batch.known_id)
+                                if batch.members:
+                                    tentative_fx_batches_for_obstacles.append(batch)
+                                self.node.get_logger().info(
+                                    f"[TEMP_BASELINE] ⏳ FX '{batch.known_id}': BASELINE_TEMPORARY, pattern='{batch.pattern}' → will retry"
+                                )
+                            else:
+                                locked_batch_ids.add(batch.known_id)
+                                self.tentative_baseline_ids.discard(batch.known_id)
+                                if batch.members:
+                                    fx_batches_ready_for_obstacles.append(batch)
+                                self.node.get_logger().info(f"   🔒 Locked FX pattern: {batch.known_id} = '{batch.pattern}'")
                 
                 # CRITICAL: Add locked batches to active_batch_ids to prevent them from being removed
                 self.active_batch_ids.update(active_batch_ids_from_lock)
@@ -2831,6 +2843,26 @@ class MapManager:
                     fx_lock_state.initialized = response.stable_state.initialized
                     fx_lock_state.batches = fx_batches_ready_for_obstacles
                     self._handle_aruco_mapper_state(fx_lock_state, 'fx')
+
+                if tentative_fx_batches_for_obstacles:
+                    with self.obstacles_lock:
+                        tentative_fx_ids = {batch.known_id for batch in tentative_fx_batches_for_obstacles}
+                        self.obstacles = [
+                            obs for obs in self.obstacles
+                            if not any(obs.id.startswith(f"fx_{bid}_") for bid in tentative_fx_ids)
+                        ]
+                        self.obstacle_sources = {
+                            k: v for k, v in self.obstacle_sources.items()
+                            if not any(k.startswith(f"fx_{bid}_") for bid in tentative_fx_ids)
+                        }
+                        for bid in tentative_fx_ids:
+                            self.fx_safety_added.discard(f"fx_{bid}_safety")
+                    fx_tentative_state = ArucoMapperState()
+                    fx_tentative_state.stamp = response.stable_state.stamp
+                    fx_tentative_state.initialized = response.stable_state.initialized
+                    fx_tentative_state.batches = tentative_fx_batches_for_obstacles
+                    self._handle_aruco_mapper_state(fx_tentative_state, 'fx')
+                    self._start_short_pattern_retry_timer()
             else:
                 self.node.get_logger().error("❌ Failed to lock baseline patterns: no response")
         except Exception as e:
@@ -3124,8 +3156,9 @@ class MapManager:
             f"🔍 Re-checking locked-baseline batches: short={self.short_pattern_ids}, tentative={self.tentative_baseline_ids}"
         )
         for known_id in list(self.short_pattern_ids | self.tentative_baseline_ids):
-            # Defensive: SX-only retry policy
-            if not known_id.startswith('s'):
+            is_sx = known_id.startswith('s')
+            is_fx = not is_sx and not known_id.startswith('g')
+            if not is_sx and not is_fx:
                 self.short_pattern_ids.discard(known_id)
                 self.tentative_baseline_ids.discard(known_id)
                 continue
@@ -3155,15 +3188,12 @@ class MapManager:
                 if batch.known_id != known_id:
                     continue
 
-                # Defensive: SX-only retry policy
-                if not known_id.startswith('s'):
-                    self.short_pattern_ids.discard(known_id)
-                    self.tentative_baseline_ids.discard(known_id)
-                    break
-
                 self._apply_manual_pattern_override(batch)
                 new_pattern = batch.pattern if batch.pattern else ""
                 _parsed_state, baseline_status = self._parse_batch_state(batch.state)
+
+                is_sx = known_id.startswith('s')
+                is_fx = not is_sx and not known_id.startswith('g')
 
                 if _parsed_state == 'LOST':
                     self.node.get_logger().info(
@@ -3173,6 +3203,50 @@ class MapManager:
                     self.tentative_baseline_ids.discard(known_id)
                     if not self.short_pattern_ids and not self.tentative_baseline_ids:
                         self._stop_short_pattern_retry_timer()
+                    break
+
+                if is_fx:
+                    with self.batches_lock:
+                        self.batches_fx[known_id] = batch
+                        _, fx_status_type = self._parse_batch_state(batch.state)
+                        if fx_status_type:
+                            self.batches_fx_status_type[known_id] = fx_status_type
+                        else:
+                            self.batches_fx_status_type.pop(known_id, None)
+                        self.batches_with_obstacles.discard(known_id)
+
+                    prefix_fx = f"fx_{known_id}_"
+                    with self.obstacles_lock:
+                        self.obstacles = [obs for obs in self.obstacles if not obs.id.startswith(prefix_fx)]
+                        self.obstacle_sources = {k: v for k, v in self.obstacle_sources.items() if not k.startswith(prefix_fx)}
+                        self.fx_safety_added.discard(f"fx_{known_id}_safety")
+
+                    if _parsed_state == 'BASELINE_TEMPORARY':
+                        self.tentative_baseline_ids.add(known_id)
+                        self.locked_baseline_batch_ids.discard(known_id)
+                        self.locked_baseline_all_batch_ids.discard(known_id)
+                        self.node.get_logger().info(
+                            f"[TEMP_BASELINE] ⏳ FX '{known_id}': still BASELINE_TEMPORARY, pattern='{new_pattern}' → retrying"
+                        )
+                    else:
+                        self.tentative_baseline_ids.discard(known_id)
+                        self.short_pattern_ids.discard(known_id)
+                        self.locked_baseline_batch_ids.add(known_id)
+                        self.locked_baseline_all_batch_ids.add(known_id)
+                        self.node.get_logger().info(
+                            f"[FINAL_BASELINE] ✅ FX '{known_id}': baseline confirmed, pattern='{new_pattern}'"
+                        )
+
+                    if batch.members:
+                        fx_retry_state = ArucoMapperState()
+                        fx_retry_state.stamp = response.stable_state.stamp
+                        fx_retry_state.initialized = response.stable_state.initialized
+                        fx_retry_state.batches = [batch]
+                        self._handle_aruco_mapper_state(fx_retry_state, 'fx')
+
+                    if not self.short_pattern_ids and not self.tentative_baseline_ids:
+                        self._stop_short_pattern_retry_timer()
+                        self._try_publish_beacon_ready()
                     break
 
                 with self.batches_lock:
