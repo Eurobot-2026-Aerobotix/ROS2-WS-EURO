@@ -921,11 +921,18 @@ class MapManager:
             existing_batch = self.batches_fx.get(known_id)
             existing_is_manual = known_id in self.manual_putdown_batch_ids
 
+        # Any members already tracked for this zone (beacon or prior manual putdown)
+        zone_had_members = (
+            existing_batch is not None
+            and len(getattr(existing_batch, 'members', [])) > 0
+        )
+
         existing_members = list(existing_batch.members) if (existing_is_manual and existing_batch is not None) else []
         existing_count = len(existing_members)
         if existing_count >= 8:
             return False, f"Batch {known_id} already contains 8 manually put-down members", [], known_id
 
+        # Normal 4-member row at the computed batch center
         member_positions = []
         for lat in lateral_offsets:
             member_positions.append((
@@ -933,13 +940,37 @@ class MapManager:
                 batch_center_y_mm + lat * vy,
             ))
 
+        # When the zone already had obstacles, add a second row of 4 yellow members
+        # 100 mm further forward (same heading) to represent the pre-existing stack.
+        extra_row_offset_mm = 100.0
+        extra_row_positions = []
+        if zone_had_members and not existing_is_manual:
+            for lat in lateral_offsets:
+                extra_row_positions.append((
+                    batch_center_x_mm + extra_row_offset_mm * ux + lat * vx,
+                    batch_center_y_mm + extra_row_offset_mm * uy + lat * vy,
+                ))
+
         all_members = existing_members[:]
         created_ids = []
         start_idx = len(all_members)
+
         for idx, (member_x_mm, member_y_mm) in enumerate(member_positions, start=start_idx):
             member = BatchMember()
             member.aruco_id = idx
             member.color = color
+            member.map_pos = Point(
+                x=member_x_mm / 1000.0,
+                y=member_y_mm / 1000.0,
+                z=0.0,
+            )
+            all_members.append(member)
+
+        extra_start_idx = len(all_members)
+        for idx, (member_x_mm, member_y_mm) in enumerate(extra_row_positions, start=extra_start_idx):
+            member = BatchMember()
+            member.aruco_id = idx
+            member.color = 'yellow'
             member.map_pos = Point(
                 x=member_x_mm / 1000.0,
                 y=member_y_mm / 1000.0,
@@ -958,7 +989,8 @@ class MapManager:
         batch.count = len(all_members)
         batch.state = 'TRACKING'
         existing_pattern = existing_batch.pattern if (existing_is_manual and existing_batch is not None and existing_batch.pattern) else ''
-        batch.pattern = existing_pattern + ('yyyy' if color == 'yellow' else 'bbbb')
+        extra_pattern = 'yyyy' if extra_row_positions else ''
+        batch.pattern = existing_pattern + ('yyyy' if color == 'yellow' else 'bbbb') + extra_pattern
 
         avg_x_mm = sum(member.map_pos.x for member in all_members) * 1000.0 / len(all_members)
         avg_y_mm = sum(member.map_pos.y for member in all_members) * 1000.0 / len(all_members)
@@ -1022,6 +1054,12 @@ class MapManager:
                     f"🛡️ Added safety zone for {known_id}: 170mm x 170mm square at ({putdown_center_x_mm:.1f}, {putdown_center_y_mm:.1f})mm"
                 )
 
+        if extra_row_positions:
+            self.node.get_logger().info(
+                f"➕ Added extra yellow row for {known_id}: 4 members at +{extra_row_offset_mm:.0f}mm forward "
+                f"(zone had pre-existing obstacles)"
+            )
+
         with self.batches_lock:
             self.batches_fx[known_id] = batch
             self.batches_fx_status_type.pop(known_id, None)
@@ -1035,9 +1073,10 @@ class MapManager:
             self.known_ids_to_retry.discard(known_id)
 
         self.publish_obstacles(self.get_active_obstacles())
+        extra_suffix = f" + {len(extra_row_positions)} extra yellow row" if extra_row_positions else ""
         if existing_count > 0:
-            return True, f"Appended put_down to {known_id} ({existing_count} -> {len(all_members)} members)", created_ids, known_id
-        return True, f"Registered put_down batch as {known_id}", created_ids, known_id
+            return True, f"Appended put_down to {known_id} ({existing_count} -> {len(all_members)} members){extra_suffix}", created_ids, known_id
+        return True, f"Registered put_down batch as {known_id}{extra_suffix}", created_ids, known_id
 
     def _reconcile_manual_putdown_batches(self, received_batch_ids: set, lost_batch_ids: set) -> set:
         """
