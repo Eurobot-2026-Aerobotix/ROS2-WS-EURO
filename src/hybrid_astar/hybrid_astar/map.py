@@ -2345,6 +2345,8 @@ class MapManager:
                                     self.obstacles = [obs for obs in self.obstacles
                                                      if not (obs.id.startswith(f"fx_{specific_known_id}_") or obs.id.startswith(f"sx_{specific_known_id}_"))]
                                     removed = old_count - len(self.obstacles)
+                                    # Also clear the safety-zone sentinel so it gets recreated
+                                    self.fx_safety_added.discard(f"fx_{specific_known_id}_safety")
 
                                 with self.batches_lock:
                                     self.batches_with_obstacles.discard(specific_known_id)
@@ -2978,6 +2980,10 @@ class MapManager:
                 continue
 
             if is_fx:
+                with self.batches_lock:
+                    if known_id in self.manual_putdown_batch_ids:
+                        continue
+
                 member_count = len(batch.members) if getattr(batch, 'members', None) else 0
 
                 with self.batches_lock:
