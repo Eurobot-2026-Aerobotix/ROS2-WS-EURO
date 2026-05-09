@@ -119,7 +119,7 @@ class MapManager:
         # Flag to track if this is the first update_map call
         self.first_update_map = True
         self.first_update_empty_retry_count = 0
-        self.first_update_empty_retry_max = 6
+        self.first_update_empty_retry_max = None
         self.first_update_empty_reported = False
         self.first_update_start_logged = False
         
@@ -1901,47 +1901,29 @@ class MapManager:
 
             # If first update returns zero batches, retry as first update (do not switch to incremental flow yet).
             if is_first_update and num_batches == 0:
-                if self.first_update_empty_retry_count < self.first_update_empty_retry_max:
-                    self.first_update_empty_retry_count += 1
-                    attempt = self.first_update_empty_retry_count
-                    self.baseline_lock_pending = True
-                    retry_msg = (
-                        f"⚠️ First update_map returned 0 batches, retrying as first update "
-                        f"({attempt}/{self.first_update_empty_retry_max})"
-                    )
-                    if attempt == 1:
-                        self.node.get_logger().warn(retry_msg)
-                    else:
-                        self.node.get_logger().debug(retry_msg)
-
-                    retry_client = client if client is not None else self.retry_client
-                    if retry_client and retry_client.service_is_ready():
-                        retry_request = GetStableBatches.Request()
-                        retry_request.batch_types_filter = "sfg"
-                        retry_request.specific_known_id = ""
-                        retry_request.only_locked_baselines = False
-
-                        retry_future = retry_client.call_async(retry_request)
-                        retry_future.add_done_callback(
-                            lambda f: self._handle_get_stable_batches_response(
-                                f, trigger_response, retry_client, service_name, None, False, True
-                            )
-                        )
-                    else:
-                        self.node.get_logger().error(
-                            "❌ Cannot retry first update_map: batch service not ready"
-                        )
-                    return
-
-                exhausted_msg = (
-                    f"❌ First update_map still returned 0 batches after "
-                    f"{self.first_update_empty_retry_max} retries"
-                )
-                if not self.first_update_empty_reported:
-                    self.node.get_logger().error(exhausted_msg)
-                    self.first_update_empty_reported = True
+                self.first_update_empty_retry_count += 1
+                attempt = self.first_update_empty_retry_count
+                self.baseline_lock_pending = True
+                if self.first_update_empty_retry_max is None:
+                    retry_suffix = "unlimited"
                 else:
-                    self.node.get_logger().debug(exhausted_msg)
+                    retry_suffix = str(self.first_update_empty_retry_max)
+                retry_msg = (
+                    f"⚠️ First update_map returned 0 batches, retrying as first update "
+                    f"({attempt}/{retry_suffix})"
+                )
+                if attempt == 1:
+                    self.node.get_logger().warn(retry_msg)
+                else:
+                    self.node.get_logger().debug(retry_msg)
+
+                retry_success, retry_message, _retry_service = self._trigger_update_map_async(
+                    can_lock_baseline=True
+                )
+                if not retry_success:
+                    self.node.get_logger().error(
+                        f"❌ Cannot retry first update_map: {retry_message}"
+                    )
                 return
 
             if is_first_update and num_batches > 0:
