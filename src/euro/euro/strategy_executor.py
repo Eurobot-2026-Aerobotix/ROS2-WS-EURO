@@ -459,7 +459,7 @@ def robot_status(strategy, stm32, lidar):
             #     strategy.get_logger().info(f"✓ Robot status monitor: IDLE={IDLE}, EMERGENCY_STOP={EMERGENCY_STOP}")        
         time.sleep(0.02)  # 20ms to reduce command dispatch latency
 
-def lidar_status(strategy, stm32, lidar, round_timer):
+def lidar_status(strategy, stm32, lidar, round_timer, pneumatic_controller=None):
     """Runs every 100ms to check lidar status and handle emergency stops"""
     first_emergency = True
     
@@ -478,6 +478,9 @@ def lidar_status(strategy, stm32, lidar, round_timer):
             strategy.end_game = True
             strategy.get_logger().warning("⏰ TIME_ENDED set by lidar_status at 100s")
             _enforce_time_ended(strategy)
+            if pneumatic_controller:
+                pneumatic_controller.front(16)
+                pneumatic_controller.back(16)
             stm32.shutdown()
         
         # Check emergency stop from lidar
