@@ -1253,7 +1253,7 @@ class TaskScheduler:
 
         # Priority override for center dropoff tasks whose batch still looks hostile
         # to the robot color. Keep pickups in place and only permute dropoff slots.
-        if enable_agressive_droppoff:
+        if self.enable_agressive_droppoff:
             urgent_dropoff_ids = {"f3", "f5", "f8"}
             robot_color_char = str(self.map.robot_color[0]) if self.map.robot_color else ""
             urgent_dropoff_tasks: List[Task] = []
