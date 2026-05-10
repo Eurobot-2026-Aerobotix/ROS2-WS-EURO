@@ -1458,6 +1458,9 @@ def front_task(strategy, front_controller=None,pneumatic_controller=None):
                     _send_esp_dawer(front_controller, True, 1)
                     _send_esp_n20(front_controller, True, cmd_to_n20)
                 else:
+                    while not state.IDLE and not state.SHUTDOWN_REQUESTED:
+                        #strategy.get_logger().info("⏳ Waiting for IDLE before front prepare for fx...")
+                        time.sleep(0.1)
                     front_controller.n20(2222)
                     front_controller.dawer(0)
                     front_controller.kabech(2)
@@ -1521,6 +1524,9 @@ def back_task(strategy, back_controller=None,pneumatic_controller=None):
                     _send_esp_dawer(back_controller, False, 1)
                     _send_esp_n20(back_controller, False, cmd_to_n20)
                 else:
+                    while not state.IDLE and not state.SHUTDOWN_REQUESTED:
+                        #strategy.get_logger().info("⏳ Waiting for IDLE before back prepare for fx...")
+                        time.sleep(0.1)
                     back_controller.n20(2222)
                     back_controller.dawer(0)
                     back_controller.kabech(2)

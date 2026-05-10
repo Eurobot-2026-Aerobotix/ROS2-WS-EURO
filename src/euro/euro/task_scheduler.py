@@ -703,6 +703,54 @@ class TaskScheduler:
         return self.fx_pickup_poses.get(normalized_id, [])
 
     @staticmethod
+    def _resolve_pickup_theta_for_face(
+        batch_known_id: str,
+        pickup_face: str,
+        pickup_x_mm: float,
+        pickup_y_mm: float,
+        pickup_thetas: Any,
+        batch: Optional[Any] = None,
+    ) -> float:
+        """Resolve pickup heading for the requested face.
+
+        Most batches use the pose list ordering directly, but some wall-side FX
+        batches need a fixed front/back convention so the robot faces the same
+        physical side every time.
+        """
+        normalized_id = str(batch_known_id or '').upper()
+
+        if normalized_id.startswith('F') and batch is not None:
+            try:
+                center_x = float(batch.x)
+                center_y = float(batch.y)
+                pickup_theta = math.degrees(math.atan2(center_y - float(pickup_y_mm), center_x - float(pickup_x_mm)))
+                if pickup_face == 'back':
+                    pickup_theta = pickup_theta + 180.0
+                return float(TaskScheduler._normalize_angle_deg(pickup_theta))
+            except Exception:
+                pass
+
+        # Explicit overrides for wall-side FX batches where list ordering alone
+        # does not match the intended front/back convention.
+        explicit_fx_theta = {
+            'F1': {'front': -90.0, 'back': 90.0},
+            'F10': {'front': 90.0, 'back': -90.0},
+        }
+        batch_theta_map = explicit_fx_theta.get(normalized_id)
+        if batch_theta_map is not None and pickup_face in batch_theta_map:
+            return float(batch_theta_map[pickup_face])
+
+        if isinstance(pickup_thetas, list) and len(pickup_thetas) > 0:
+            if pickup_face == 'back' and len(pickup_thetas) > 1:
+                return float(pickup_thetas[1])
+            return float(pickup_thetas[0])
+
+        if isinstance(pickup_thetas, (int, float)):
+            return float(pickup_thetas)
+
+        return 0.0
+
+    @staticmethod
     def _compute_fx_creep_target_mm(batch_known_id: str, pickup_x_mm: float, pickup_y_mm: float) -> Optional[Tuple[float, float]]:
         """Compute 250mm-from-wall creep target for supported FX pickup ids."""
         normalized = str(batch_known_id or '').upper()
@@ -1465,11 +1513,17 @@ class TaskScheduler:
         pickup_y = selected_pose['y']  # in mm
         pickup_thetas = selected_pose['theta']  # list of angles in degrees
         
-        # Choose first theta from the list (or single value)
-        if isinstance(pickup_thetas, list) and len(pickup_thetas) > 0:
-            pickup_theta = pickup_thetas[0]
-        else:
-            pickup_theta = pickup_thetas if isinstance(pickup_thetas, (int, float)) else 0
+        batch = self.map.batches.get(str(batch_known_id).lower())
+
+        # Resolve the pickup heading for the requested face.
+        pickup_theta = self._resolve_pickup_theta_for_face(
+            normalized_id,
+            pickup_face,
+            float(pickup_x),
+            float(pickup_y),
+            pickup_thetas,
+            batch=batch,
+        )
         
         # Determine ESP device and STM command type
         esp_device = 'ESP_front' if pickup_face == 'front' else 'ESP_back'
@@ -1483,7 +1537,6 @@ class TaskScheduler:
         approach_x = float(pickup_x)
         approach_y = float(pickup_y)
 
-        batch = self.map.batches.get(str(batch_known_id).lower())
         if batch is not None:
             center_x = float(batch.x)
             center_y = float(batch.y)
@@ -1557,15 +1610,23 @@ class TaskScheduler:
         if is_fx_pickup_flow:
             # FX flow:
             # 1) move to pickup pose aligned with center-facing orientation,
-            # 2) creep_to toward wall-offset point for automatic capture,
-            # 3) trigger dedicated ESP pick_up_fx,
-            # 4) immediately put_down at the same location (FX combo flow),
-            # 5) retreat away from pickup point.
+            # 2) explicitly orientate to batch heading,
+            # 3) creep_to toward wall-offset point for automatic capture,
+            # 4) trigger dedicated ESP pick_up_fx,
+            # 5) immediately put_down at the same location (FX combo flow),
+            # 6) retreat away from pickup point.
             task_sequence.append({
                 'device': 'STM',
                 'command': stm_command,
                 'params': [float(pickup_x), float(pickup_y), 1100.0, 1.0, {'from_pathfinding': True, 'from_pickup_task': True}],
                 'wait': False
+            })
+
+            task_sequence.append({
+                'device': 'STM',
+                'command': 'orientate',
+                'params': [float(pickup_theta), 0.0],
+                'wait': True
             })
 
             creep_target = self._compute_fx_creep_target_mm(normalized_id, float(pickup_x), float(pickup_y))
