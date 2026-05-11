@@ -1690,7 +1690,7 @@ class TaskScheduler:
             
             # Compute retreat target away from wall.
             # When creep target exists, retreat from creep point back toward pickup point.
-            retreat_distance_mm = 150.0
+            retreat_distance_mm = 220.0
             if creep_target is not None:
                 origin_x = float(creep_target[0])
                 origin_y = float(creep_target[1])

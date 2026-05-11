@@ -12,7 +12,7 @@ from geometry_msgs.msg import Point
 
 # Global switch for task-tracking cancellation handling.
 # When False, task cancellation is ignored and no emergency recovery is triggered.
-ALLOW_CANCELING = True
+ALLOW_CANCELING = False
 
 class Round:
     """Timer class to track game round time"""
