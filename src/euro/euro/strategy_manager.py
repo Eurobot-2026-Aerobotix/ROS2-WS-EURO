@@ -1034,7 +1034,7 @@ def main(args=None):
     def reset_aruco_stability():
         time.sleep(0.5)  # Wait for executor to start
         #strategy.pathfinder.reset_stability()
-        strategy.pathfinder.clear_map()
+        #strategy.pathfinder.clear_map()
     
     reset_thread = threading.Thread(
         target=reset_aruco_stability,

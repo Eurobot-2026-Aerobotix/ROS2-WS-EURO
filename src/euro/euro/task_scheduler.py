@@ -26,7 +26,7 @@ class TaskScheduler:
     """Simple task scheduler that generates tasks based on the current map state."""
     # NOTE: `Map.get_time_left()` is expressed in seconds.
     # Keep these thresholds in seconds as well.
-    allow_fx = True
+    allow_fx = False
     supported_fx_pickup_ids = {'f1', 'f2', 'f4', 'f7', 'f6', 'f9', 'f10'}
     fx_pickup_poses = {
         'F1': [{'x': 1200.0, 'y': 450.0, 'theta': [90, -90]}],

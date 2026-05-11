@@ -118,6 +118,8 @@ class MapManager:
         
         # Flag to track if this is the first update_map call
         self.first_update_map = True
+        # Allow removing batches that disappear from live input
+        self.allow_batch_disappearing = False
         self.first_update_empty_retry_count = 0
         self.first_update_empty_retry_max = None
         self.first_update_empty_reported = False
@@ -589,7 +591,6 @@ class MapManager:
                         f"🧽 Cleared manual pattern override for '{known_id}'"
                     )
 
-                self._reset_batch_for_override_clear(known_id)
                 success, message, _service_name = self._trigger_update_map_async(can_lock_baseline=False)
                 if success:
                     self.node.get_logger().info(
@@ -605,8 +606,6 @@ class MapManager:
                 overridden_ids = set(self.manual_pattern_overrides.keys()) | set(self.synthetic_override_batch_ids)
                 count = len(self.manual_pattern_overrides)
                 self.manual_pattern_overrides.clear()
-                for sid in list(overridden_ids):
-                    self._reset_batch_for_override_clear(sid)
                 self.node.get_logger().info(
                     f"🧽 Cleared all manual pattern overrides ({count})"
                 )
@@ -2245,6 +2244,13 @@ class MapManager:
                                 fx_batches_ids_incomplete.add(batch.known_id)
                     fx_batches_ids_incomplete -= retained_manual_putdown_ids
                     
+                    # Keep overridden (synthetic/manual) batches even if they "disappear" from live input,
+                    # unless explicit disappearing is allowed.
+                    if not self.allow_batch_disappearing:
+                        if self.synthetic_override_batch_ids or self.manual_pattern_overrides:
+                            protected_override_ids = set(self.synthetic_override_batch_ids) | set(self.manual_pattern_overrides.keys())
+                            disappeared_ids -= protected_override_ids
+
                     batches_to_remove = disappeared_ids | fx_batches_ids_incomplete  # Disappeared + incomplete FX
                     
                     if batches_to_remove:

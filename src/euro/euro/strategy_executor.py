@@ -1268,7 +1268,7 @@ def pick_up(controller,pneumatic,strategy,front):
 
     _send_esp_n20(controller, front, 1111)
     stana(controller, last_value=1111)
-    #time.sleep(0.3)
+    time.sleep(0.2)
     if _should_abort_esp_action(strategy, front, "pick_up()"):
         return
 
