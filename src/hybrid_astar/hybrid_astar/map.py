@@ -124,6 +124,9 @@ class MapManager:
         self.first_update_empty_retry_max = None
         self.first_update_empty_reported = False
         self.first_update_start_logged = False
+        # Tracks which s1-s8 have been seen as non-EMERGING across first-update retries
+        self.first_update_sx_seen: set = set()
+        self._required_sx_ids = {f"s{i}" for i in range(1, 9)}
         
         # Flag to track if we've locked the baseline patterns
         self.baselines_locked = False
@@ -643,6 +646,11 @@ class MapManager:
 
             self._apply_manual_pattern_override(target_batch)
             self.batches_with_obstacles.discard(known_id)
+            if source == 'sx':
+                self.locked_baseline_batch_ids.add(known_id)
+                self.locked_baseline_all_batch_ids.add(known_id)
+                self.pending_baseline_lock_ids.discard(known_id)
+                self.tentative_baseline_ids.discard(known_id)
 
         prefix_sx = f"sx_{known_id}_"
         prefix_fx = f"fx_{known_id}_"
@@ -742,6 +750,7 @@ class MapManager:
         self.game_timeout_stopped = False
         self._stop_game_update_timer()
         self.known_ids_to_retry.clear()
+        self.first_update_sx_seen.clear()
         self.deleted_batch_ids.clear()
         self.active_batch_ids.clear()
         self.pending_baseline_request_ids.clear()
@@ -2985,12 +2994,20 @@ class MapManager:
         if lost_ids:
             with self.batches_lock:
                 manual_putdown_ids = set(self.manual_putdown_batch_ids)
-            lost_non_manual_ids = lost_ids - manual_putdown_ids
-            if lost_ids - lost_non_manual_ids:
+                synthetic_ids = set(self.synthetic_override_batch_ids)
+            protected_ids = manual_putdown_ids | synthetic_ids
+            lost_non_protected_ids = lost_ids - protected_ids
+            preserved_ids = lost_ids & protected_ids
+            if preserved_ids:
                 self.node.get_logger().info(
-                    f"📌 Ignoring LOST for manual put_down batches (preserved): {lost_ids - lost_non_manual_ids}"
+                    f"📌 Ignoring LOST for protected batches (put_down/override): {preserved_ids}"
                 )
-            self._remove_lost_batches(lost_non_manual_ids, reason="reported LOST by /aruco_mapper/all_batches")
+            if lost_non_protected_ids and ACTIVATE_LOST_BATCH_DELETING:
+                self._remove_lost_batches(lost_non_protected_ids, reason="reported LOST by /aruco_mapper/all_batches")
+            elif lost_non_protected_ids:
+                self.node.get_logger().info(
+                    f"📌 LOST batch deletion disabled; preserving: {lost_non_protected_ids}"
+                )
             for bid in lost_ids:
                 self.pending_baseline_request_ids.discard(bid)
                 self.fx_pending_baseline_batches.pop(bid, None)
