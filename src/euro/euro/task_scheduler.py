@@ -1722,7 +1722,20 @@ class TaskScheduler:
                 'params': [retreat_x, retreat_y, 900.0, 1.0, {'from_fx_pickup_combo': True, 'fx_retreat': True}],
                 'wait': True
             })
-        
+        else:
+            # SX: retreat 70mm away from batch after pickup, mirroring build_put_down retreat logic.
+            # ux/uy point toward batch center (approach→pickup direction); retreat is the opposite.
+            retreat_stm_command = 'go_to_backwards' if esp_device == 'ESP_front' else 'go_to'
+            sx_retreat_mm = 70.0
+            sx_retreat_x = pickup_target_x - sx_retreat_mm * ux
+            sx_retreat_y = pickup_target_y - sx_retreat_mm * uy
+            task_sequence.append({
+                'device': 'STM',
+                'command': retreat_stm_command,
+                'params': [sx_retreat_x, sx_retreat_y, 900.0, 1.0, {'from_pickup_task': True, 'pickup_retreat': True}],
+                'wait': True
+            })
+
         # Build and return task dict
         task = {
             'name': f'pickup_{normalized_id}_{pickup_face}',
