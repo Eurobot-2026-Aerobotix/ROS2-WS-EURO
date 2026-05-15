@@ -2738,7 +2738,8 @@ class MapManager:
                 return
 
             member_count = len(target_batch.members) if target_batch.members else 0
-            if member_count == 3:
+            has_manual_override = known_id in self.manual_pattern_overrides
+            if member_count == 3 and not has_manual_override:
                 self.node.get_logger().info(
                     f"⏭️  SX batch '{known_id}' has only 3 members after baseline lock - skipping obstacle creation"
                 )
@@ -3601,7 +3602,8 @@ class MapManager:
                             continue
 
                     member_count = len(batch.members) if batch.members else 0
-                    if member_count == 3 and not is_tentative_baseline:
+                    has_manual_override = batch_known_id in self.manual_pattern_overrides
+                    if member_count == 3 and not is_tentative_baseline and not has_manual_override:
                         self.node.get_logger().info(
                             f"⏭️  SX batch '{batch_known_id}' has only 3 members - skipping obstacle creation"
                         )
