@@ -1893,8 +1893,16 @@ class MapManager:
             specific_known_id: If set, this is a retry for a specific known_id
         """
         try:
+            # If this is a specific-batch retry/baseline request and the batch was deleted
+            # (picked up) while the async call was in-flight, discard the response.
+            if specific_known_id and specific_known_id in self.deleted_batch_ids:
+                self.node.get_logger().info(
+                    f"🚫 Discarding in-flight response for deleted batch '{specific_known_id}'"
+                )
+                return
+
             stable_response = future.result()
-            
+
             if stable_response is None:
                 self.node.get_logger().error("❌ Service returned None")
                 return
