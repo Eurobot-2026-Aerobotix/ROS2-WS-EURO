@@ -53,6 +53,7 @@ class TaskScheduler:
     switch_distance=2500.0
     retreat_distance=175.0
     enable_agressive_droppoff=True
+    enemy_rcva=False
     # Drop-off zone parameters for different drop-off types
     wall_dropoff_ids = {'f1', 'f2', 'f6', 'f9', 'f10', 'f4', 'f7'}
     wall_dropoff_insert_distance = 200.0
@@ -1305,6 +1306,20 @@ class TaskScheduler:
             # If time is running out, prioritize dropoff tasks
             queue = [t for t in queue if t.type == "dropoff"] + [t for t in queue if t.type != "dropoff"]
         
+        if self.enemy_rcva and time_left_s < 22.0:
+            robot_color = str(self.map.robot_color or "").lower()
+            if robot_color.startswith("b"):
+                rcva_target_id = "f4"
+                rcva_x, rcva_y = 815.0, 2175.0
+            else:
+                rcva_target_id = "f7"
+                rcva_x, rcva_y = 815.0, 825.0
+            rcva_task = Task(target_id=rcva_target_id, type="dropoff")
+            rcva_task.options["x"] = rcva_x
+            rcva_task.options["y"] = rcva_y
+            rcva_task.options["RCVA"] = True
+            queue.insert(0, rcva_task)
+
         if time_left_s < go_home_time and len([t for t in queue if t.type == "dropoff"]) == 0:
             task = Task(target_id="nest", type="return_home")
             task.options["drop"] = "none"
