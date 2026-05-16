@@ -94,6 +94,7 @@ class TaskScheduler:
         self._last_task_queue_signature = None
         self._last_empty_queue_reason_signature = None
         self.log_batches=True
+        self.allow_NP = False
         # Explicit ROS wiring only:
         # - If a node is provided and map is a plain data-map, attach subscribers on it.
         # - If map is already a ROS node (e.g. MapNode), do not attach again.
@@ -1029,6 +1030,20 @@ class TaskScheduler:
                 print(f"[TaskScheduler] {message}")
         self._last_available_batches_signature = available_signature
 
+        # Check if there are any P (Perfect) batches and update allow_NP accordingly
+        has_p_batches = False
+        for batch_id, batch in batches_snapshot:
+            batch_quality = str(getattr(batch, 'quality', '') or '').strip().upper()
+            if not batch_quality and hasattr(self.map, 'get_quality'):
+                batch_quality = str(self.map.get_quality(batch_id) or '').strip().upper()
+            if batch_quality != 'NP':
+                has_p_batches = True
+                break
+        
+        # If no P batches, allow NP batches (and keep it true once set)
+        if not has_p_batches:
+            self.allow_NP = True
+
         queue = []
         skip_stats: Dict[str, int] = {
             'pickup_fx_disabled': 0,
@@ -1067,7 +1082,7 @@ class TaskScheduler:
                 batch_quality = str(getattr(batch, 'quality', '') or '').strip().upper()
                 if not batch_quality and hasattr(self.map, 'get_quality'):
                     batch_quality = str(self.map.get_quality(batch_id) or '').strip().upper()
-                if batch_quality == 'NP':
+                if batch_quality == 'NP' and not self.allow_NP:
                     skip_stats['pickup_np_quality'] += 1
                     if self.ros_node is not None:
                         self.ros_node.get_logger().debug(
