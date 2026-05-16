@@ -1916,12 +1916,13 @@ class MapManager:
                 if self._parse_batch_state(batch.state)[0] == 'LOST'
             }
 
-            # Remove LOST batches immediately, except manual put_down batches
-            # which are preserved and must not be updated/removed from beacon input.
+            # Remove LOST batches immediately, except manual put_down batches and
+            # manually overridden batches, which must never be removed by beacon LOST.
             with self.batches_lock:
                 manual_putdown_ids = set(self.manual_putdown_batch_ids)
                 _locked_now = self.locked_baseline_batch_ids | self.locked_baseline_all_batch_ids
-            lost_non_manual_ids = set(lost_batch_ids) - manual_putdown_ids
+            protected_ids = manual_putdown_ids | set(self.synthetic_override_batch_ids) | set(self.manual_pattern_overrides.keys())
+            lost_non_manual_ids = set(lost_batch_ids) - protected_ids
             lost_preserved_ids = set()
             # On the first update, SX batches that are LOST but not yet baseline-locked
             # should be retried rather than hard-removed.
@@ -2237,17 +2238,36 @@ class MapManager:
             # On subsequent updates, we do incremental updates
             if specific_known_id is None:  # Only clear on first update (not on retries)
                 if is_first_update:
-                    # FIRST UPDATE: Clear everything
+                    # FIRST UPDATE: Clear everything, but preserve manually overridden SX batches
+                    # so that a pattern override set before the first beacon response is not lost.
+                    protected_override_ids = set(self.synthetic_override_batch_ids) | set(self.manual_pattern_overrides.keys())
                     with self.obstacles_lock:
                         old_count = len(self.obstacles)
-                        self.obstacles = [obs for obs in self.obstacles if self.obstacle_sources.get(obs.id, '') not in ['fx', 'sx']]
+                        if protected_override_ids:
+                            self.obstacles = [
+                                obs for obs in self.obstacles
+                                if self.obstacle_sources.get(obs.id, '') not in ['fx', 'sx']
+                                or any(obs.id.startswith(f"sx_{bid}_") or obs.id.startswith(f"fx_{bid}_") for bid in protected_override_ids)
+                            ]
+                            # Clear obstacle sources for both FX and SX, keeping override batch sources
+                            self.obstacle_sources = {
+                                k: v for k, v in self.obstacle_sources.items()
+                                if v not in ['fx', 'sx']
+                                or any(k.startswith(f"sx_{bid}_") or k.startswith(f"fx_{bid}_") for bid in protected_override_ids)
+                            }
+                        else:
+                            self.obstacles = [obs for obs in self.obstacles if self.obstacle_sources.get(obs.id, '') not in ['fx', 'sx']]
+                            # Clear obstacle sources for both FX and SX
+                            self.obstacle_sources = {k: v for k, v in self.obstacle_sources.items() if v not in ['fx', 'sx']}
                         removed = old_count - len(self.obstacles)
-                        
-                        # Clear obstacle sources for both FX and SX
-                        self.obstacle_sources = {k: v for k, v in self.obstacle_sources.items() if v not in ['fx', 'sx']}
-                        
+
                         # Clear both batch dictionaries
                         with self.batches_lock:
+                            # Save override SX state before clearing
+                            preserved_override_sx = {bid: self.batches_sx[bid] for bid in protected_override_ids if bid in self.batches_sx}
+                            preserved_override_sx_baseline = {bid: self.batches_sx_baseline_status_type.get(bid) for bid in preserved_override_sx}
+                            preserved_override_obs = set(protected_override_ids) & self.batches_with_obstacles
+
                             self.batches_fx.clear()
                             self.batches_fx_status_type.clear()
                             self.batches_sx.clear()
@@ -2259,6 +2279,17 @@ class MapManager:
                             self.batches_fx.update(preserved_manual_batches)
                             self.batches_with_obstacles.update(preserved_manual_batches.keys())
                             self.manual_putdown_batch_ids.update(preserved_manual_batches.keys())
+                            # Restore override SX batches so pre-game overrides survive the first update
+                            if preserved_override_sx:
+                                self.batches_sx.update(preserved_override_sx)
+                                for bid, val in preserved_override_sx_baseline.items():
+                                    if val is not None:
+                                        self.batches_sx_baseline_status_type[bid] = val
+                                self.batches_with_obstacles.update(preserved_override_obs)
+                                self.locked_baseline_batch_ids.update(preserved_override_sx.keys())
+                                self.node.get_logger().info(
+                                    f"📌 Preserved {len(preserved_override_sx)} override SX batch(es) across first update: {set(preserved_override_sx.keys())}"
+                                )
                             self.node.get_logger().info(f"🗑️  Cleared all FX and SX batches and {removed} obstacles before first update")
                 else:
                     # SUBSEQUENT UPDATES: Incremental update
