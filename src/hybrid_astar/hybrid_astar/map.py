@@ -28,7 +28,7 @@ from aruco_mapper_msgs.srv import GetStableBatches
 
 # Global toggle: when True, batches reported LOST are removed.
 # Set to False to preserve LOST batches.
-ACTIVATE_LOST_BATCH_DELETING = True
+ACTIVATE_LOST_BATCH_DELETING = False
 
 # When True, periodically logs each batch's obstacle count and P/NP status.
 DEBUG_BATCHES_MEMBERS = False
@@ -1920,8 +1920,19 @@ class MapManager:
             # which are preserved and must not be updated/removed from beacon input.
             with self.batches_lock:
                 manual_putdown_ids = set(self.manual_putdown_batch_ids)
+                _locked_now = self.locked_baseline_batch_ids | self.locked_baseline_all_batch_ids
             lost_non_manual_ids = set(lost_batch_ids) - manual_putdown_ids
             lost_preserved_ids = set()
+            # On the first update, SX batches that are LOST but not yet baseline-locked
+            # should be retried rather than hard-removed.
+            _is_first = can_lock_baseline and self.first_update_map and specific_known_id is None
+            lost_sx_retry_ids: set = set()
+            if _is_first:
+                lost_sx_retry_ids = {
+                    bid for bid in lost_non_manual_ids
+                    if bid.startswith('s') and bid not in _locked_now
+                }
+                lost_non_manual_ids -= lost_sx_retry_ids
             if lost_non_manual_ids and ACTIVATE_LOST_BATCH_DELETING:
                 self._remove_lost_batches(lost_non_manual_ids, reason="reported LOST by beacon")
             elif lost_non_manual_ids:
@@ -1979,6 +1990,14 @@ class MapManager:
                 for batch in aruco_state.batches:
                     state, _ = self._parse_batch_state(batch.state)
                     if state == 'LOST':
+                        if batch.known_id in lost_sx_retry_ids:
+                            # Not baseline-locked yet on first update — treat like EMERGING.
+                            emerging_ids.add(batch.known_id)
+                            self.node.get_logger().info(
+                                f"  ⏳ [SX] '{batch.known_id}': LOST (not locked, first update) → will retry"
+                            )
+                            skipped_count += 1
+                            continue
                         # LOST batches are removed immediately and must not be processed further.
                         self.known_ids_to_retry.discard(batch.known_id)
                         skipped_count += 1
@@ -2004,11 +2023,23 @@ class MapManager:
                         else:
                             skipped_count += 1
 
+                # Detect s1-s8 that are completely absent from the mapper response
+                # (not EMERGING, not LOST, just not reported at all).
+                # They need to be retried the same way as EMERGING batches.
+                reported_sx_ids = {
+                    batch.known_id for batch in aruco_state.batches
+                    if batch.known_id.startswith('s')
+                }
+                absent_sx_ids = self._required_sx_ids - reported_sx_ids
+                for sid in absent_sx_ids:
+                    emerging_ids.add(sid)
+                    self.node.get_logger().info(f"  ⏳ [SX] '{sid}': absent from mapper → will retry")
+
                 # Store EMERGING IDs for retry (SX and FX)
                 self.known_ids_to_retry = emerging_ids
 
                 self.node.get_logger().info(
-                    f"📊 First update summary: {non_emerging_count} non-EMERGING, {len(emerging_ids)} EMERGING queued for retry, "
+                    f"📊 First update summary: {non_emerging_count} non-EMERGING, {len(emerging_ids)} EMERGING/absent queued for retry, "
                     f"{skipped_count} GX skipped"
                 )
 
