@@ -28,7 +28,10 @@ from aruco_mapper_msgs.srv import GetStableBatches
 
 # Global toggle: when True, batches reported LOST are removed.
 # Set to False to preserve LOST batches.
-ACTIVATE_LOST_BATCH_DELETING = True
+ACTIVATE_LOST_BATCH_DELETING = False
+
+# When True, periodically logs each batch's obstacle count and P/NP status.
+DEBUG_BATCHES_MEMBERS = False
 
 
 class MapManager:
@@ -115,10 +118,15 @@ class MapManager:
         
         # Flag to track if this is the first update_map call
         self.first_update_map = True
+        # Allow removing batches that disappear from live input
+        self.allow_batch_disappearing = False
         self.first_update_empty_retry_count = 0
-        self.first_update_empty_retry_max = 6
+        self.first_update_empty_retry_max = None
         self.first_update_empty_reported = False
         self.first_update_start_logged = False
+        # Tracks which s1-s8 have been seen as non-EMERGING across first-update retries
+        self.first_update_sx_seen: set = set()
+        self._required_sx_ids = {f"s{i}" for i in range(1, 9)}
         
         # Flag to track if we've locked the baseline patterns
         self.baselines_locked = False
@@ -248,6 +256,8 @@ class MapManager:
         self.game_update_timer = self.node.create_timer(
             game_update_interval, self._game_update_timer_callback
         )
+
+        self.node.create_timer(1.0, self._debug_batches_members_callback)
         
         self.node.get_logger().info('🗺️  Map Manager initialized')
         self.node.get_logger().info(
@@ -313,6 +323,22 @@ class MapManager:
         self.all_batches_sub_active = True
         self.node.get_logger().info(
             f"📡 Subscribed to {self.all_batches_topic} for post-lock batch updates"
+        )
+
+    def _ensure_all_batches_subscription(self, reason: str) -> None:
+        """Subscribe to /aruco_mapper/all_batches if not already active."""
+        if self.all_batches_sub_active:
+            return
+
+        self.all_batches_sub = self.node.create_subscription(
+            ArucoMapperState,
+            self.all_batches_topic,
+            self._handle_all_batches_topic,
+            10
+        )
+        self.all_batches_sub_active = True
+        self.node.get_logger().info(
+            f"📡 Subscribed to {self.all_batches_topic} ({reason})"
         )
 
     def _invalidate_sx_baseline_lock(self, known_id: str, state: str) -> None:
@@ -568,7 +594,6 @@ class MapManager:
                         f"🧽 Cleared manual pattern override for '{known_id}'"
                     )
 
-                self._reset_batch_for_override_clear(known_id)
                 success, message, _service_name = self._trigger_update_map_async(can_lock_baseline=False)
                 if success:
                     self.node.get_logger().info(
@@ -584,8 +609,6 @@ class MapManager:
                 overridden_ids = set(self.manual_pattern_overrides.keys()) | set(self.synthetic_override_batch_ids)
                 count = len(self.manual_pattern_overrides)
                 self.manual_pattern_overrides.clear()
-                for sid in list(overridden_ids):
-                    self._reset_batch_for_override_clear(sid)
                 self.node.get_logger().info(
                     f"🧽 Cleared all manual pattern overrides ({count})"
                 )
@@ -623,6 +646,11 @@ class MapManager:
 
             self._apply_manual_pattern_override(target_batch)
             self.batches_with_obstacles.discard(known_id)
+            if source == 'sx':
+                self.locked_baseline_batch_ids.add(known_id)
+                self.locked_baseline_all_batch_ids.add(known_id)
+                self.pending_baseline_lock_ids.discard(known_id)
+                self.tentative_baseline_ids.discard(known_id)
 
         prefix_sx = f"sx_{known_id}_"
         prefix_fx = f"fx_{known_id}_"
@@ -722,6 +750,7 @@ class MapManager:
         self.game_timeout_stopped = False
         self._stop_game_update_timer()
         self.known_ids_to_retry.clear()
+        self.first_update_sx_seen.clear()
         self.deleted_batch_ids.clear()
         self.active_batch_ids.clear()
         self.pending_baseline_request_ids.clear()
@@ -900,11 +929,18 @@ class MapManager:
             existing_batch = self.batches_fx.get(known_id)
             existing_is_manual = known_id in self.manual_putdown_batch_ids
 
+        # Any members already tracked for this zone (beacon or prior manual putdown)
+        zone_had_members = (
+            existing_batch is not None
+            and len(getattr(existing_batch, 'members', [])) > 0
+        )
+
         existing_members = list(existing_batch.members) if (existing_is_manual and existing_batch is not None) else []
         existing_count = len(existing_members)
         if existing_count >= 8:
             return False, f"Batch {known_id} already contains 8 manually put-down members", [], known_id
 
+        # Normal 4-member row at the computed batch center
         member_positions = []
         for lat in lateral_offsets:
             member_positions.append((
@@ -912,13 +948,37 @@ class MapManager:
                 batch_center_y_mm + lat * vy,
             ))
 
+        # When the zone already had obstacles, add a second row of 4 yellow members
+        # 100 mm further forward (same heading) to represent the pre-existing stack.
+        extra_row_offset_mm = 100.0
+        extra_row_positions = []
+        if zone_had_members and not existing_is_manual:
+            for lat in lateral_offsets:
+                extra_row_positions.append((
+                    batch_center_x_mm + extra_row_offset_mm * ux + lat * vx,
+                    batch_center_y_mm + extra_row_offset_mm * uy + lat * vy,
+                ))
+
         all_members = existing_members[:]
         created_ids = []
         start_idx = len(all_members)
+
         for idx, (member_x_mm, member_y_mm) in enumerate(member_positions, start=start_idx):
             member = BatchMember()
             member.aruco_id = idx
             member.color = color
+            member.map_pos = Point(
+                x=member_x_mm / 1000.0,
+                y=member_y_mm / 1000.0,
+                z=0.0,
+            )
+            all_members.append(member)
+
+        extra_start_idx = len(all_members)
+        for idx, (member_x_mm, member_y_mm) in enumerate(extra_row_positions, start=extra_start_idx):
+            member = BatchMember()
+            member.aruco_id = idx
+            member.color = 'yellow'
             member.map_pos = Point(
                 x=member_x_mm / 1000.0,
                 y=member_y_mm / 1000.0,
@@ -937,7 +997,8 @@ class MapManager:
         batch.count = len(all_members)
         batch.state = 'TRACKING'
         existing_pattern = existing_batch.pattern if (existing_is_manual and existing_batch is not None and existing_batch.pattern) else ''
-        batch.pattern = existing_pattern + ('yyyy' if color == 'yellow' else 'bbbb')
+        extra_pattern = 'yyyy' if extra_row_positions else ''
+        batch.pattern = existing_pattern + ('yyyy' if color == 'yellow' else 'bbbb') + extra_pattern
 
         avg_x_mm = sum(member.map_pos.x for member in all_members) * 1000.0 / len(all_members)
         avg_y_mm = sum(member.map_pos.y for member in all_members) * 1000.0 / len(all_members)
@@ -976,30 +1037,64 @@ class MapManager:
                 self.obstacle_sources[obs.id] = 'put_down'
                 created_ids.append(obs.id)
 
-            # Add safety zone obstacle (17cm x 17cm square) centered at putdown zone position
-            # Only add on first registration (existing_count == 0), not on appends
+            # 200x200 center safety — always on first registration, at the predefined FX zone position
             if existing_count == 0:
-                safety_zone_size_mm = 170.0  # 17cm x 17cm
-                putdown_center_x_mm = self.putdown_fx_positions_mm[known_id]['x']
-                putdown_center_y_mm = self.putdown_fx_positions_mm[known_id]['y']
-                
+                center_safety_id = f"fx_{known_id}_safety_center"
+                fx_center_x_mm = self.putdown_fx_positions_mm[known_id]['x']
+                fx_center_y_mm = self.putdown_fx_positions_mm[known_id]['y']
+
+                center_safety_obs = Obstacle()
+                center_safety_obs.id = center_safety_id
+                center_safety_obs.type = 'safety_zone'
+                center_safety_obs.color = 'wall'
+                center_safety_obs.width_mm = 200.0
+                center_safety_obs.height_mm = 200.0
+                center_safety_obs.pose.x = fx_center_x_mm
+                center_safety_obs.pose.y = fx_center_y_mm
+                center_safety_obs.pose.theta = 0.0
+                center_safety_obs.detected_at = stamp
+                self.obstacles.append(center_safety_obs)
+                self.obstacle_sources[center_safety_obs.id] = 'put_down_safety'
+                created_ids.append(center_safety_obs.id)
+
+                self.node.get_logger().info(
+                    f"🛡️ Added center safety for {known_id}: 200mm x 200mm at ({fx_center_x_mm:.1f}, {fx_center_y_mm:.1f})mm"
+                )
+
+            # 170x170 projected safety at 375mm — only when zone had pre-existing members
+            safety_obs_id = f"fx_{known_id}_safety"
+            safety_already_added = any(obs.id == safety_obs_id for obs in self.obstacles)
+            if zone_had_members and not safety_already_added:
+                heading_dot = (batch_center_x_mm - robot_x_mm) * ux + (batch_center_y_mm - robot_y_mm) * uy
+                safety_sign = 1.0 if heading_dot >= 0.0 else -1.0
+                safety_projection_mm = 375.0
+                safety_center_x_mm = robot_x_mm + safety_projection_mm * safety_sign * ux
+                safety_center_y_mm = robot_y_mm + safety_projection_mm * safety_sign * uy
+
                 safety_obs = Obstacle()
-                safety_obs.id = f"fx_{known_id}_safety"
+                safety_obs.id = safety_obs_id
                 safety_obs.type = 'safety_zone'
-                safety_obs.color = 'wall'  # Use wall color for visualization
-                safety_obs.width_mm = safety_zone_size_mm
-                safety_obs.height_mm = safety_zone_size_mm
-                safety_obs.pose.x = putdown_center_x_mm
-                safety_obs.pose.y = putdown_center_y_mm
-                safety_obs.pose.theta = 0.0
+                safety_obs.color = 'wall'
+                safety_obs.width_mm = 170.0
+                safety_obs.height_mm = 170.0
+                safety_obs.pose.x = safety_center_x_mm
+                safety_obs.pose.y = safety_center_y_mm
+                safety_obs.pose.theta = robot_theta
                 safety_obs.detected_at = stamp
                 self.obstacles.append(safety_obs)
                 self.obstacle_sources[safety_obs.id] = 'put_down_safety'
                 created_ids.append(safety_obs.id)
-                
+
                 self.node.get_logger().info(
-                    f"🛡️ Added safety zone for {known_id}: 170mm x 170mm square at ({putdown_center_x_mm:.1f}, {putdown_center_y_mm:.1f})mm"
+                    f"🛡️ Added projected safety for {known_id}: 170mm x 170mm at ({safety_center_x_mm:.1f}, {safety_center_y_mm:.1f})mm "
+                    f"(375mm {'forward' if safety_sign > 0 else 'backward'} from robot)"
                 )
+
+        if extra_row_positions:
+            self.node.get_logger().info(
+                f"➕ Added extra yellow row for {known_id}: 4 members at +{extra_row_offset_mm:.0f}mm forward "
+                f"(zone had pre-existing obstacles)"
+            )
 
         with self.batches_lock:
             self.batches_fx[known_id] = batch
@@ -1007,11 +1102,17 @@ class MapManager:
             self.batches_with_obstacles.add(known_id)
             self.manual_putdown_batch_ids.add(known_id)
             self.active_batch_ids.add(known_id)
+            # Cancel any pending beacon-driven retry for this known_id so the
+            # short-pattern / EMERGING retry loops don't overwrite the putdown.
+            self.tentative_baseline_ids.discard(known_id)
+            self.short_pattern_ids.discard(known_id)
+            self.known_ids_to_retry.discard(known_id)
 
         self.publish_obstacles(self.get_active_obstacles())
+        extra_suffix = f" + {len(extra_row_positions)} extra yellow row" if extra_row_positions else ""
         if existing_count > 0:
-            return True, f"Appended put_down to {known_id} ({existing_count} -> {len(all_members)} members)", created_ids, known_id
-        return True, f"Registered put_down batch as {known_id}", created_ids, known_id
+            return True, f"Appended put_down to {known_id} ({existing_count} -> {len(all_members)} members){extra_suffix}", created_ids, known_id
+        return True, f"Registered put_down batch as {known_id}{extra_suffix}", created_ids, known_id
 
     def _reconcile_manual_putdown_batches(self, received_batch_ids: set, lost_batch_ids: set) -> set:
         """
@@ -1115,6 +1216,8 @@ class MapManager:
     
     def handle_obstacle_relative(self, msg: PoseStamped):
         """Handle incoming obstacle from /obstacle_relative topic (only keeps one enemy)"""
+        if self.game_timeout_stopped:
+            return
         with self.obstacles_lock:
             # Remove all existing enemy obstacles first (only keep one enemy)
             self.obstacles = [obs for obs in self.obstacles if obs.color != 'enemy']
@@ -1191,6 +1294,8 @@ class MapManager:
     
     def publish_current_obstacles(self):
         """Periodically publish current obstacle list"""
+        if self.game_timeout_stopped:
+            return
         self._purge_stale_enemy_obstacle()
 
         with self.obstacles_lock:
@@ -1342,6 +1447,7 @@ class MapManager:
         baseline lock is complete.
         """
         self.start_game_requested = True
+        self._ensure_all_batches_subscription(reason="start_game")
         # Start/restart game-time counting from this request.
         now = self.node.get_clock().now()
         self.game_start_time_ns = int(now.nanoseconds)
@@ -1552,6 +1658,42 @@ class MapManager:
             f"🔄 Game timer update_map triggered from {service_name}: {message}"
         )
 
+    def _debug_batches_members_callback(self):
+        if not DEBUG_BATCHES_MEMBERS:
+            return
+        if self.game_timeout_stopped:
+            return
+
+        with self.batches_lock:
+            all_ids = set(self.batches_fx.keys()) | set(self.batches_sx.keys())
+
+        if not all_ids:
+            return
+
+        with self.obstacles_lock:
+            obstacle_ids = [obs.id for obs in self.obstacles]
+
+        lines = ["[DEBUG_BATCHES_MEMBERS]"]
+        for known_id in sorted(all_ids):
+            obs_count = sum(
+                1 for oid in obstacle_ids
+                if f"fx_{known_id}_member" in oid or f"sx_{known_id}_member" in oid
+            )
+            with self.batches_lock:
+                if known_id in self.batches_fx:
+                    quality = self.batches_fx_status_type.get(known_id, '-')
+                    batch_type = 'FX'
+                else:
+                    quality = self.batches_sx_status_type.get(known_id, '-')
+                    batch_type = 'SX'
+            has_obstacles = known_id in self.batches_with_obstacles
+            lines.append(
+                f"  {batch_type} '{known_id}': {obs_count} obstacle(s), "
+                f"status={quality}, tracked={has_obstacles}"
+            )
+
+        self.node.get_logger().info('\n'.join(lines))
+
     def _trigger_update_map_async(self, can_lock_baseline: bool = True) -> tuple[bool, str, str]:
         """Trigger the same asynchronous GetStableBatches flow as /update_map."""
         # If we are currently using simulation batches and ArUco service becomes available,
@@ -1751,8 +1893,16 @@ class MapManager:
             specific_known_id: If set, this is a retry for a specific known_id
         """
         try:
+            # If this is a specific-batch retry/baseline request and the batch was deleted
+            # (picked up) while the async call was in-flight, discard the response.
+            if specific_known_id and specific_known_id in self.deleted_batch_ids:
+                self.node.get_logger().info(
+                    f"🚫 Discarding in-flight response for deleted batch '{specific_known_id}'"
+                )
+                return
+
             stable_response = future.result()
-            
+
             if stable_response is None:
                 self.node.get_logger().error("❌ Service returned None")
                 return
@@ -1766,12 +1916,24 @@ class MapManager:
                 if self._parse_batch_state(batch.state)[0] == 'LOST'
             }
 
-            # Remove LOST batches immediately, except manual put_down batches
-            # which are preserved and must not be updated/removed from beacon input.
+            # Remove LOST batches immediately, except manual put_down batches and
+            # manually overridden batches, which must never be removed by beacon LOST.
             with self.batches_lock:
                 manual_putdown_ids = set(self.manual_putdown_batch_ids)
-            lost_non_manual_ids = set(lost_batch_ids) - manual_putdown_ids
+                _locked_now = self.locked_baseline_batch_ids | self.locked_baseline_all_batch_ids
+            protected_ids = manual_putdown_ids | set(self.synthetic_override_batch_ids) | set(self.manual_pattern_overrides.keys())
+            lost_non_manual_ids = set(lost_batch_ids) - protected_ids
             lost_preserved_ids = set()
+            # On the first update, SX batches that are LOST but not yet baseline-locked
+            # should be retried rather than hard-removed.
+            _is_first = can_lock_baseline and self.first_update_map and specific_known_id is None
+            lost_sx_retry_ids: set = set()
+            if _is_first:
+                lost_sx_retry_ids = {
+                    bid for bid in lost_non_manual_ids
+                    if bid.startswith('s') and bid not in _locked_now
+                }
+                lost_non_manual_ids -= lost_sx_retry_ids
             if lost_non_manual_ids and ACTIVATE_LOST_BATCH_DELETING:
                 self._remove_lost_batches(lost_non_manual_ids, reason="reported LOST by beacon")
             elif lost_non_manual_ids:
@@ -1789,47 +1951,29 @@ class MapManager:
 
             # If first update returns zero batches, retry as first update (do not switch to incremental flow yet).
             if is_first_update and num_batches == 0:
-                if self.first_update_empty_retry_count < self.first_update_empty_retry_max:
-                    self.first_update_empty_retry_count += 1
-                    attempt = self.first_update_empty_retry_count
-                    self.baseline_lock_pending = True
-                    retry_msg = (
-                        f"⚠️ First update_map returned 0 batches, retrying as first update "
-                        f"({attempt}/{self.first_update_empty_retry_max})"
-                    )
-                    if attempt == 1:
-                        self.node.get_logger().warn(retry_msg)
-                    else:
-                        self.node.get_logger().debug(retry_msg)
-
-                    retry_client = client if client is not None else self.retry_client
-                    if retry_client and retry_client.service_is_ready():
-                        retry_request = GetStableBatches.Request()
-                        retry_request.batch_types_filter = "sfg"
-                        retry_request.specific_known_id = ""
-                        retry_request.only_locked_baselines = False
-
-                        retry_future = retry_client.call_async(retry_request)
-                        retry_future.add_done_callback(
-                            lambda f: self._handle_get_stable_batches_response(
-                                f, trigger_response, retry_client, service_name, None, False, True
-                            )
-                        )
-                    else:
-                        self.node.get_logger().error(
-                            "❌ Cannot retry first update_map: batch service not ready"
-                        )
-                    return
-
-                exhausted_msg = (
-                    f"❌ First update_map still returned 0 batches after "
-                    f"{self.first_update_empty_retry_max} retries"
-                )
-                if not self.first_update_empty_reported:
-                    self.node.get_logger().error(exhausted_msg)
-                    self.first_update_empty_reported = True
+                self.first_update_empty_retry_count += 1
+                attempt = self.first_update_empty_retry_count
+                self.baseline_lock_pending = True
+                if self.first_update_empty_retry_max is None:
+                    retry_suffix = "unlimited"
                 else:
-                    self.node.get_logger().debug(exhausted_msg)
+                    retry_suffix = str(self.first_update_empty_retry_max)
+                retry_msg = (
+                    f"⚠️ First update_map returned 0 batches, retrying as first update "
+                    f"({attempt}/{retry_suffix})"
+                )
+                if attempt == 1:
+                    self.node.get_logger().warn(retry_msg)
+                else:
+                    self.node.get_logger().debug(retry_msg)
+
+                retry_success, retry_message, _retry_service = self._trigger_update_map_async(
+                    can_lock_baseline=True
+                )
+                if not retry_success:
+                    self.node.get_logger().error(
+                        f"❌ Cannot retry first update_map: {retry_message}"
+                    )
                 return
 
             if is_first_update and num_batches > 0:
@@ -1847,6 +1991,14 @@ class MapManager:
                 for batch in aruco_state.batches:
                     state, _ = self._parse_batch_state(batch.state)
                     if state == 'LOST':
+                        if batch.known_id in lost_sx_retry_ids:
+                            # Not baseline-locked yet on first update — treat like EMERGING.
+                            emerging_ids.add(batch.known_id)
+                            self.node.get_logger().info(
+                                f"  ⏳ [SX] '{batch.known_id}': LOST (not locked, first update) → will retry"
+                            )
+                            skipped_count += 1
+                            continue
                         # LOST batches are removed immediately and must not be processed further.
                         self.known_ids_to_retry.discard(batch.known_id)
                         skipped_count += 1
@@ -1856,21 +2008,39 @@ class MapManager:
                         filtered_batches.append(batch)
                         non_emerging_count += 1
                     else:
-                        # EMERGING: SX -> retry, FX -> accept, GX -> skip
+                        # EMERGING: SX -> retry, FX -> retry, GX -> skip
                         if batch.known_id.startswith('s'):
                             self._invalidate_sx_baseline_lock(batch.known_id, state)
                             emerging_ids.add(batch.known_id)
                             self.node.get_logger().info(f"  ⏳ [SX] '{batch.known_id}': {state} → will retry")
                         elif batch.known_id.startswith('f') or not (batch.known_id.startswith('s') or batch.known_id.startswith('g')):
-                            filtered_batches.append(batch)
+                            with self.batches_lock:
+                                is_putdown = batch.known_id in self.manual_putdown_batch_ids
+                            if is_putdown:
+                                skipped_count += 1
+                            else:
+                                emerging_ids.add(batch.known_id)
+                                self.node.get_logger().info(f"  ⏳ [FX] '{batch.known_id}': {state} → will retry")
                         else:
                             skipped_count += 1
-                
-                # Store EMERGING IDs for retry (only SX and GX)
+
+                # Detect s1-s8 that are completely absent from the mapper response
+                # (not EMERGING, not LOST, just not reported at all).
+                # They need to be retried the same way as EMERGING batches.
+                reported_sx_ids = {
+                    batch.known_id for batch in aruco_state.batches
+                    if batch.known_id.startswith('s')
+                }
+                absent_sx_ids = self._required_sx_ids - reported_sx_ids
+                for sid in absent_sx_ids:
+                    emerging_ids.add(sid)
+                    self.node.get_logger().info(f"  ⏳ [SX] '{sid}': absent from mapper → will retry")
+
+                # Store EMERGING IDs for retry (SX and FX)
                 self.known_ids_to_retry = emerging_ids
-                
+
                 self.node.get_logger().info(
-                    f"📊 First update summary: {non_emerging_count} non-EMERGING, {len(emerging_ids)} SX EMERGING queued for retry, "
+                    f"📊 First update summary: {non_emerging_count} non-EMERGING, {len(emerging_ids)} EMERGING/absent queued for retry, "
                     f"{skipped_count} GX skipped"
                 )
 
@@ -1940,9 +2110,15 @@ class MapManager:
                             emerging_ids.add(batch.known_id)
                             skipped_count += 1
                         else:
-                            # EMERGING FX -> accept, GX -> skip
+                            # EMERGING FX -> retry (same as SX), GX -> skip
                             if is_fx:
-                                filtered_batches.append(batch)
+                                with self.batches_lock:
+                                    is_putdown = batch.known_id in self.manual_putdown_batch_ids
+                                if not is_putdown:
+                                    if batch.known_id not in emerging_ids and batch.known_id not in self.known_ids_to_retry:
+                                        self.node.get_logger().info(f"  ⏭️  [{batch_type}] '{batch.known_id}': EMERGING → added to retry")
+                                    emerging_ids.add(batch.known_id)
+                                skipped_count += 1
                             else:
                                 skipped_count += 1
                 
@@ -2062,17 +2238,36 @@ class MapManager:
             # On subsequent updates, we do incremental updates
             if specific_known_id is None:  # Only clear on first update (not on retries)
                 if is_first_update:
-                    # FIRST UPDATE: Clear everything
+                    # FIRST UPDATE: Clear everything, but preserve manually overridden SX batches
+                    # so that a pattern override set before the first beacon response is not lost.
+                    protected_override_ids = set(self.synthetic_override_batch_ids) | set(self.manual_pattern_overrides.keys())
                     with self.obstacles_lock:
                         old_count = len(self.obstacles)
-                        self.obstacles = [obs for obs in self.obstacles if self.obstacle_sources.get(obs.id, '') not in ['fx', 'sx']]
+                        if protected_override_ids:
+                            self.obstacles = [
+                                obs for obs in self.obstacles
+                                if self.obstacle_sources.get(obs.id, '') not in ['fx', 'sx']
+                                or any(obs.id.startswith(f"sx_{bid}_") or obs.id.startswith(f"fx_{bid}_") for bid in protected_override_ids)
+                            ]
+                            # Clear obstacle sources for both FX and SX, keeping override batch sources
+                            self.obstacle_sources = {
+                                k: v for k, v in self.obstacle_sources.items()
+                                if v not in ['fx', 'sx']
+                                or any(k.startswith(f"sx_{bid}_") or k.startswith(f"fx_{bid}_") for bid in protected_override_ids)
+                            }
+                        else:
+                            self.obstacles = [obs for obs in self.obstacles if self.obstacle_sources.get(obs.id, '') not in ['fx', 'sx']]
+                            # Clear obstacle sources for both FX and SX
+                            self.obstacle_sources = {k: v for k, v in self.obstacle_sources.items() if v not in ['fx', 'sx']}
                         removed = old_count - len(self.obstacles)
-                        
-                        # Clear obstacle sources for both FX and SX
-                        self.obstacle_sources = {k: v for k, v in self.obstacle_sources.items() if v not in ['fx', 'sx']}
-                        
+
                         # Clear both batch dictionaries
                         with self.batches_lock:
+                            # Save override SX state before clearing
+                            preserved_override_sx = {bid: self.batches_sx[bid] for bid in protected_override_ids if bid in self.batches_sx}
+                            preserved_override_sx_baseline = {bid: self.batches_sx_baseline_status_type.get(bid) for bid in preserved_override_sx}
+                            preserved_override_obs = set(protected_override_ids) & self.batches_with_obstacles
+
                             self.batches_fx.clear()
                             self.batches_fx_status_type.clear()
                             self.batches_sx.clear()
@@ -2084,6 +2279,17 @@ class MapManager:
                             self.batches_fx.update(preserved_manual_batches)
                             self.batches_with_obstacles.update(preserved_manual_batches.keys())
                             self.manual_putdown_batch_ids.update(preserved_manual_batches.keys())
+                            # Restore override SX batches so pre-game overrides survive the first update
+                            if preserved_override_sx:
+                                self.batches_sx.update(preserved_override_sx)
+                                for bid, val in preserved_override_sx_baseline.items():
+                                    if val is not None:
+                                        self.batches_sx_baseline_status_type[bid] = val
+                                self.batches_with_obstacles.update(preserved_override_obs)
+                                self.locked_baseline_batch_ids.update(preserved_override_sx.keys())
+                                self.node.get_logger().info(
+                                    f"📌 Preserved {len(preserved_override_sx)} override SX batch(es) across first update: {set(preserved_override_sx.keys())}"
+                                )
                             self.node.get_logger().info(f"🗑️  Cleared all FX and SX batches and {removed} obstacles before first update")
                 else:
                     # SUBSEQUENT UPDATES: Incremental update
@@ -2099,11 +2305,31 @@ class MapManager:
                                           if batch.known_id.startswith('f') and len(getattr(batch, 'members', [])) == 4}
                     fx_batches_ids_full -= retained_manual_putdown_ids
                     
-                    # Only remove FX batches that are incomplete (not 4 members) AND are being refreshed
-                    fx_batches_ids_incomplete = {batch.known_id for batch in filtered_batches 
-                                                 if batch.known_id.startswith('f') and len(getattr(batch, 'members', [])) != 4}
+                    # Only remove FX batches that are incomplete (not 4 members) AND are being refreshed.
+                    # Also include FX batches that report 4 members but currently have fewer than 4
+                    # obstacles in the map (grew from 3→4 members between two update_map calls).
+                    with self.obstacles_lock:
+                        _obs_ids = [obs.id for obs in self.obstacles]
+                    fx_batches_ids_incomplete = set()
+                    for batch in filtered_batches:
+                        if not batch.known_id.startswith('f'):
+                            continue
+                        member_count = len(getattr(batch, 'members', []))
+                        if member_count != 4:
+                            fx_batches_ids_incomplete.add(batch.known_id)
+                        elif batch.known_id in self.active_batch_ids:
+                            current_obs = sum(1 for oid in _obs_ids if f"fx_{batch.known_id}_member" in oid)
+                            if current_obs < 4:
+                                fx_batches_ids_incomplete.add(batch.known_id)
                     fx_batches_ids_incomplete -= retained_manual_putdown_ids
                     
+                    # Keep overridden (synthetic/manual) batches even if they "disappear" from live input,
+                    # unless explicit disappearing is allowed.
+                    if not self.allow_batch_disappearing:
+                        if self.synthetic_override_batch_ids or self.manual_pattern_overrides:
+                            protected_override_ids = set(self.synthetic_override_batch_ids) | set(self.manual_pattern_overrides.keys())
+                            disappeared_ids -= protected_override_ids
+
                     batches_to_remove = disappeared_ids | fx_batches_ids_incomplete  # Disappeared + incomplete FX
                     
                     if batches_to_remove:
@@ -2191,12 +2417,20 @@ class MapManager:
                     fx_full_kept = []
                     
                     for b in filtered_batches:
-                        # FX batch with 4 members - keep if already tracked, don't delete/recreate
+                        # FX batch with 4 members - keep if already tracked WITH 4 obstacles, don't delete/recreate
                         if b.known_id.startswith('f') and len(getattr(b, 'members', [])) == 4:
                             if b.known_id in self.active_batch_ids:
-                                fx_full_kept.append(b.known_id)
-                                # Skip adding to new_batches - keep existing obstacles
-                                continue
+                                with self.obstacles_lock:
+                                    current_obs_count = sum(
+                                        1 for obs in self.obstacles
+                                        if f"fx_{b.known_id}_member" in obs.id
+                                    )
+                                if current_obs_count >= 4:
+                                    fx_full_kept.append(b.known_id)
+                                    # Skip adding to new_batches - keep existing obstacles
+                                    continue
+                                # Obstacle count is stale (e.g. grew from 3→4 members between updates):
+                                # fall through so the batch is rebuilt with 4 obstacles.
                         # SX/GX already tracked - keep existing
                         if b.known_id not in self.active_batch_ids or b.known_id.startswith('f'):
                             new_batches.append(b)
@@ -2218,17 +2452,36 @@ class MapManager:
                 if filtered_batches:
                     for batch in filtered_batches:
                         if batch.known_id == specific_known_id:
-                            # Remove obstacles only if TRACKING (upgrade) or if we have members (new data)
                             parsed_state, _ = self._parse_batch_state(batch.state)
                             if parsed_state == 'TRACKING' or (batch.members and len(batch.members) > 0):
+                                new_member_count = len(batch.members) if batch.members else 0
+
+                                # For FX batches: don't downgrade obstacle count if the locked
+                                # baseline service is lagging behind what all_batches already reported.
+                                if specific_known_id and specific_known_id.startswith('f'):
+                                    with self.batches_lock:
+                                        cur = self.batches_fx.get(specific_known_id)
+                                        cur_count = len(cur.members) if (cur and cur.members) else 0
+                                    if new_member_count < cur_count:
+                                        self.node.get_logger().debug(
+                                            f"🔒 FX '{specific_known_id}': locked baseline has {new_member_count} members "
+                                            f"but {cur_count} already tracked — skipping rebuild to avoid regression"
+                                        )
+                                        break
+
+                                with self.batches_lock:
+                                    if specific_known_id in self.manual_putdown_batch_ids:
+                                        break
+
                                 should_update = True
                                 with self.obstacles_lock:
                                     old_count = len(self.obstacles)
-                                    self.obstacles = [obs for obs in self.obstacles 
+                                    self.obstacles = [obs for obs in self.obstacles
                                                      if not (obs.id.startswith(f"fx_{specific_known_id}_") or obs.id.startswith(f"sx_{specific_known_id}_"))]
                                     removed = old_count - len(self.obstacles)
-                                
-                                # Clear from tracking so obstacles can be recreated
+                                    # Also clear the safety-zone sentinel so it gets recreated
+                                    self.fx_safety_added.discard(f"fx_{specific_known_id}_safety")
+
                                 with self.batches_lock:
                                     self.batches_with_obstacles.discard(specific_known_id)
                             break
@@ -2547,7 +2800,8 @@ class MapManager:
                 return
 
             member_count = len(target_batch.members) if target_batch.members else 0
-            if member_count == 3:
+            has_manual_override = known_id in self.manual_pattern_overrides
+            if member_count == 3 and not has_manual_override:
                 self.node.get_logger().info(
                     f"⏭️  SX batch '{known_id}' has only 3 members after baseline lock - skipping obstacle creation"
                 )
@@ -2593,6 +2847,8 @@ class MapManager:
                 locked_batch_ids = set()
                 sx_batches_ready_for_obstacles = []
                 tentative_sx_batches_for_obstacles = []
+                fx_batches_ready_for_obstacles = []
+                tentative_fx_batches_for_obstacles = []
                 
                 # Update batches with locked patterns
                 with self.batches_lock:
@@ -2638,12 +2894,27 @@ class MapManager:
                                 )
                                 continue
                             self.batches_fx[batch.known_id] = batch
-                            _, status_type = self._parse_batch_state(batch.state)
+                            _parsed_state, status_type = self._parse_batch_state(batch.state)
                             if status_type:
                                 self.batches_fx_status_type[batch.known_id] = status_type
                             else:
                                 self.batches_fx_status_type.pop(batch.known_id, None)
-                            self.node.get_logger().info(f"   🔒 Locked FX pattern: {batch.known_id} = '{batch.pattern}'")
+                            self.batches_with_obstacles.discard(batch.known_id)
+                            if _parsed_state == 'BASELINE_TEMPORARY':
+                                self.tentative_baseline_ids.add(batch.known_id)
+                                self.locked_baseline_batch_ids.discard(batch.known_id)
+                                self.locked_baseline_all_batch_ids.discard(batch.known_id)
+                                if batch.members:
+                                    tentative_fx_batches_for_obstacles.append(batch)
+                                self.node.get_logger().info(
+                                    f"[TEMP_BASELINE] ⏳ FX '{batch.known_id}': BASELINE_TEMPORARY, pattern='{batch.pattern}' → will retry"
+                                )
+                            else:
+                                locked_batch_ids.add(batch.known_id)
+                                self.tentative_baseline_ids.discard(batch.known_id)
+                                if batch.members:
+                                    fx_batches_ready_for_obstacles.append(batch)
+                                self.node.get_logger().info(f"   🔒 Locked FX pattern: {batch.known_id} = '{batch.pattern}'")
                 
                 # CRITICAL: Add locked batches to active_batch_ids to prevent them from being removed
                 self.active_batch_ids.update(active_batch_ids_from_lock)
@@ -2652,7 +2923,7 @@ class MapManager:
 
                 if self.tentative_baseline_ids:
                     self.node.get_logger().info(
-                        f"⏳ Locked baseline still tentative for {len(self.tentative_baseline_ids)} SX batches: "
+                        f"⏳ Locked baseline still tentative for {len(self.tentative_baseline_ids)} batches: "
                         f"{self.tentative_baseline_ids}"
                     )
                     self._start_short_pattern_retry_timer()
@@ -2704,6 +2975,48 @@ class MapManager:
                     sx_state.initialized = response.stable_state.initialized
                     sx_state.batches = sx_batches_ready_for_obstacles
                     self._handle_aruco_mapper_state(sx_state, 'sx')
+
+                if fx_batches_ready_for_obstacles:
+                    with self.batches_lock:
+                        for batch in fx_batches_ready_for_obstacles:
+                            self.batches_with_obstacles.discard(batch.known_id)
+                    with self.obstacles_lock:
+                        fx_ready_ids = {batch.known_id for batch in fx_batches_ready_for_obstacles}
+                        self.obstacles = [
+                            obs for obs in self.obstacles
+                            if not any(obs.id.startswith(f"fx_{bid}_") for bid in fx_ready_ids)
+                        ]
+                        self.obstacle_sources = {
+                            k: v for k, v in self.obstacle_sources.items()
+                            if not any(k.startswith(f"fx_{bid}_") for bid in fx_ready_ids)
+                        }
+                        for bid in fx_ready_ids:
+                            self.fx_safety_added.discard(f"fx_{bid}_safety")
+                    fx_lock_state = ArucoMapperState()
+                    fx_lock_state.stamp = response.stable_state.stamp
+                    fx_lock_state.initialized = response.stable_state.initialized
+                    fx_lock_state.batches = fx_batches_ready_for_obstacles
+                    self._handle_aruco_mapper_state(fx_lock_state, 'fx')
+
+                if tentative_fx_batches_for_obstacles:
+                    with self.obstacles_lock:
+                        tentative_fx_ids = {batch.known_id for batch in tentative_fx_batches_for_obstacles}
+                        self.obstacles = [
+                            obs for obs in self.obstacles
+                            if not any(obs.id.startswith(f"fx_{bid}_") for bid in tentative_fx_ids)
+                        ]
+                        self.obstacle_sources = {
+                            k: v for k, v in self.obstacle_sources.items()
+                            if not any(k.startswith(f"fx_{bid}_") for bid in tentative_fx_ids)
+                        }
+                        for bid in tentative_fx_ids:
+                            self.fx_safety_added.discard(f"fx_{bid}_safety")
+                    fx_tentative_state = ArucoMapperState()
+                    fx_tentative_state.stamp = response.stable_state.stamp
+                    fx_tentative_state.initialized = response.stable_state.initialized
+                    fx_tentative_state.batches = tentative_fx_batches_for_obstacles
+                    self._handle_aruco_mapper_state(fx_tentative_state, 'fx')
+                    self._start_short_pattern_retry_timer()
             else:
                 self.node.get_logger().error("❌ Failed to lock baseline patterns: no response")
         except Exception as e:
@@ -2715,10 +3028,30 @@ class MapManager:
 
     def _handle_all_batches_topic(self, msg: ArucoMapperState) -> None:
         """Handle incremental batch updates after baseline lock is stable."""
+        if self.game_timeout_stopped:
+            return
         if not self.all_batches_sub_active:
             return
 
         if not self.baselines_locked:
+            # Allow P/NP status refresh before baseline lock is stable.
+            for batch in (msg.batches or []):
+                known_id = str(getattr(batch, 'known_id', '') or '').strip()
+                if not known_id or known_id.startswith('g'):
+                    continue
+
+                status_suffix = self._parse_batch_state(batch.state)[1]
+                with self.batches_lock:
+                    if known_id.startswith('s'):
+                        if status_suffix in ('P', 'NP'):
+                            self.batches_sx_status_type[known_id] = status_suffix
+                        else:
+                            self.batches_sx_status_type.pop(known_id, None)
+                    else:
+                        if status_suffix in ('P', 'NP'):
+                            self.batches_fx_status_type[known_id] = status_suffix
+                        else:
+                            self.batches_fx_status_type.pop(known_id, None)
             return
 
         # Remove LOST batches immediately.
@@ -2730,7 +3063,22 @@ class MapManager:
         # Ignore GX in topic-driven updates.
         lost_ids = {bid for bid in lost_ids if not str(bid or '').startswith('g')}
         if lost_ids:
-            self._remove_lost_batches(lost_ids, reason="reported LOST by /aruco_mapper/all_batches")
+            with self.batches_lock:
+                manual_putdown_ids = set(self.manual_putdown_batch_ids)
+                synthetic_ids = set(self.synthetic_override_batch_ids)
+            protected_ids = manual_putdown_ids | synthetic_ids
+            lost_non_protected_ids = lost_ids - protected_ids
+            preserved_ids = lost_ids & protected_ids
+            if preserved_ids:
+                self.node.get_logger().info(
+                    f"📌 Ignoring LOST for protected batches (put_down/override): {preserved_ids}"
+                )
+            if lost_non_protected_ids and ACTIVATE_LOST_BATCH_DELETING:
+                self._remove_lost_batches(lost_non_protected_ids, reason="reported LOST by /aruco_mapper/all_batches")
+            elif lost_non_protected_ids:
+                self.node.get_logger().info(
+                    f"📌 LOST batch deletion disabled; preserving: {lost_non_protected_ids}"
+                )
             for bid in lost_ids:
                 self.pending_baseline_request_ids.discard(bid)
                 self.fx_pending_baseline_batches.pop(bid, None)
@@ -2754,6 +3102,20 @@ class MapManager:
             is_sx = known_id.startswith('s')
             is_fx = known_id.startswith('f') or not (known_id.startswith('s') or known_id.startswith('g'))
 
+            # Always refresh P/NP quality status from /aruco_mapper/all_batches.
+            status_suffix = self._parse_batch_state(batch.state)[1]
+            with self.batches_lock:
+                if is_sx:
+                    if status_suffix in ('P', 'NP'):
+                        self.batches_sx_status_type[known_id] = status_suffix
+                    else:
+                        self.batches_sx_status_type.pop(known_id, None)
+                elif is_fx:
+                    if status_suffix in ('P', 'NP'):
+                        self.batches_fx_status_type[known_id] = status_suffix
+                    else:
+                        self.batches_fx_status_type.pop(known_id, None)
+
             if is_sx:
                 # New SX after lock: request a locked baseline to get pattern.
                 if known_id not in self.locked_baseline_all_batch_ids:
@@ -2761,6 +3123,10 @@ class MapManager:
                 continue
 
             if is_fx:
+                with self.batches_lock:
+                    if known_id in self.manual_putdown_batch_ids:
+                        continue
+
                 member_count = len(batch.members) if getattr(batch, 'members', None) else 0
 
                 with self.batches_lock:
@@ -2781,16 +3147,23 @@ class MapManager:
                 # Save as temporary and request locked baseline to conclude pattern.
                 with self.batches_lock:
                     self.batches_fx[known_id] = batch
-                    _, status_type = self._parse_batch_state(batch.state)
-                    if status_type:
-                        self.batches_fx_status_type[known_id] = status_type
-                    else:
-                        self.batches_fx_status_type.pop(known_id, None)
 
                 self.fx_pending_baseline_batches[known_id] = batch
 
                 # Add FX obstacles immediately (even if EMERGING) when members exist.
                 if member_count > 0:
+                    # If member count grew, tear down the old obstacles so the guard
+                    # in _handle_aruco_mapper_state doesn't skip the rebuild.
+                    if member_count_grew and known_id in self.batches_with_obstacles:
+                        with self.obstacles_lock:
+                            old_obs = [o for o in self.obstacles if f"fx_{known_id}_member" in o.id]
+                            for o in old_obs:
+                                self.obstacles.remove(o)
+                                self.obstacle_sources.pop(o.id, None)
+                        self.batches_with_obstacles.discard(known_id)
+                        self.node.get_logger().info(
+                            f"🔄 FX '{known_id}' grew {existing_member_count}→{member_count} members, rebuilding obstacles"
+                        )
                     fx_state = ArucoMapperState()
                     fx_state.stamp = msg.stamp
                     fx_state.initialized = msg.initialized
@@ -2868,6 +3241,8 @@ class MapManager:
 
     def _retry_timer_callback(self):
         """Timer callback to retry EMERGING SX known_ids only."""
+        if self.game_timeout_stopped:
+            return
         if not self.retry_timer_active:
             return
 
@@ -2883,7 +3258,7 @@ class MapManager:
             return
 
         self.node.get_logger().info(
-            f"🔁 Auto-retrying {len(self.known_ids_to_retry)} EMERGING SX batches"
+            f"🔁 Auto-retrying {len(self.known_ids_to_retry)} EMERGING batches"
         )
 
         for known_id in list(self.known_ids_to_retry):
@@ -2930,6 +3305,8 @@ class MapManager:
     def _short_pattern_retry_callback(self):
         """Timer callback: request locked baselines for each short-pattern batch
         to see whether the pattern has been extended to 4 elements."""
+        if self.game_timeout_stopped:
+            return
         if not self.short_pattern_retry_active:
             return
 
@@ -2945,8 +3322,9 @@ class MapManager:
             f"🔍 Re-checking locked-baseline batches: short={self.short_pattern_ids}, tentative={self.tentative_baseline_ids}"
         )
         for known_id in list(self.short_pattern_ids | self.tentative_baseline_ids):
-            # Defensive: SX-only retry policy
-            if not known_id.startswith('s'):
+            is_sx = known_id.startswith('s')
+            is_fx = not is_sx and not known_id.startswith('g')
+            if not is_sx and not is_fx:
                 self.short_pattern_ids.discard(known_id)
                 self.tentative_baseline_ids.discard(known_id)
                 continue
@@ -2976,15 +3354,12 @@ class MapManager:
                 if batch.known_id != known_id:
                     continue
 
-                # Defensive: SX-only retry policy
-                if not known_id.startswith('s'):
-                    self.short_pattern_ids.discard(known_id)
-                    self.tentative_baseline_ids.discard(known_id)
-                    break
-
                 self._apply_manual_pattern_override(batch)
                 new_pattern = batch.pattern if batch.pattern else ""
                 _parsed_state, baseline_status = self._parse_batch_state(batch.state)
+
+                is_sx = known_id.startswith('s')
+                is_fx = not is_sx and not known_id.startswith('g')
 
                 if _parsed_state == 'LOST':
                     self.node.get_logger().info(
@@ -2994,6 +3369,65 @@ class MapManager:
                     self.tentative_baseline_ids.discard(known_id)
                     if not self.short_pattern_ids and not self.tentative_baseline_ids:
                         self._stop_short_pattern_retry_timer()
+                    break
+
+                if is_fx:
+                    with self.batches_lock:
+                        is_putdown = known_id in self.manual_putdown_batch_ids
+                    if is_putdown:
+                        self.tentative_baseline_ids.discard(known_id)
+                        self.short_pattern_ids.discard(known_id)
+                        self.node.get_logger().info(
+                            f"📌 Short-pattern retry: skipping '{known_id}' — manual put_down batch, not overwriting"
+                        )
+                        break
+                    with self.batches_lock:
+                        self.batches_fx[known_id] = batch
+                        _, fx_status_type = self._parse_batch_state(batch.state)
+                        if fx_status_type:
+                            self.batches_fx_status_type[known_id] = fx_status_type
+                        else:
+                            self.batches_fx_status_type.pop(known_id, None)
+                        self.batches_with_obstacles.discard(known_id)
+
+                    member_prefix = f"fx_{known_id}_member"
+                    safety_id = f"fx_{known_id}_safety"
+
+                    if _parsed_state == 'BASELINE_TEMPORARY':
+                        # Tentative: only refresh member obstacles, keep safety zone in place
+                        with self.obstacles_lock:
+                            self.obstacles = [obs for obs in self.obstacles if not obs.id.startswith(member_prefix)]
+                            self.obstacle_sources = {k: v for k, v in self.obstacle_sources.items() if not k.startswith(member_prefix)}
+                        self.tentative_baseline_ids.add(known_id)
+                        self.locked_baseline_batch_ids.discard(known_id)
+                        self.locked_baseline_all_batch_ids.discard(known_id)
+                        self.node.get_logger().info(
+                            f"[TEMP_BASELINE] ⏳ FX '{known_id}': still BASELINE_TEMPORARY, pattern='{new_pattern}' → retrying"
+                        )
+                    else:
+                        # Confirmed: clear everything including safety zone for clean rebuild
+                        with self.obstacles_lock:
+                            self.obstacles = [obs for obs in self.obstacles if not obs.id.startswith(member_prefix) and obs.id != safety_id]
+                            self.obstacle_sources = {k: v for k, v in self.obstacle_sources.items() if not k.startswith(member_prefix) and k != safety_id}
+                            self.fx_safety_added.discard(safety_id)
+                        self.tentative_baseline_ids.discard(known_id)
+                        self.short_pattern_ids.discard(known_id)
+                        self.locked_baseline_batch_ids.add(known_id)
+                        self.locked_baseline_all_batch_ids.add(known_id)
+                        self.node.get_logger().info(
+                            f"[FINAL_BASELINE] ✅ FX '{known_id}': baseline confirmed, pattern='{new_pattern}'"
+                        )
+
+                    if batch.members:
+                        fx_retry_state = ArucoMapperState()
+                        fx_retry_state.stamp = response.stable_state.stamp
+                        fx_retry_state.initialized = response.stable_state.initialized
+                        fx_retry_state.batches = [batch]
+                        self._handle_aruco_mapper_state(fx_retry_state, 'fx')
+
+                    if not self.short_pattern_ids and not self.tentative_baseline_ids:
+                        self._stop_short_pattern_retry_timer()
+                        self._try_publish_beacon_ready()
                     break
 
                 with self.batches_lock:
@@ -3230,7 +3664,8 @@ class MapManager:
                             continue
 
                     member_count = len(batch.members) if batch.members else 0
-                    if member_count == 3 and not is_tentative_baseline:
+                    has_manual_override = batch_known_id in self.manual_pattern_overrides
+                    if member_count == 3 and not is_tentative_baseline and not has_manual_override:
                         self.node.get_logger().info(
                             f"⏭️  SX batch '{batch_known_id}' has only 3 members - skipping obstacle creation"
                         )

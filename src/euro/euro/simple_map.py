@@ -436,7 +436,8 @@ class Map:
         if not normalized_id:
             return
 
-        self.batches.pop(normalized_id, None)
+        if normalized_id not in self.completed_putdown_ids:
+            self.batches.pop(normalized_id, None)
         if persistently:
             self.deleted_batch_ids.add(normalized_id)
             # Clear quality tracking only on permanent deletion.

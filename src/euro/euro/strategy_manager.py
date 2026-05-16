@@ -1034,7 +1034,7 @@ def main(args=None):
     def reset_aruco_stability():
         time.sleep(0.5)  # Wait for executor to start
         #strategy.pathfinder.reset_stability()
-        strategy.pathfinder.clear_map()
+        #strategy.pathfinder.clear_map()
     
     reset_thread = threading.Thread(
         target=reset_aruco_stability,
@@ -1051,7 +1051,7 @@ def main(args=None):
     
     lidar_thread = threading.Thread(
         target=lidar_status,
-        args=(strategy, stm32, lidar, strategy.round),
+        args=(strategy, stm32, lidar, strategy.round, pneumatic),
         daemon=True
     )
     lidar_thread.start()

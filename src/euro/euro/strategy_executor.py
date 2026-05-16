@@ -12,7 +12,7 @@ from geometry_msgs.msg import Point
 
 # Global switch for task-tracking cancellation handling.
 # When False, task cancellation is ignored and no emergency recovery is triggered.
-ALLOW_CANCELING = True
+ALLOW_CANCELING = False
 
 class Round:
     """Timer class to track game round time"""
@@ -459,7 +459,7 @@ def robot_status(strategy, stm32, lidar):
             #     strategy.get_logger().info(f"✓ Robot status monitor: IDLE={IDLE}, EMERGENCY_STOP={EMERGENCY_STOP}")        
         time.sleep(0.02)  # 20ms to reduce command dispatch latency
 
-def lidar_status(strategy, stm32, lidar, round_timer):
+def lidar_status(strategy, stm32, lidar, round_timer, pneumatic_controller=None):
     """Runs every 100ms to check lidar status and handle emergency stops"""
     first_emergency = True
     
@@ -478,6 +478,9 @@ def lidar_status(strategy, stm32, lidar, round_timer):
             strategy.end_game = True
             strategy.get_logger().warning("⏰ TIME_ENDED set by lidar_status at 100s")
             _enforce_time_ended(strategy)
+            if pneumatic_controller:
+                pneumatic_controller.front(16)
+                pneumatic_controller.back(16)
             stm32.shutdown()
         
         # Check emergency stop from lidar
@@ -1265,6 +1268,7 @@ def pick_up(controller,pneumatic,strategy,front):
 
     _send_esp_n20(controller, front, 1111)
     stana(controller, last_value=1111)
+    time.sleep(0.2)
     if _should_abort_esp_action(strategy, front, "pick_up()"):
         return
 
@@ -1455,6 +1459,9 @@ def front_task(strategy, front_controller=None,pneumatic_controller=None):
                     _send_esp_dawer(front_controller, True, 1)
                     _send_esp_n20(front_controller, True, cmd_to_n20)
                 else:
+                    while not state.IDLE and not state.SHUTDOWN_REQUESTED:
+                        #strategy.get_logger().info("⏳ Waiting for IDLE before front prepare for fx...")
+                        time.sleep(0.1)
                     front_controller.n20(2222)
                     front_controller.dawer(0)
                     front_controller.kabech(2)
@@ -1518,6 +1525,9 @@ def back_task(strategy, back_controller=None,pneumatic_controller=None):
                     _send_esp_dawer(back_controller, False, 1)
                     _send_esp_n20(back_controller, False, cmd_to_n20)
                 else:
+                    while not state.IDLE and not state.SHUTDOWN_REQUESTED:
+                        #strategy.get_logger().info("⏳ Waiting for IDLE before back prepare for fx...")
+                        time.sleep(0.1)
                     back_controller.n20(2222)
                     back_controller.dawer(0)
                     back_controller.kabech(2)
