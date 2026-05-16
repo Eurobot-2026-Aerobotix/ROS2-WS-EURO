@@ -1772,6 +1772,7 @@ class TaskScheduler:
         start_pose: Optional[Dict[str, float]] = None,
         insert_distance_mm: Optional[float] = None,
         retreat_distance_mm: Optional[float] = None,
+        rcva: bool = False,
     ) -> Optional[List[Dict[str, Any]]]:
         """
         Build a put_down task.
@@ -2006,7 +2007,31 @@ class TaskScheduler:
                 'target_id': normalized_id,
             },
         }
-        return [putdown_task, putdown_insert_task, putdown_retreat_task]
+        result = [putdown_task, putdown_insert_task, putdown_retreat_task]
+
+        if rcva:
+            result.append({
+                'name': f'putdown_rcva_{normalized_id}_{esp_device.split("_")[1]}',
+                'sequence': [
+                    {
+                        'device': 'RASP_PI',
+                        'command': 'wait_end_game',
+                        'params': [-1000],
+                        'wait': True
+                    }
+                ],
+                'global_goal': {
+                    'x': retreat_x,
+                    'y': retreat_y,
+                    'theta': theta_to_center_deg
+                },
+                'tracking': {
+                    'type': 'put_down',
+                    'target_id': normalized_id,
+                },
+            })
+
+        return result
 
     def _select_pickup_face_for_task(self, task: Task) -> Optional[str]:
         """Choose pickup face using task hint first, then heading-aware fallback."""
@@ -2466,6 +2491,7 @@ class TaskScheduler:
                 y=target_y,
                 device=device,
                 start_pose=start_pose,
+                rcva=bool(task.options.get('RCVA')),
             )
 
         elif task.type == 'return_home':
