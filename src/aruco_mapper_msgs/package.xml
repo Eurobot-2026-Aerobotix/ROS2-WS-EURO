@@ -4,7 +4,7 @@
   <version>0.0.1</version>
   <description>Message definitions for aruco_mapper ROS 2 integration.</description>
 
-  <maintainer email="you@example.com">maintainer</maintainer>
+  <maintainer email="aminebensaid66@gmail.com">Amine Bensaid</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>

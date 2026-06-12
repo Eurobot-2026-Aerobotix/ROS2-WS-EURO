@@ -4,8 +4,8 @@
   <name>rviz</name>
   <version>0.0.0</version>
   <description>RViz visualization package with map server and lifecycle manager</description>
-  <maintainer email="aminebensaid66@gmail.com">ubuntu</maintainer>
-  <license>MIT</license>
+  <maintainer email="aminebensaid66@gmail.com">Amine Bensaid</maintainer>
+  <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
   <buildtool_depend>ament_cmake_python</buildtool_depend>

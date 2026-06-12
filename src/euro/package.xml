@@ -2,9 +2,9 @@
 <package format="3">
   <name>euro</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
-  <maintainer email="aminebensaid66@gmail.com">ubuntu</maintainer>
-  <license>TODO: License declaration</license>
+  <description>EURO competition mobile robot control package</description>
+  <maintainer email="aminebensaid66@gmail.com">Amine Bensaid</maintainer>
+  <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
   <build_depend>euro_interfaces</build_depend>

@@ -4,7 +4,7 @@
   <name>service</name>
   <version>0.0.0</version>
   <description>Custom interface definitions for my robot</description>
-  <maintainer email="aminebensaid66@gmail.com">ubuntu</maintainer>
+  <maintainer email="aminebensaid66@gmail.com">Amine Bensaid</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
